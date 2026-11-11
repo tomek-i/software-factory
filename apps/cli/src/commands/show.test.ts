@@ -69,7 +69,7 @@ describe("factory show <run>", () => {
 
     const text = runShow(dir, "16");
     expect(text).toContain("learn.md (LESSONS: 1)\n  - the gate failed on lint once");
-    expect(text).toMatch(/Files in .*\n(  .*\n)*  learn\.md\n/);
+    expect(text).toMatch(/Files in .*\n( {2}.*\n)* {2}learn\.md\n/);
     expect(runShow(dir, "16", "learn")).toContain("Run lint first.");
   });
 
