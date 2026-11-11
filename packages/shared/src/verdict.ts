@@ -60,6 +60,8 @@ export const verdictHeaderSchemas = {
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),
   approver: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
+  // The issues themselves follow the header in delimited blocks (see drafts/draft.ts in core).
+  issue_writer: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
 } as const;
 
 export type VerdictKind = keyof typeof verdictHeaderSchemas;

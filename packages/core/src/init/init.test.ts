@@ -95,7 +95,7 @@ describe("ensureGitignore", () => {
     const dir = tempDir();
     writeFileSync(join(dir, ".gitignore"), "node_modules/\r\n.worktrees/\r\n");
 
-    expect(ensureGitignore(dir)).toEqual([".factory/runs/", ".factory/factory.db*"]);
+    expect(ensureGitignore(dir)).toEqual([".factory/runs/", ".factory/factory.db*", ".factory/drafts/"]);
     const text = readFileSync(join(dir, ".gitignore"), "utf8");
     expect(text.startsWith("node_modules/\r\n.worktrees/\r\n")).toBe(true);
     expect(text.replace(/\r\n/g, "")).not.toContain("\n");
