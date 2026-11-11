@@ -38,3 +38,12 @@ export function withProject<T>(cwd: string, fn: (ctx: ProjectContext) => T, run?
     ctx.store.close();
   }
 }
+
+export async function withProjectAsync<T>(cwd: string, fn: (ctx: ProjectContext) => Promise<T>, run?: CommandRunner): Promise<T> {
+  const ctx = openProject(cwd, run);
+  try {
+    return await fn(ctx);
+  } finally {
+    ctx.store.close();
+  }
+}

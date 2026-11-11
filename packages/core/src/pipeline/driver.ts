@@ -6,6 +6,7 @@ import {
   parseVerdict,
   type AgentRole,
   type FactoryConfig,
+  type Gate,
   type ParsedVerdict,
   type RunState,
   type VerdictKind,
@@ -27,6 +28,15 @@ export const RUNS_DIR = join(".factory", "runs");
 export const DEFAULT_PORT_BASE = 4700;
 const LEASE_TTL_MS = 15 * 60_000;
 const LEASE_RENEW_MS = 60_000;
+
+/**
+ * Where approving a waiting gate sends the run. Triage goes straight to build until the spec
+ * critic exists; review stays in review until reviews are automated (phase 3).
+ */
+export const APPROVE_TARGET: Partial<Record<Gate, RunState>> = {
+  triage: "build",
+  review: "review",
+};
 
 export function runDirOf(root: string, runId: string): string {
   return join(root, RUNS_DIR, runId);

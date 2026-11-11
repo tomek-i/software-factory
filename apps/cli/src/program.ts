@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
+import { runApprove, runCancel, runLogs, runReject, runRun, runStatus } from "./commands/runs.js";
 
 export function buildProgram(): Command {
   const program = new Command()
@@ -45,6 +46,59 @@ export function buildProgram(): Command {
     .argument("<numbers...>", "issue numbers")
     .action((numbers: string[]) => {
       console.log(runQueue(process.cwd(), numbers, false));
+    });
+
+  program
+    .command("run")
+    .description("run a queued issue through the pipeline until it needs you")
+    .argument("<issue>", "issue number, e.g. 12 or #12")
+    .option("--unsafe", "lift hard rules for this run only (untrusted authors still wait for you)")
+    .action(async (issue: string, options: { unsafe?: boolean }) => {
+      console.log(await runRun(process.cwd(), issue, options));
+    });
+
+  program
+    .command("status")
+    .description("list runs")
+    .option("-a, --all", "include finished runs")
+    .action((options: { all?: boolean }) => {
+      console.log(runStatus(process.cwd(), options));
+    });
+
+  program
+    .command("logs")
+    .description("show a run's events and agent logs")
+    .argument("<run>", "run id, id prefix, or #issue")
+    .option("-f, --follow", "keep printing until the run stops")
+    .action(async (ref: string, options: { follow?: boolean }) => {
+      console.log(await runLogs(process.cwd(), ref, options));
+    });
+
+  program
+    .command("approve")
+    .description("let a run waiting at a gate continue")
+    .argument("<run>", "run id, id prefix, or #issue")
+    .option("-m, --message <text>", "why (stored with the decision)")
+    .action((ref: string, options: { message?: string }) => {
+      console.log(runApprove(process.cwd(), ref, options));
+    });
+
+  program
+    .command("reject")
+    .description("end a run waiting at a gate")
+    .argument("<run>", "run id, id prefix, or #issue")
+    .requiredOption("-m, --message <text>", "why (required, stored with the decision)")
+    .action((ref: string, options: { message: string }) => {
+      console.log(runReject(process.cwd(), ref, options));
+    });
+
+  program
+    .command("cancel")
+    .description("stop a run and its agent; the worktree is kept")
+    .argument("<run>", "run id, id prefix, or #issue")
+    .option("-m, --message <text>", "why (stored with the decision)")
+    .action((ref: string, options: { message?: string }) => {
+      console.log(runCancel(process.cwd(), ref, options));
     });
 
   return program;
