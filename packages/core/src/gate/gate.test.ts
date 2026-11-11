@@ -1,11 +1,14 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseVerdict } from "@factory/shared";
-import { git, repoWithRemote } from "../../test/helpers.js";
+import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "../../test/helpers.js";
 import { createWorktree } from "../git/worktrees.js";
 import { GateCancelledError, runQualityGate, type Check } from "./gate.js";
 import { scanDiffForSecrets } from "./secrets.js";
+
+// Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 // Built by concatenation so this file itself contains no secret-shaped strings.
 const FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE";

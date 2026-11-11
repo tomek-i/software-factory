@@ -1,11 +1,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { findRepoRoot, runDirOf, Store } from "@factory/core";
-import { repoWithRemote } from "../../../../packages/core/test/helpers.js";
+import { GIT_TEST_TIMEOUT, repoWithRemote } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
 import { showHint } from "./runs.js";
 import { runShow } from "./show.js";
+
+// Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n- read-only\n\n## Scope\nall of it\n";
