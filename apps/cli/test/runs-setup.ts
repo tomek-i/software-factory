@@ -25,10 +25,16 @@ export const BUILD: FakeStep = {
 export const prStates = new Map<number, PullRequestState>();
 /** PRs the fake GitHub merged. */
 export const merged: { number: number; head: string }[] = [];
+/** Ready-for-review PRs the fake GitHub opened (the lessons PR). */
+export const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
 export const github: GithubPort = {
   commentOnIssue: () => undefined,
   findPullRequest: () => undefined,
   createDraftPullRequest: () => 7,
+  createPullRequest: (pr) => {
+    readyPrs.push(pr);
+    return 8;
+  },
   updatePullRequest: () => undefined,
   markReady: () => undefined,
   mergePullRequest: (number, head) => {
@@ -41,6 +47,7 @@ export const github: GithubPort = {
 export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
   prStates.clear();
   merged.length = 0;
+  readyPrs.length = 0;
   const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  review: human\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;

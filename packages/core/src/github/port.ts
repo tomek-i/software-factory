@@ -23,6 +23,8 @@ export interface GithubPort {
   findPullRequest(branch: string): number | undefined;
   /** Open a draft PR and return its number. */
   createDraftPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
+  /** Open a PR that is ready for review (not a draft) and return its number. */
+  createPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
   /** Replace a PR's description. */
   updatePullRequest(number: number, body: string): void;
   pullRequestState(number: number): PullRequestState;
@@ -45,6 +47,17 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     if (result.code !== 0) throw new GithubError(`gh ${args.slice(0, 2).join(" ")} failed: ${result.stderr || "unknown error"}`);
     return result.stdout;
   };
+  // From a file: a long description can exceed the Windows command-line limit (~32k characters).
+  const withBodyFile = <T>(body: string, fn: (file: string) => T): T => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-pr-"));
+    try {
+      const file = join(dir, "body.md");
+      writeFileSync(file, body);
+      return fn(file);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
   return {
     commentOnIssue(issueNumber, body) {
       gh(["issue", "comment", String(issueNumber), "-R", repo, "--body", body]);
@@ -62,6 +75,12 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     createDraftPullRequest({ head, base, title, body }) {
       // gh prints the new PR's URL.
       const out = gh(["pr", "create", "-R", repo, "--draft", "--head", head, "--base", base, "--title", title, "--body", body]);
+      const match = /\/pull\/(\d+)/.exec(out);
+      if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      return Number(match[1]);
+    },
+    createPullRequest({ head, base, title, body }) {
+      const out = withBodyFile(body, (file) => gh(["pr", "create", "-R", repo, "--head", head, "--base", base, "--title", title, "--body-file", file]));
       const match = /\/pull\/(\d+)/.exec(out);
       if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       return Number(match[1]);
@@ -88,15 +107,7 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       gh(["pr", "merge", String(number), "-R", repo, "--merge", "--match-head-commit", head]);
     },
     updatePullRequest(number, body) {
-      // From a file: a long description can exceed the Windows command-line limit (~32k characters).
-      const dir = mkdtempSync(join(tmpdir(), "factory-pr-"));
-      try {
-        const file = join(dir, "body.md");
-        writeFileSync(file, body);
-        gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
+      withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));
     },
   };
 }

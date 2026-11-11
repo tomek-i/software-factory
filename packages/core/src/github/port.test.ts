@@ -24,6 +24,21 @@ describe("ghPort", () => {
     expect(calls[0]).toEqual(["pr", "create", "-R", "o/r", "--draft", "--head", "factory/1-x", "--base", "main", "--title", "T", "--body", "B"]);
   });
 
+  it("opens a ready (non-draft) PR with its description from a file, which it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "https://github.com/o/r/pull/43\n", stderr: "" };
+    };
+    expect(ghPort(project, run).createPullRequest({ head: "factory/lessons-1", base: "main", title: "T", body: "B" })).toBe(43);
+    expect(calls[0]!.slice(0, -1)).toEqual(["pr", "create", "-R", "o/r", "--head", "factory/lessons-1", "--base", "main", "--title", "T", "--body-file"]);
+    expect(sent).toBe("B");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
+    expect(() => ghPort(project, fakeGh("created").run).createPullRequest({ head: "h", base: "b", title: "t", body: "" })).toThrow(/unexpected output/);
+  });
+
   it("replaces a PR's description from a file, which it removes afterwards", () => {
     let sent = "";
     const calls: string[][] = [];

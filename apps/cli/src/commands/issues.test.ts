@@ -101,6 +101,7 @@ describe("issue commands", () => {
       commentOnIssue: () => undefined,
       findPullRequest: () => undefined,
       createDraftPullRequest: () => 1,
+      createPullRequest: () => 1,
       updatePullRequest: () => undefined,
     markReady: () => undefined,
     mergePullRequest: () => undefined,

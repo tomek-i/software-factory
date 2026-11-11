@@ -15,6 +15,7 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>) {
     commentOnIssue: () => undefined,
     findPullRequest: () => undefined,
     createDraftPullRequest: () => 1,
+    createPullRequest: () => 1,
     updatePullRequest: () => undefined,
     markReady: () => undefined,
     mergePullRequest: () => undefined,
