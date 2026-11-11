@@ -7,7 +7,7 @@ It runs in two modes on one engine:
 - **CLI mode**: install into a single repo and drive it from the terminal.
 - **Web mode** *(planned)*: a local dashboard that manages several repos, syncs GitHub issues both ways and runs issues in parallel.
 
-> Status: early development. Phase 1 (foundation + `factory init`) is in place. The pipeline itself is not wired up yet.
+> Status: early development. Phase 1 (foundation, `factory init`, local issue queue) is in place. The pipeline itself is not wired up yet.
 
 ## Pipeline
 
@@ -44,9 +44,24 @@ node <path-to-this-repo>/apps/cli/dist/main.js init
 - writes `.factory/lessons.md`, which agents read before every run.
 - adds runtime state (`.factory/runs/`, `.factory/factory.db*`, `.worktrees/`) to `.gitignore`.
 - registers the project in `.factory/factory.db`.
-- creates the `factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human` and `factory:unsafe` labels on GitHub (skip with `--no-labels`).
+- creates GitHub status labels only if you enabled `github.status_labels` (off by default; see below).
 
 It is safe to re-run. An existing config is never overwritten.
+
+### Choosing what the factory works on
+
+Work is picked **locally**, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
+
+```sh
+factory sync               # pull open issues from GitHub into .factory/factory.db
+factory issues             # list them (Q marks queued issues); --queued, --all
+factory queue 12 15 #18    # queue issues for the factory (fetches unsynced ones)
+factory unqueue 15         # take one back out
+```
+
+Issues closed on GitHub drop out of the queue on the next sync. Issue text is still treated as untrusted data by the agents, because anyone can write an issue.
+
+**Status labels (optional).** With `github.status_labels: true`, the factory mirrors run status onto the issue (`factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human`, `factory:unsafe`). They are display-only and never read as input. Run `factory init` again after enabling them to create the labels.
 
 ## Configuration
 
@@ -61,6 +76,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
 | `models` | Default model and per-role overrides |
+| `github` | Optional status labels, sync interval, daily start limit |
 
 ## Development
 
@@ -76,6 +92,6 @@ Layout:
 
 ```
 apps/cli          the `factory` command
-packages/core     engine: config, SQLite store, state machine, gates, init
+packages/core     engine: config, SQLite store, state machine, gates, init, GitHub issue sync
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```
