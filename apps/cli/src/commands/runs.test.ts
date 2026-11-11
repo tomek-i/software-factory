@@ -152,9 +152,12 @@ describe("factory run with several issues", () => {
   it("drives them at the same time and prefixes every line with its issue", async () => {
     const { dir, deps, queue, printed, db, projectId } = setup([SLOW_TRIAGE, SLOW_TRIAGE], "triage: human");
     queue(12, 13);
+    const listeners = process.listenerCount("SIGINT");
 
     const message = await runRun(dir, ["12", "13", "12"], {}, deps);
 
+    // The shared Ctrl+C handler is gone once the last run finishes.
+    expect(process.listenerCount("SIGINT")).toBe(listeners);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(/^\[#12\] Run run-12-\w+ is waiting at the triage gate/);
     expect(lines.filter((l) => l.startsWith("[#13] Run run-13-")).length).toBe(1);
@@ -189,6 +192,17 @@ describe("factory run with several issues", () => {
     const message = (error as CliError).message;
     expect(message).toMatch(/\[#12\] Run run-12-\w+ is waiting at the triage gate/);
     expect(message).toContain("[#13] Skipped: Issue #13 is closed.");
+  });
+
+  it("starts no more runs once the usage limit is reached", async () => {
+    const { dir, deps, queue, fake } = setup([{ stream: "rate_limited" }], "triage: human", "concurrency:\n  max_runs: 1\n");
+    queue(12, 13);
+
+    const message = await runRun(dir, ["12", "13"], {}, deps);
+
+    expect(message).toMatch(/^\[#12\] Usage limit reached/);
+    expect(message).toContain("[#13] Not started: the usage limit was reached. Run `factory run 13` after it resets.");
+    expect(fake.calls()).toHaveLength(1);
   });
 
   it("checks every number before queueing or starting anything", async () => {

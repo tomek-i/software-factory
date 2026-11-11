@@ -192,13 +192,23 @@ async function runMany(
   const defaultBranch = workingConfig.project.default_branch;
   const limit = loadTrustedConfig(trustedReader(project.repo_path, defaultBranch, deps.run), defaultBranch).concurrency.max_runs;
   const pending = [...ready];
+  let limited = false;
   const worker = async () => {
     for (let n = pending.shift(); n !== undefined; n = pending.shift()) {
       try {
-        results.set(n, prefix(n)(await driveIssue(store, project, workingConfig, n, options, depsFor(n))));
+        const message = await driveIssue(store, project, workingConfig, n, options, depsFor(n), (outcome) => {
+          if (outcome.kind === "rate_limited") limited = true;
+        });
+        results.set(n, prefix(n)(message));
       } catch (err) {
         results.set(n, prefix(n)(`Failed: ${(err as Error).message}`));
         failed = true;
+      }
+      // Starting more runs after the usage limit would only create runs that stop straight away.
+      if (limited) {
+        for (const waiting of pending.splice(0)) {
+          results.set(waiting, prefix(waiting)(`Not started: the usage limit was reached. Run \`factory run ${waiting}\` after it resets.`));
+        }
       }
     }
   };
@@ -236,6 +246,7 @@ async function driveIssue(
   number: number,
   options: { unsafe?: boolean },
   deps: RunDeps,
+  onOutcome?: (outcome: DriveOutcome) => void,
 ): Promise<string> {
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
@@ -285,6 +296,7 @@ async function driveIssue(
   interrupts.add(stop);
   try {
     const outcome = await driver.drive(run.id);
+    onOutcome?.(outcome);
     return describeOutcome(outcome, store.getRun(run.id)!, number, style);
   } finally {
     interrupts.delete(stop);
