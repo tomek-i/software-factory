@@ -23,7 +23,7 @@ import {
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
@@ -135,7 +135,7 @@ function ensureQueued(store: Store, project: Project, config: FactoryConfig, num
   if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
   store.setQueued(project.id, number, true);
   print(`Queued #${number} ${issue.title}`);
-  if (!isTrustedAuthor(config, issue.author)) print(UNTRUSTED_NOTE);
+  if (!isTrustedIssue(config, issue)) print(UNTRUSTED_NOTE);
   return store.getIssue(project.id, number)!;
 }
 

@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import {
   isBlocking,
   isTerminal,
-  isTrustedAuthor,
+  isTrustedIssue,
   parseVerdict,
   REVIEW_LENSES,
   resolveModel,
@@ -429,7 +429,7 @@ export class PipelineDriver {
     const issue = this.issueOf(run);
     const dir = this.runDir(run);
     mkdirSync(dir, { recursive: true });
-    const trusted = isTrustedAuthor(this.deps.config, issue.author);
+    const trusted = isTrustedIssue(this.deps.config, issue);
     writeFileSync(
       join(dir, "issue.md"),
       [`# #${issue.number}: ${issue.title}`, "", `Author: @${issue.author} (${trusted ? "trusted" : "NOT trusted"})`, `URL: ${issue.url}`, "", issue.body, ""].join("\n"),
@@ -442,7 +442,7 @@ export class PipelineDriver {
     const issue = this.issueOf(run);
     const dir = this.runDir(run);
     const root = this.deps.project.repo_path;
-    const trusted = isTrustedAuthor(this.deps.config, issue.author);
+    const trusted = isTrustedIssue(this.deps.config, issue);
     const outputFile = join(dir, "triage.md");
     const files = writeRoleFiles(dir, "triage", rolePrompt("triage", this.deps.read), permissionProfile("triage", { runDirFromCwd: relative(root, dir) }));
 
@@ -528,7 +528,7 @@ export class PipelineDriver {
           workDir: worktree.path,
           outputFile,
           issue: this.issueText(issue),
-          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          trusted: isTrustedIssue(this.deps.config, issue),
           lessons: this.lessons(),
           branch: worktree.branch,
           defaultBranch: this.defaultBranch,
@@ -981,7 +981,7 @@ export class PipelineDriver {
           workDir: worktree.path,
           outputFile,
           issue: this.issueText(issue),
-          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          trusted: isTrustedIssue(this.deps.config, issue),
           lessons: this.lessons(),
           branch: worktree.branch,
           defaultBranch: this.defaultBranch,
@@ -1043,7 +1043,7 @@ export class PipelineDriver {
           workDir: worktree.path,
           outputFile,
           issue: this.issueText(issue),
-          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          trusted: isTrustedIssue(this.deps.config, issue),
           lessons: this.lessons(),
           branch: worktree.branch,
           defaultBranch: this.defaultBranch,
@@ -1129,7 +1129,7 @@ export class PipelineDriver {
           workDir: worktree.path,
           outputFile,
           issue: this.issueText(issue),
-          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          trusted: isTrustedIssue(this.deps.config, issue),
           lessons: this.lessons(),
           branch: worktree.branch,
           defaultBranch: this.defaultBranch,

@@ -125,4 +125,10 @@ export const MIGRATIONS: readonly string[] = [
     ELSE build_iterations + 1
   END;
   `,
+  // created_by_factory: the factory itself opened the issue on GitHub (`factory new`), from the
+  // operator's own idea, so its text counts as trusted whoever the gh login is. Only set locally,
+  // never read from GitHub, so a sync cannot set or clear it.
+  `
+  ALTER TABLE issues ADD COLUMN created_by_factory INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

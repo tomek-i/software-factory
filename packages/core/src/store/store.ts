@@ -114,15 +114,21 @@ export interface Issue {
   synced_at: string;
   queued_at: string | null;
   queue_seq: number | null;
+  /** The factory opened this issue itself (`factory new`), so it counts as trusted. */
+  created_by_factory: boolean;
 }
 
 /** An issue as fetched from GitHub, before local bookkeeping is added. */
-export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq">;
+export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq" | "created_by_factory">;
 
 type RunRow = Omit<Run, "unsafe"> & { unsafe: number };
-type IssueRow = Omit<Issue, "labels"> & { labels: string };
+type IssueRow = Omit<Issue, "labels" | "created_by_factory"> & { labels: string; created_by_factory: number };
 
-const toIssue = (row: IssueRow): Issue => ({ ...row, labels: JSON.parse(row.labels) as string[] });
+const toIssue = (row: IssueRow): Issue => ({
+  ...row,
+  labels: JSON.parse(row.labels) as string[],
+  created_by_factory: row.created_by_factory === 1,
+});
 
 const now = () => new Date().toISOString();
 
@@ -286,6 +292,17 @@ export class Store {
         .run(projectId, number);
     }
     return this.getIssue(projectId, number)!;
+  }
+
+  /**
+   * Record that the factory opened this issue on GitHub itself. A local fact: upsertIssue never
+   * touches it, so syncing the issue from GitHub again keeps it.
+   */
+  markCreatedByFactory(projectId: string, number: number): void {
+    const result = this.db
+      .prepare("UPDATE issues SET created_by_factory = 1 WHERE project_id = ? AND number = ?")
+      .run(projectId, number);
+    if (result.changes !== 1) throw new Error(`issue #${number} is not synced yet`);
   }
 
   // ---- runs ---------------------------------------------------------------
