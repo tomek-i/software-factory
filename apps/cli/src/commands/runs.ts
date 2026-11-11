@@ -9,9 +9,11 @@ import {
   ghPort,
   killTree,
   loadTrustedConfig,
+  nextAfterTriage,
   PipelineDriver,
   RunMachine,
   resumeTargets,
+  runDirOf,
   trustedReader,
   waitingCommit,
   type CommandRunner,
@@ -83,7 +85,7 @@ function formatEvent(event: FactoryEvent, style: Style): string | undefined {
 }
 
 /** The verdict file a gate is about, as a `factory show` short name. */
-const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage" };
+const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage", critic: "critic" };
 
 /** "See it with: `factory show ...`" for a run waiting at a gate, naming the file the gate is about. */
 export function showHint(run: Pick<Run, "id" | "waiting_gate">): string {
@@ -448,7 +450,8 @@ export async function runApprove(
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
-      const to = approveTarget(target);
+      // An approved triage goes where it would have gone on its own: refine, the spec critic or build.
+      const to = approveTarget(target, nextAfterTriage(runDirOf(project.repo_path, target.id), config));
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
       // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
