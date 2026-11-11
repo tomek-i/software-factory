@@ -7,5 +7,7 @@ export default defineConfig({
   },
   test: {
     include: ["{apps,packages}/*/src/**/*.test.ts"],
+    // Several suites drive real git repos and child processes, which are slow on Windows.
+    testTimeout: 30_000,
   },
 });
