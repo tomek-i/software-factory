@@ -2,3 +2,8 @@ export * from "./config/load.js";
 export * from "./store/store.js";
 export * from "./pipeline/gates.js";
 export * from "./pipeline/transitions.js";
+export * from "./init/detect.js";
+export * from "./init/init.js";
+export * from "./github/labels.js";
+export * from "./util/exec.js";
+export * from "./util/git.js";
