@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCommand, type CommandRunner } from "@factory/core";
 import { runInit } from "./init.js";
+import { createStyle, styleFor } from "../style.js";
 import { runIssues, runQueue, runSync } from "./issues.js";
+
+// eslint-disable-next-line no-control-regex -- matching escape characters is the point
+const strip = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
 const issue = (number: number, state = "OPEN", author = "alice") => ({
   number,
@@ -70,6 +74,21 @@ describe("issue commands", () => {
     expect(runQueue(dir, ["5", "9", "404"], true, run)).toBe(
       "Queued #5 Issue 5\nSkipped #9: issue #9 is closed\nSkipped #404: gh issue view failed: Could not resolve to an issue",
     );
+  });
+
+  it("styles the list without changing its text or alignment, and not at all with NO_COLOR or a pipe", () => {
+    const dir = repo();
+    runSync(dir, run);
+    runQueue(dir, ["10"], true, run);
+
+    const coloured = runIssues(dir, {}, run, createStyle(true));
+    expect(coloured).toContain("\x1b[");
+    expect(strip(coloured)).toBe(runIssues(dir, {}, run));
+    expect(strip(coloured)).toContain("  #2   Issue 2  @mallory (untrusted)");
+
+    for (const style of [styleFor({ isTTY: true }, { NO_COLOR: "1" }), styleFor({ isTTY: false }, {})]) {
+      expect(runIssues(dir, {}, run, style)).toBe(runIssues(dir, {}, run));
+    }
   });
 
   it("rejects things that are not issue numbers", () => {

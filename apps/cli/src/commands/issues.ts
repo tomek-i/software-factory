@@ -1,6 +1,7 @@
 import { fetchIssue, syncIssues, type CommandRunner, type Issue } from "@factory/core";
 import { isTrustedAuthor, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
+import { plain, type Style } from "../style.js";
 
 export function runSync(cwd: string, run?: CommandRunner): string {
   return withProject(
@@ -14,15 +15,18 @@ export function runSync(cwd: string, run?: CommandRunner): string {
   );
 }
 
-function table(issues: Issue[], config: FactoryConfig): string {
+function table(issues: Issue[], config: FactoryConfig, style: Style): string {
   if (issues.length === 0) return "No issues.";
   const width = Math.max(...issues.map((i) => String(i.number).length)) + 1;
   return issues
     .map((i) => {
       const mark = i.queued_at ? "Q" : " ";
-      const closed = i.state === "closed" ? " (closed)" : "";
-      const trust = isTrustedAuthor(config, i.author) ? "" : " (untrusted)";
-      return `${mark} ${`#${i.number}`.padEnd(width)}  ${i.title}${closed}  @${i.author}${trust}`;
+      const number = `#${i.number}`;
+      // Pad the plain number, then style it, so the columns stay aligned.
+      const cell = style.detail(number) + " ".repeat(width - number.length);
+      const closed = i.state === "closed" ? ` ${style.detail("(closed)")}` : "";
+      const trust = isTrustedAuthor(config, i.author) ? "" : ` ${style.attention("(untrusted)")}`;
+      return `${mark} ${cell}  ${i.title}${closed}  @${i.author}${trust}`;
     })
     .join("\n");
 }
@@ -30,7 +34,12 @@ function table(issues: Issue[], config: FactoryConfig): string {
 export const UNTRUSTED_NOTE =
   "  author is not in trust.authors: the issue text is treated as untrusted data and triage will wait for your approval";
 
-export function runIssues(cwd: string, options: { queued?: boolean; all?: boolean }, run?: CommandRunner): string {
+export function runIssues(
+  cwd: string,
+  options: { queued?: boolean; all?: boolean },
+  run?: CommandRunner,
+  style: Style = plain,
+): string {
   return withProject(
     cwd,
     ({ store, project, config }) => {
@@ -40,7 +49,7 @@ export function runIssues(cwd: string, options: { queued?: boolean; all?: boolea
         queued: options.queued ? true : undefined,
       });
       const footer = options.queued ? "" : "\n\nQ = queued for the factory. Queue with `factory queue <number...>`.";
-      return table(issues, config) + (issues.length ? footer : "");
+      return table(issues, config, style) +(issues.length ? footer : "");
     },
     run,
   );

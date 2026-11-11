@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort } from "@factory/core";
 import { fakeClaude, git, repoWithRemote, type FakeStep } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
+import { createStyle, styleFor, type Style } from "../style.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./runs.js";
+
+const ESC = "\x1b[";
+// eslint-disable-next-line no-control-regex -- matching escape characters is the point
+const strip = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- fine\n";
 const BUILD: FakeStep = {
@@ -229,5 +234,50 @@ describe("approve / reject / cancel", () => {
     const { dir } = setup([]);
     await expect(runApprove(dir, "run-nope", {})).rejects.toThrow(/No run "run-nope"/);
     await expect(runApprove(dir, "#99", {})).rejects.toThrow(/No run for issue #99/);
+  });
+});
+
+describe("colour", () => {
+  it("only styles the text: colour on, the plain text is unchanged; NO_COLOR or a pipe gives no escape codes", async () => {
+    const colour = createStyle(true);
+    const { queue, dir, printed, deps } = setup([{ output: TRIAGE }, BUILD]);
+    queue();
+
+    const message = await runRun(dir, "12", {}, { ...deps, style: colour });
+
+    expect(message).toContain(ESC);
+    expect(printed.join("\n")).toContain(ESC);
+    const lines = printed.map(strip);
+    expect(lines).toEqual(expect.arrayContaining(["-> triage: issue loaded", "-> build: triage approved"]));
+    expect(lines.some((l) => /^Run run-12-\w+ \([a-z_]+\) for #12 Add the feature$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\[gate\] ok: passed \(\d+\.\ds\)$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\[builder\] ok \(\$0\.04\)$/.test(l))).toBe(true);
+    expect(strip(message)).toMatch(
+      /^Run run-12-\w+ is waiting at the review gate: .+\nSee it with: `factory show run-12-\w+ build`\.\nApprove with `factory approve run-12-\w+`, or reject with `factory reject run-12-\w+ -m "<why>"`\.$/,
+    );
+
+    // status keeps its columns aligned: stripping the codes gives exactly the plain table.
+    const status = runStatus(dir, { all: true }, undefined, colour);
+    expect(status).toContain(ESC);
+    expect(strip(status)).toBe(runStatus(dir, { all: true }));
+
+    const logs = await runLogs(dir, "#12", {}, { style: colour });
+    expect(logs).toContain(ESC);
+    expect(strip(logs)).toBe(await runLogs(dir, "#12", {}));
+
+    const follow = async (style?: Style) => {
+      const out: string[] = [];
+      const end = await runLogs(dir, "#12", { follow: true, intervalMs: 10 }, { print: (l) => out.push(l), style });
+      return [...out, end];
+    };
+    const followed = await follow(colour);
+    expect(followed.join("\n")).toContain(ESC);
+    expect(followed.map(strip)).toEqual(await follow());
+
+    for (const style of [styleFor({ isTTY: true }, { NO_COLOR: "1" }), styleFor({ isTTY: false }, {})]) {
+      expect(runStatus(dir, { all: true }, undefined, style)).not.toContain(ESC);
+      expect(await runLogs(dir, "#12", {}, { style })).not.toContain(ESC);
+      expect((await follow(style)).join("\n")).not.toContain(ESC);
+    }
   });
 });
