@@ -94,6 +94,15 @@ describe("RunMachine.transition", () => {
     expect(move("critic").state).toBe("critic");
   });
 
+  it("can go from an approved triage straight to build", () => {
+    const { at, move } = setup();
+    at("triage");
+    expect(() => move("build", fakeEvidence({ files: { triage: FILES.triage.replace("APPROVE", "NEEDS_INFO") } }))).toThrow(
+      /did not APPROVE/,
+    );
+    expect(move("build").state).toBe("build");
+  });
+
   it("only builds once the spec critic accepted", () => {
     const { at, move } = setup();
     at("critic");
@@ -284,7 +293,12 @@ describe("RunMachine.resume", () => {
   it("never lets a human jump over stages", () => {
     const { machine, run } = parked();
     expect(resumeTargets({ parked_from: "gate" })).not.toContain("merge");
-    expect(() => machine.resume(run.id, "merge", { comment: "ship it" })).toThrow(/one stage past/);
+    expect(() => machine.resume(run.id, "merge", { comment: "ship it" })).toThrow(/one step onward/);
+  });
+
+  it("lets a human approve triage straight into build while there is no spec critic", () => {
+    expect(resumeTargets({ parked_from: "triage" })).toEqual(expect.arrayContaining(["intake", "triage", "build", "critic"]));
+    expect(resumeTargets({ parked_from: "triage" })).not.toContain("gate");
   });
 
   it("can send work back with a fresh loop budget", () => {
@@ -306,5 +320,27 @@ describe("RunMachine.resume", () => {
     const { machine, store, run } = parked(null);
     expect(machine.resume(run.id, "rejected", { comment: "not worth it" }).state).toBe("rejected");
     expect(store.listDecisions(run.id)).toMatchObject([{ gate: "escalation", outcome: "reject" }]);
+  });
+});
+
+describe("RunMachine.cancel", () => {
+  it("stops an active run even while another worker holds its lease", () => {
+    const { machine, store, run, at } = setup();
+    at("build");
+    expect(store.acquireLease(run.id, "worker-1", 60_000)).toBe(true);
+
+    const cancelled = machine.cancel(run.id, "wrong approach");
+
+    expect(cancelled).toMatchObject({ state: "cancelled", lease_owner: null });
+    expect(store.listDecisions(run.id)).toMatchObject([{ gate: "escalation", outcome: "reject", actor: "human" }]);
+    expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "build", to_state: "cancelled" });
+    expect(() => machine.transition(run.id, "gate", { reason: "late", owner: "worker-1" })).toThrow(TransitionError);
+  });
+
+  it("needs a comment and an unfinished run", () => {
+    const { machine, run, at } = setup();
+    expect(() => machine.cancel(run.id, "")).toThrow(/comment/);
+    at("done");
+    expect(() => machine.cancel(run.id, "x")).toThrow(/already done/);
   });
 });

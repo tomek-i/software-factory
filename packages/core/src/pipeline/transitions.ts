@@ -15,7 +15,8 @@ import type { Run, RunPatch, StatePatch, Store } from "../store/store.js";
  */
 const FORWARD: Partial<Record<RunState, readonly RunState[]>> = {
   intake: ["triage"],
-  triage: ["refine", "critic", "rejected", "needs_info"],
+  // triage -> build skips refine and the spec critic, which do not exist yet (phase 3).
+  triage: ["refine", "critic", "build", "rejected", "needs_info"],
   refine: ["critic", "needs_info"],
   critic: ["refine", "build", "rejected"],
   build: ["gate"],
@@ -37,13 +38,15 @@ export function allowedTargets(from: RunState): RunState[] {
 }
 
 /**
- * Stages a human may resume a parked run into: anything up to one step past where it was parked.
- * That lets a human approve a gate (move on) or send work back, but never jump over stages.
+ * Stages a human may resume a parked run into: back to any stage up to where it was parked, or
+ * onward along one of that stage's own edges. That lets a human approve a gate (move on) or send
+ * work back, but never jump over stages.
  */
 export function resumeTargets(run: Pick<Run, "parked_from">): RunState[] {
-  const parkedIndex = run.parked_from ? STAGES.indexOf(run.parked_from as Stage) : 0;
-  const limit = parkedIndex === -1 ? 0 : parkedIndex + 1;
-  return [...STAGES.slice(0, limit + 1), "rejected", "cancelled"];
+  const parked = run.parked_from && STAGES.includes(run.parked_from as Stage) ? (run.parked_from as Stage) : "intake";
+  const back = STAGES.slice(0, STAGES.indexOf(parked) + 1);
+  const onward = (FORWARD[parked] ?? []).filter((s) => STAGES.includes(s as Stage));
+  return [...new Set<RunState>([...back, ...onward, "rejected", "cancelled"])];
 }
 
 /** Facts about the run's worktree and output files, injected so guards stay testable. */
@@ -105,6 +108,7 @@ function reviewsClear(evidence: Evidence): string[] {
 const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
   "triage->refine": ({ evidence }) => triageApproved(evidence),
   "triage->critic": ({ evidence }) => triageApproved(evidence),
+  "triage->build": ({ evidence }) => triageApproved(evidence),
   "critic->build": ({ evidence }) =>
     evidence.verdict("critic").header.VERDICT === "ACCEPT" ? [] : ["spec critic did not ACCEPT"],
   "critic->refine": ({ run, config, evidence }) => [
@@ -232,7 +236,7 @@ export class RunMachine {
     if (!options.comment.trim()) throw new TransitionError(runId, from, to, ["a comment explaining the decision is required"]);
     if (!resumeTargets(run).includes(to)) {
       throw new TransitionError(runId, from, to, [
-        `run was parked in ${run.parked_from ?? "an unknown stage"}; it can resume up to one stage past that`,
+        `run was parked in ${run.parked_from ?? "an unknown stage"}; it can go back, or one step onward from there`,
       ]);
     }
 
@@ -257,6 +261,27 @@ export class RunMachine {
         gate,
         resetLoops: !!options.resetLoops,
       });
+    });
+  }
+
+  /**
+   * A human stops a run in any active state. Unlike other moves this ignores the lease: the worker
+   * holding it may be the very thing being stopped, and its next move will fail on the changed state.
+   */
+  cancel(runId: string, comment: string): Run {
+    const run = this.load(runId);
+    if (isTerminal(run.state)) throw new TransitionError(runId, run.state, "cancelled", [`run is already ${run.state}`]);
+    if (!comment.trim()) throw new TransitionError(runId, run.state, "cancelled", ["a comment explaining the decision is required"]);
+    return this.commit(run, "cancelled", { waiting_gate: null, ...releaseIfTerminal("cancelled") }, () => {
+      this.store.recordDecision({
+        run_id: runId,
+        gate: run.waiting_gate ?? "escalation",
+        mode: "human",
+        outcome: "reject",
+        actor: "human",
+        comment,
+      });
+      this.store.appendEvent(runId, run.state, "cancelled", `human: ${comment}`);
     });
   }
 

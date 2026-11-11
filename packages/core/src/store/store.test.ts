@@ -74,3 +74,43 @@ describe("Store", () => {
     expect(store.listDecisions(run.id)).toMatchObject([{ outcome: "approve", comment: "looks good" }]);
   });
 });
+
+describe("Store ports and agent runs", () => {
+  it("hands out the lowest free port block and reuses blocks of finished runs", () => {
+    const { store, project } = setup();
+    const a = store.createRun({ project_id: project.id, title: "a" });
+    const b = store.createRun({ project_id: project.id, title: "b" });
+    const c = store.createRun({ project_id: project.id, title: "c" });
+
+    expect(store.allocatePorts(a.id, 4700)).toBe(4700);
+    expect(store.allocatePorts(b.id, 4700)).toBe(4710);
+    expect(store.allocatePorts(a.id, 4700)).toBe(4700);
+
+    store.writeState(a.id, "cancelled");
+    expect(store.allocatePorts(c.id, 4700)).toBe(4700);
+  });
+
+  it("tracks agent runs and finds the latest session of a role", () => {
+    const { store, project } = setup();
+    const run = store.createRun({ project_id: project.id, title: "a" });
+    const first = store.startAgentRun({ run_id: run.id, role: "builder", model: "opus", session_id: "s1", log_dir: "/logs" });
+    store.setAgentPid(first.id, 1234);
+    expect(store.getAgentRun(first.id)).toMatchObject({ status: "running", pid: 1234 });
+    expect(first.log_path!.endsWith(`${first.id}.jsonl`)).toBe(true);
+
+    store.finishAgentRun(first.id, { status: "ok", cost_usd: 0.5 });
+    store.startAgentRun({ run_id: run.id, role: "builder", model: "opus", session_id: "s2", log_dir: "/logs" });
+    store.startAgentRun({ run_id: run.id, role: "triage", model: "opus", session_id: "t1", log_dir: "/logs" });
+
+    expect(store.getAgentRun(first.id)).toMatchObject({ status: "ok", cost_usd: 0.5, pid: null });
+    expect(store.latestSession(run.id, "builder")).toBe("s2");
+    expect(store.latestSession(run.id, "critic")).toBeUndefined();
+  });
+
+  it("updates bookkeeping fields without touching state", () => {
+    const { store, project } = setup();
+    const run = store.createRun({ project_id: project.id, title: "a" });
+    store.updateRunFields(run.id, { branch: "factory/1-a", pr_number: undefined });
+    expect(store.getRun(run.id)).toMatchObject({ branch: "factory/1-a", state: "intake", pr_number: null });
+  });
+});

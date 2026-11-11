@@ -7,7 +7,7 @@ It runs in two modes on one engine:
 - **CLI mode**: install into a single repo and drive it from the terminal.
 - **Web mode** *(planned)*: a local dashboard that manages several repos, syncs GitHub issues both ways and runs issues in parallel.
 
-> Status: early development. Phase 1 (foundation, `factory init`, local issue queue) is in place. The pipeline itself is not wired up yet.
+> Status: early development. A queued issue can run through triage, build and the quality gate loop to a draft PR (`factory run`). Refine, spec critic, reviews, capture and merge are not automated yet: a run that passes the quality gate waits for you to review its draft PR.
 
 ## Pipeline
 
@@ -61,6 +61,35 @@ factory unqueue 15         # take one back out
 
 Issues closed on GitHub drop out of the queue on the next sync.
 
+### Running an issue
+
+```sh
+factory run 12             # run queued issue #12 until it needs you; --unsafe lifts hard rules for this run only
+factory status             # active runs: state, round, cost, waiting gate; --all includes finished ones
+factory logs #12           # events and agent log excerpts; -f follows a running run
+factory approve <run>      # let a run waiting at a gate continue; -m "why"
+factory reject <run> -m "why"   # end a run waiting at a gate
+factory resume <run> --to build -m "why"   # send an escalated run back to a stage; --reset-loops for a fresh budget
+factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept
+```
+
+`<run>` is a run id, a unique prefix of one, or `#<issue>` for that issue's latest run.
+
+What `factory run` does today:
+
+1. **Triage**: an agent with no shell reads the issue and the code and writes `triage.md` (`APPROVE`, `REJECT` or `NEEDS_INFO`). Rejections and questions are posted on the issue. The `triage` gate then decides whether to continue. After the author answers, `factory run` again triages the issue again (run `factory sync` first so it sees an edited issue).
+2. **Build**: a builder agent works in its own worktree (`.worktrees/<run>`, branch `factory/<issue>-<slug>`, created from the latest `origin/<default branch>`) and commits. It cannot push. The engine scans every new commit for secrets (gitleaks if installed, otherwise built-in patterns) and sends the builder back if it finds one, so a leaked key never reaches GitHub. Then the engine pushes the branch (never forced) and opens a **draft** PR that closes the issue.
+3. **Quality gate**: the engine runs your `checks` on the pushed commit, plus the secret scan again. Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment. On failure the builder gets the report and tries again, up to `loops.max_build_iterations`, then the run waits for you.
+4. On a pass the run waits at the `review` gate: review the draft PR yourself.
+
+When a run escalates (agent failed, builder blocked, loop cap reached), `factory run` tells you why; send it on with `factory resume` or stop it with `factory cancel`. If your Claude usage limit is hit, the run stops where it is; run `factory run` again after the reset and it continues the same agent session. A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
+
+Run artifacts (issue, triage, build report, `round-N/checks.md` and `checks.log`, agent prompts, permission profiles and full stream logs) are in `.factory/runs/<run>/`.
+
+**What steers the agents is read from the default branch.** `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`, not from your working copy, so a checked-out branch cannot change its own checks, trust list, gates or prompts. Commit and push config changes before they take effect.
+
+**Agent permissions.** Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`), and ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`) so nothing outside the profile applies to an agent reading issue text. Triage can read the repo and write only its run folder. The builder can edit and use Bash but is denied `git push`, `gh pr`, `gh api` and edits to `.factory/`. Bash deny rules are prefix matches, so also protect your default branch on GitHub.
+
 ### Trusted authors
 
 Anyone who can open an issue can write text the agents will read, so the factory distinguishes trusted authors:
@@ -106,6 +135,9 @@ Layout:
 
 ```
 apps/cli          the `factory` command
-packages/core     engine: config, SQLite store, state machine, gates, init, GitHub issue sync
+packages/core     engine: config, SQLite store, state machine, gates, agent runner, prompts,
+                  worktrees, quality gate, pipeline driver, init, GitHub issue sync
+  prompts/        shipped role prompts (override per repo in .factory/prompts/<role>.md)
+  test/           fake `claude` binary and fixtures: tests never spend real usage
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```

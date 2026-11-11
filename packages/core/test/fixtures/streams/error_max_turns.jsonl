@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","cwd":"/repo","session_id":"{{SESSION_ID}}","tools":["Read"],"model":"claude-opus-5-5","permissionMode":"dontAsk","apiKeySource":"none"}
+{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pnpm test"}}],"usage":{"input_tokens":100,"output_tokens":20}},"session_id":"{{SESSION_ID}}"}
+{"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":90210,"num_turns":40,"session_id":"{{SESSION_ID}}","total_cost_usd":1.25,"usage":{"input_tokens":9000,"output_tokens":3000}}
