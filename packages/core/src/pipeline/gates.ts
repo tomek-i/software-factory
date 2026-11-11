@@ -6,8 +6,13 @@ export interface GateInput {
   agentDecision?: { decision: "PROCEED" | "ESCALATE"; reasons?: string[] };
   /** Hard-rule hits found in the diff (protected paths, new dependency, ...). */
   hardRuleHits: string[];
-  /** Per-run --unsafe flag. Never sourced from config. */
+  /** Per-run --unsafe flag. Never sourced from config. Lifts hard rules only. */
   unsafe: boolean;
+  /**
+   * Reasons that always need a human regardless of mode and --unsafe, e.g. the issue was written
+   * by an untrusted author, so its text may be trying to steer the agents.
+   */
+  forceHumanReasons?: string[];
 }
 
 export interface GateResult {
@@ -17,9 +22,10 @@ export interface GateResult {
 
 /** Decide whether a run may pass a gate or must wait for a human. */
 export function resolveGate(input: GateInput): GateResult {
-  if (input.hardRuleHits.length > 0 && !input.unsafe) {
-    return { outcome: "wait_human", reasons: input.hardRuleHits.map((h) => `hard rule: ${h}`) };
-  }
+  const forced = input.forceHumanReasons?.filter((r) => r.trim()) ?? [];
+  const hard = input.unsafe ? [] : input.hardRuleHits.map((h) => `hard rule: ${h}`);
+  if (forced.length || hard.length) return { outcome: "wait_human", reasons: [...forced, ...hard] };
+
   switch (input.mode) {
     case "always":
       return { outcome: "proceed", reasons: [] };

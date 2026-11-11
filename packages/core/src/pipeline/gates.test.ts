@@ -34,6 +34,17 @@ describe("resolveGate", () => {
     }
   });
 
+  it("always waits for a human on forced reasons such as an untrusted author, even when unsafe", () => {
+    expect(
+      resolveGate({
+        mode: "always",
+        hardRuleHits: [],
+        unsafe: true,
+        forceHumanReasons: ["issue author mallory is not trusted"],
+      }),
+    ).toEqual({ outcome: "wait_human", reasons: ["issue author mallory is not trusted"] });
+  });
+
   it("lifts hard rules only for unsafe runs, without skipping the gate mode", () => {
     expect(resolveGate({ mode: "always", hardRuleHits: ["new dependency"], unsafe: true }).outcome).toBe("proceed");
     expect(resolveGate({ mode: "human", hardRuleHits: ["new dependency"], unsafe: true }).outcome).toBe("wait_human");

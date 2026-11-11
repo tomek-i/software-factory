@@ -27,6 +27,8 @@ export interface Run {
   review_rounds: number;
   critic_rounds: number;
   waiting_gate: Gate | null;
+  /** The stage a run was in when it was parked for a human; bounds where it may resume. */
+  parked_from: RunState | null;
   lease_owner: string | null;
   lease_expires_at: string | null;
   created_at: string;
@@ -49,7 +51,8 @@ export type DecisionActor = "agent" | "human" | "system";
 export interface Decision {
   id: number;
   run_id: string;
-  gate: Gate;
+  /** The gate decided, or "escalation" when a human resolves a run parked outside a gate. */
+  gate: Gate | "escalation";
   mode: GateMode;
   outcome: DecisionOutcome;
   actor: DecisionActor;
@@ -58,20 +61,14 @@ export interface Decision {
   created_at: string;
 }
 
-/** Fields the state machine may change alongside a state transition. */
-export type RunPatch = Partial<
-  Pick<
-    Run,
-    | "branch"
-    | "worktree_path"
-    | "pr_number"
-    | "build_iterations"
-    | "review_rounds"
-    | "critic_rounds"
-    | "waiting_gate"
-    | "title"
-  >
->;
+/** Fields callers may change alongside a state transition. Loop counters are owned by the state machine. */
+export type RunPatch = Partial<Pick<Run, "branch" | "worktree_path" | "pr_number" | "waiting_gate" | "title">>;
+
+/** Everything the state machine itself may write. */
+export type StatePatch = RunPatch &
+  Partial<
+    Pick<Run, "build_iterations" | "review_rounds" | "critic_rounds" | "parked_from" | "lease_owner" | "lease_expires_at">
+  >;
 
 export interface Issue {
   project_id: string;
@@ -85,10 +82,11 @@ export interface Issue {
   gh_updated_at: string;
   synced_at: string;
   queued_at: string | null;
+  queue_seq: number | null;
 }
 
 /** An issue as fetched from GitHub, before local bookkeeping is added. */
-export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at">;
+export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq">;
 
 type RunRow = Omit<Run, "unsafe"> & { unsafe: number };
 type IssueRow = Omit<Issue, "labels"> & { labels: string };
@@ -122,26 +120,31 @@ export class Store {
   }
 
   private migrate(): void {
-    this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
-    const applied = new Set(
-      this.db
-        .prepare("SELECT version FROM schema_migrations")
-        .all()
-        .map((r) => (r as { version: number }).version),
-    );
-    MIGRATIONS.forEach((sql, index) => {
-      const version = index + 1;
-      if (applied.has(version)) return;
-      this.db.transaction(() => {
+    // IMMEDIATE takes the write lock up front, so several processes opening a fresh db
+    // wait on busy_timeout instead of failing on a read-then-write lock upgrade.
+    this.transaction(() => {
+      this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      const applied = new Set(
+        this.db
+          .prepare("SELECT version FROM schema_migrations")
+          .all()
+          .map((r) => (r as { version: number }).version),
+      );
+      MIGRATIONS.forEach((sql, index) => {
+        const version = index + 1;
+        if (applied.has(version)) return;
         this.db.exec(sql);
         this.db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)").run(version, now());
-      })();
+      });
     });
   }
 
-  /** Run fn atomically; nested calls join the outer transaction. */
+  /**
+   * Run fn atomically. BEGIN IMMEDIATE makes a transaction that reads then writes wait for other
+   * writers (busy_timeout) instead of failing with SQLITE_BUSY. Nested calls become savepoints.
+   */
   transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+    return this.db.transaction(fn).immediate();
   }
 
   // ---- projects -----------------------------------------------------------
@@ -189,17 +192,24 @@ export class Store {
            title = excluded.title, body = excluded.body, state = excluded.state, author = excluded.author,
            labels = excluded.labels, url = excluded.url, gh_updated_at = excluded.gh_updated_at,
            synced_at = excluded.synced_at,
-           queued_at = CASE WHEN excluded.state = 'closed' THEN NULL ELSE issues.queued_at END`,
+           queued_at = CASE WHEN excluded.state = 'closed' THEN NULL ELSE issues.queued_at END,
+           queue_seq = CASE WHEN excluded.state = 'closed' THEN NULL ELSE issues.queue_seq END`,
       )
       .run({ ...issue, project_id: projectId, labels: JSON.stringify(issue.labels), synced_at: now() });
   }
 
-  /** Mark open issues that GitHub no longer lists as open as closed, and drop them from the queue. */
-  closeIssuesExcept(projectId: string, openNumbers: number[]): number {
+  /**
+   * Mark open issues that GitHub no longer lists as open as closed, and drop them from the queue.
+   * Only rows last synced no later than `syncStartedAt` are touched, so an issue fetched while the
+   * sync's GitHub request was in flight (e.g. by `factory queue`) is not wrongly closed.
+   */
+  closeIssuesExcept(projectId: string, openNumbers: number[], syncStartedAt: string): number {
     const open = new Set(openNumbers);
-    const stale = this.listIssues({ project_id: projectId, state: "open" }).filter((i) => !open.has(i.number));
+    const stale = this.listIssues({ project_id: projectId, state: "open" }).filter(
+      (i) => !open.has(i.number) && i.synced_at <= syncStartedAt,
+    );
     const close = this.db.prepare(
-      "UPDATE issues SET state = 'closed', queued_at = NULL, synced_at = ? WHERE project_id = ? AND number = ?",
+      "UPDATE issues SET state = 'closed', queued_at = NULL, queue_seq = NULL, synced_at = ? WHERE project_id = ? AND number = ?",
     );
     for (const issue of stale) close.run(now(), projectId, issue.number);
     return stale.length;
@@ -220,7 +230,7 @@ export class Store {
       params.push(filter.state);
     }
     if (filter.queued !== undefined) where.push(filter.queued ? "queued_at IS NOT NULL" : "queued_at IS NULL");
-    const order = filter.queued ? "queued_at" : "number DESC";
+    const order = filter.queued ? "queue_seq" : "number DESC";
     const rows = this.db.prepare(`SELECT * FROM issues WHERE ${where.join(" AND ")} ORDER BY ${order}`).all(...params);
     return (rows as IssueRow[]).map(toIssue);
   }
@@ -231,9 +241,19 @@ export class Store {
     if (!issue) throw new Error(`issue #${number} is not synced yet`);
     if (queued && issue.state !== "open") throw new Error(`issue #${number} is closed`);
     if (queued && issue.queued_at) return issue;
-    this.db
-      .prepare("UPDATE issues SET queued_at = ? WHERE project_id = ? AND number = ?")
-      .run(queued ? now() : null, projectId, number);
+    if (queued) {
+      this.db
+        .prepare(
+          `UPDATE issues SET queued_at = ?,
+             queue_seq = (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM issues WHERE project_id = ?)
+           WHERE project_id = ? AND number = ?`,
+        )
+        .run(now(), projectId, projectId, number);
+    } else {
+      this.db
+        .prepare("UPDATE issues SET queued_at = NULL, queue_seq = NULL WHERE project_id = ? AND number = ?")
+        .run(projectId, number);
+    }
     return this.getIssue(projectId, number)!;
   }
 
@@ -273,13 +293,19 @@ export class Store {
     return (this.db.prepare(sql).all(...params) as RunRow[]).map((r) => toRun(r)!);
   }
 
-  /** Low-level write used only by the state machine. Does not validate the transition. */
-  writeState(id: string, state: RunState, patch: RunPatch = {}): void {
-    const fields = Object.keys(patch) as (keyof RunPatch)[];
-    const sets = ["state = @state", "updated_at = @updated_at", ...fields.map((f) => `${f} = @${f}`)];
-    this.db
-      .prepare(`UPDATE runs SET ${sets.join(", ")} WHERE id = @id`)
-      .run({ ...patch, id, state, updated_at: now() });
+  /**
+   * Low-level write used only by the state machine; it does not validate the transition.
+   * With `expected`, the write is a compare-and-set that only applies if the run is still in that
+   * state, returning false when another writer got there first. Undefined patch values are ignored.
+   */
+  writeState(id: string, state: RunState, patch: StatePatch = {}, expected?: RunState): boolean {
+    const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    const sets = ["state = @state", "updated_at = @updated_at", ...Object.keys(defined).map((f) => `${f} = @${f}`)];
+    const where = expected === undefined ? "id = @id" : "id = @id AND state = @expected";
+    const result = this.db
+      .prepare(`UPDATE runs SET ${sets.join(", ")} WHERE ${where}`)
+      .run({ ...defined, id, state, expected: expected ?? null, updated_at: now() });
+    return result.changes === 1;
   }
 
   // ---- leases -------------------------------------------------------------

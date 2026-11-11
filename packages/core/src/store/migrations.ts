@@ -93,4 +93,10 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX issues_queued ON issues(project_id, queued_at);
   `,
+  // parked_from limits where a human can resume a parked run; queue_seq gives a total queue order
+  // (queued_at alone ties when several issues are queued in the same millisecond).
+  `
+  ALTER TABLE runs ADD COLUMN parked_from TEXT;
+  ALTER TABLE issues ADD COLUMN queue_seq INTEGER;
+  `,
 ];

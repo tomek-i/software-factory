@@ -4,13 +4,14 @@ import {
   type FactoryConfig,
   type ParsedVerdict,
   type RunState,
+  type Stage,
   type VerdictKind,
 } from "@factory/shared";
-import type { Run, RunPatch, Store } from "../store/store.js";
+import type { Run, RunPatch, StatePatch, Store } from "../store/store.js";
 
 /**
- * Forward edges of the pipeline. Every non-terminal state may additionally move to
- * needs_human, failed or cancelled; needs_human may resume into any stage.
+ * Forward edges of the pipeline. Every non-terminal state may additionally move to needs_human,
+ * failed or cancelled. Leaving needs_human is only possible through RunMachine.resume (a human).
  */
 const FORWARD: Partial<Record<RunState, readonly RunState[]>> = {
   intake: ["triage"],
@@ -29,15 +30,27 @@ const FORWARD: Partial<Record<RunState, readonly RunState[]>> = {
 
 const ALWAYS_ALLOWED: readonly RunState[] = ["needs_human", "failed", "cancelled"];
 
+/** Targets reachable with RunMachine.transition (automatic moves). */
 export function allowedTargets(from: RunState): RunState[] {
-  if (isTerminal(from)) return [];
-  if (from === "needs_human") return [...STAGES, "rejected", "failed", "cancelled"];
+  if (isTerminal(from) || from === "needs_human") return [];
   return [...(FORWARD[from] ?? []), ...ALWAYS_ALLOWED];
+}
+
+/**
+ * Stages a human may resume a parked run into: anything up to one step past where it was parked.
+ * That lets a human approve a gate (move on) or send work back, but never jump over stages.
+ */
+export function resumeTargets(run: Pick<Run, "parked_from">): RunState[] {
+  const parkedIndex = run.parked_from ? STAGES.indexOf(run.parked_from as Stage) : 0;
+  const limit = parkedIndex === -1 ? 0 : parkedIndex + 1;
+  return [...STAGES.slice(0, limit + 1), "rejected", "cancelled"];
 }
 
 /** Facts about the run's worktree and output files, injected so guards stay testable. */
 export interface Evidence {
   verdict<K extends VerdictKind>(kind: K): ParsedVerdict<K>;
+  /** Review verdicts of the current round, one per lens. */
+  reviews(): ParsedVerdict<"review">[];
   git: {
     head(): string;
     isClean(): boolean;
@@ -54,37 +67,22 @@ interface GuardContext {
 
 type Guard = (ctx: GuardContext) => string[];
 
-/** Evidence each edge must show before the run may take it. Returns problems; empty means allowed. */
-const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
-  "build->gate": ({ evidence }) => {
-    const problems: string[] = [];
-    if (evidence.verdict("build").header.STATUS !== "READY") problems.push("builder did not report STATUS: READY");
-    if (!evidence.git.isClean()) problems.push("worktree has uncommitted changes");
-    if (evidence.git.commitsAhead() < 1) problems.push("branch has no commits ahead of the base branch");
-    if (!evidence.git.isPushed()) problems.push("branch is not pushed to origin");
-    return problems;
-  },
-  "gate->review": ({ evidence }) => gatedHeadProblems(evidence, "PASS"),
-  "gate->build": ({ run, config, evidence }) => {
-    const problems = evidence.verdict("checks").header.GATE === "FAIL" ? [] : ["quality gate did not fail"];
-    if (run.build_iterations >= config.loops.max_build_iterations) {
-      problems.push(`build iteration cap reached (${config.loops.max_build_iterations})`);
-    }
-    return problems;
-  },
-  "review->build": ({ run, config }) =>
-    run.review_rounds >= config.loops.max_review_rounds
-      ? [`review round cap reached (${config.loops.max_review_rounds})`]
-      : [],
-  // Reviews must have looked at exactly the commit that passed the gate.
-  "review->capture": ({ evidence }) => gatedHeadProblems(evidence, "PASS"),
-  "critic->refine": ({ run, config }) =>
-    run.critic_rounds >= config.loops.max_critic_rounds
-      ? [`spec critic round cap reached (${config.loops.max_critic_rounds})`]
-      : [],
-};
+/**
+ * Loop caps count total attempts: max_build_iterations 5 means at most 5 builds (the first plus
+ * 4 rebuilds). The counters store how many times the loop has gone round again.
+ */
+function capProblem(again: number, max: number, what: string): string[] {
+  return again + 1 >= max ? [`${what} cap reached (${max})`] : [];
+}
 
-function gatedHeadProblems(evidence: Evidence, expected: "PASS" | "FAIL"): string[] {
+function cleanAndPushed(evidence: Evidence): string[] {
+  const problems: string[] = [];
+  if (!evidence.git.isClean()) problems.push("worktree has uncommitted changes");
+  if (!evidence.git.isPushed()) problems.push("branch is not pushed to origin");
+  return problems;
+}
+
+function checksOnHead(evidence: Evidence, expected: "PASS" | "FAIL"): string[] {
   const checks = evidence.verdict("checks").header;
   const problems: string[] = [];
   if (checks.GATE !== expected) problems.push(`quality gate result is ${checks.GATE}, expected ${expected}`);
@@ -93,10 +91,61 @@ function gatedHeadProblems(evidence: Evidence, expected: "PASS" | "FAIL"): strin
   return problems;
 }
 
-/** Counters bumped when a loop goes round again. */
-function loopPatch(run: Run, from: RunState, to: RunState): RunPatch {
+/** Reviews are done when every lens passed, or the verifier refuted every blocking finding. */
+function reviewsClear(evidence: Evidence): string[] {
+  const reviews = evidence.reviews();
+  if (reviews.length === 0) return ["no review results for this round"];
+  if (reviews.every((r) => r.header.VERDICT === "PASS")) return [];
+  return evidence.verdict("verify").header.VERDICT === "NONE_CONFIRMED"
+    ? []
+    : ["reviews requested changes and the verifier confirmed findings"];
+}
+
+/** Evidence each automatic edge must show. Returns problems; empty means allowed. */
+const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
+  "triage->refine": ({ evidence }) => triageApproved(evidence),
+  "triage->critic": ({ evidence }) => triageApproved(evidence),
+  "critic->build": ({ evidence }) =>
+    evidence.verdict("critic").header.VERDICT === "ACCEPT" ? [] : ["spec critic did not ACCEPT"],
+  "critic->refine": ({ run, config, evidence }) => [
+    ...(evidence.verdict("critic").header.VERDICT === "REVISE" ? [] : ["spec critic did not ask to REVISE"]),
+    ...capProblem(run.critic_rounds, config.loops.max_critic_rounds, "spec critic round"),
+  ],
+  "build->gate": ({ evidence }) => {
+    const build = evidence.verdict("build").header;
+    const problems: string[] = [];
+    if (build.STATUS !== "READY") problems.push("builder did not report STATUS: READY");
+    if (build.COMMIT !== evidence.git.head()) problems.push("builder's report is for a different commit than HEAD");
+    if (evidence.git.commitsAhead() < 1) problems.push("branch has no commits ahead of the base branch");
+    return [...problems, ...cleanAndPushed(evidence)];
+  },
+  "gate->review": ({ evidence }) => [...checksOnHead(evidence, "PASS"), ...cleanAndPushed(evidence)],
+  "gate->build": ({ run, config, evidence }) => [
+    ...checksOnHead(evidence, "FAIL"),
+    ...capProblem(run.build_iterations, config.loops.max_build_iterations, "build iteration"),
+  ],
+  "review->build": ({ run, config, evidence }) => [
+    ...(evidence.verdict("verify").header.VERDICT === "CONFIRMED" ? [] : ["no confirmed findings to fix"]),
+    ...capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
+  ],
+  // Reviews must be clear and must have looked at exactly the commit that passed the gate.
+  "review->capture": ({ evidence }) => [
+    ...reviewsClear(evidence),
+    ...checksOnHead(evidence, "PASS"),
+    ...cleanAndPushed(evidence),
+  ],
+  // A failed merge attempt (conflict, failing re-gate) costs a review round so the loop is bounded.
+  "merge->build": ({ run, config }) => capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
+};
+
+function triageApproved(evidence: Evidence): string[] {
+  return evidence.verdict("triage").header.DECISION === "APPROVE" ? [] : ["triage did not APPROVE"];
+}
+
+/** Counters bumped when a loop goes round again. Always applied after any caller patch. */
+function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
-  if (from === "review" && to === "build") return { review_rounds: run.review_rounds + 1 };
+  if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
   return {};
 }
@@ -118,11 +167,25 @@ export interface TransitionOptions {
   evidence?: Evidence;
   data?: unknown;
   patch?: RunPatch;
+  /** Worker holding the run's lease. Required when the run is leased. */
+  owner?: string;
+}
+
+export interface ResumeOptions {
+  /** Why the human made this call. Required, and stored as a decision. */
+  comment: string;
+  /** Give the loops a fresh budget (the human is granting more attempts). */
+  resetLoops?: boolean;
+  owner?: string;
+  commitSha?: string;
 }
 
 /**
- * The only code allowed to change a run's state. Validates the edge, checks the
- * evidence guard, applies loop counters and records an event, all in one transaction.
+ * The only code allowed to change a run's state.
+ *
+ * Evidence is gathered before the write (it shells out to git), then the state change is a
+ * compare-and-set inside an IMMEDIATE transaction: if another writer moved the run in the
+ * meantime, the change is refused instead of being applied on stale facts.
  */
 export class RunMachine {
   constructor(
@@ -130,34 +193,103 @@ export class RunMachine {
     private readonly config: FactoryConfig,
   ) {}
 
+  /** Automatic move along a pipeline edge, guarded by evidence. */
   transition(runId: string, to: RunState, options: TransitionOptions): Run {
-    return this.store.transaction(() => {
-      const run = this.store.getRun(runId);
-      if (!run) throw new Error(`run ${runId} not found`);
-      const from = run.state;
+    const run = this.load(runId);
+    const from = run.state;
+    this.checkLease(run, to, options.owner);
 
-      if (!allowedTargets(from).includes(to)) {
-        throw new TransitionError(runId, from, to, [`no edge from ${from} to ${to}`]);
-      }
+    if (from === "needs_human") {
+      throw new TransitionError(runId, from, to, ["a parked run can only be resumed by a human (RunMachine.resume)"]);
+    }
+    if (!allowedTargets(from).includes(to)) {
+      throw new TransitionError(runId, from, to, [`no edge from ${from} to ${to}`]);
+    }
 
-      // A human resuming a parked run is the authority; evidence guards apply to automatic moves.
-      const guard = from === "needs_human" ? undefined : GUARDS[`${from}->${to}`];
-      if (guard) {
-        if (!options.evidence) throw new TransitionError(runId, from, to, ["evidence is required for this move"]);
-        const problems = runGuard(guard, { run, config: this.config, evidence: options.evidence });
-        if (problems.length) throw new TransitionError(runId, from, to, problems);
-      }
+    const guard = GUARDS[`${from}->${to}`];
+    if (guard) {
+      if (!options.evidence) throw new TransitionError(runId, from, to, ["evidence is required for this move"]);
+      const problems = runGuard(guard, { run, config: this.config, evidence: options.evidence });
+      if (problems.length) throw new TransitionError(runId, from, to, problems);
+    }
 
-      const patch: RunPatch = {
-        ...loopPatch(run, from, to),
-        ...(from === "needs_human" ? { waiting_gate: null } : {}),
-        ...options.patch,
-      };
-      this.store.writeState(runId, to, patch);
-      this.store.appendEvent(runId, from, to, options.reason, options.data);
-      return this.store.getRun(runId)!;
+    const patch: StatePatch = {
+      ...options.patch,
+      ...(to === "needs_human" ? { parked_from: from } : {}),
+      ...releaseIfTerminal(to),
+      ...loopPatch(run, from, to),
+    };
+    return this.commit(run, to, patch, () => this.store.appendEvent(runId, from, to, options.reason, options.data));
+  }
+
+  /** A human resolves a parked run: approve it onward, send it back, reject or cancel it. */
+  resume(runId: string, to: RunState, options: ResumeOptions): Run {
+    const run = this.load(runId);
+    const from = run.state;
+    this.checkLease(run, to, options.owner);
+
+    if (from !== "needs_human") throw new TransitionError(runId, from, to, ["run is not waiting for a human"]);
+    if (!options.comment.trim()) throw new TransitionError(runId, from, to, ["a comment explaining the decision is required"]);
+    if (!resumeTargets(run).includes(to)) {
+      throw new TransitionError(runId, from, to, [
+        `run was parked in ${run.parked_from ?? "an unknown stage"}; it can resume up to one stage past that`,
+      ]);
+    }
+
+    const patch: StatePatch = {
+      waiting_gate: null,
+      parked_from: null,
+      ...releaseIfTerminal(to),
+      ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0 } : {}),
+    };
+    return this.commit(run, to, patch, () => {
+      const gate = run.waiting_gate ?? "escalation";
+      this.store.recordDecision({
+        run_id: runId,
+        gate,
+        mode: run.waiting_gate ? this.config.gates[run.waiting_gate] : "human",
+        outcome: to === "rejected" || to === "cancelled" ? "reject" : "approve",
+        actor: "human",
+        comment: options.comment,
+        commit_sha: options.commitSha ?? null,
+      });
+      this.store.appendEvent(runId, from, to, `human: ${options.comment}`, {
+        gate,
+        resetLoops: !!options.resetLoops,
+      });
     });
   }
+
+  private load(runId: string): Run {
+    const run = this.store.getRun(runId);
+    if (!run) throw new Error(`run ${runId} not found`);
+    return run;
+  }
+
+  private checkLease(run: Run, to: RunState, owner: string | undefined): void {
+    const held = run.lease_owner !== null && run.lease_expires_at !== null && run.lease_expires_at > new Date().toISOString();
+    if (held && run.lease_owner !== owner) {
+      throw new TransitionError(run.id, run.state, to, [`run is leased by ${run.lease_owner}`]);
+    }
+    if (owner !== undefined && !held) {
+      throw new TransitionError(run.id, run.state, to, [`${owner} does not hold a valid lease on this run`]);
+    }
+  }
+
+  private commit(run: Run, to: RunState, patch: StatePatch, record: () => void): Run {
+    return this.store.transaction(() => {
+      if (!this.store.writeState(run.id, to, patch, run.state)) {
+        const current = this.store.getRun(run.id)?.state ?? "missing";
+        throw new TransitionError(run.id, run.state, to, [`run changed concurrently (now ${current})`]);
+      }
+      record();
+      return this.store.getRun(run.id)!;
+    });
+  }
+}
+
+function releaseIfTerminal(to: RunState): StatePatch {
+  return isTerminal(to) ? { lease_owner: null, lease_expires_at: null } : {};
 }
 
 /** A guard that cannot read its evidence (missing or malformed file) blocks the move rather than crashing. */
