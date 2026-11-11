@@ -4,6 +4,7 @@ import {
   isTerminal,
   isTrustedAuthor,
   parseVerdict,
+  resolveModel,
   type AgentRole,
   type FactoryConfig,
   type Gate,
@@ -476,12 +477,20 @@ export class PipelineDriver {
     return [{ title: "Triage result", body }];
   }
 
+  /** The risk triage gave this run, once triage has run. */
+  private triageRisk(run: Run): "LOW" | "MEDIUM" | "HIGH" | undefined {
+    const path = join(this.runDir(run), "triage.md");
+    if (!existsSync(path)) return undefined;
+    return parseVerdict("triage", readFileSync(path, "utf8")).header.RISK;
+  }
+
   private agentBase(run: Run, role: PromptRole & AgentRole, cwd: string) {
     const { config, timeouts } = this.deps;
     return {
       runId: run.id,
       role,
-      model: config.models.roles[role] ?? config.models.default,
+      // Triage itself runs before there is a risk, so it never gets the high-risk settings.
+      ...resolveModel(config, { role, risk: role === "triage" ? undefined : this.triageRisk(run) }),
       cwd,
       logDir: join(this.runDir(run), "logs"),
       signal: this.signal,
