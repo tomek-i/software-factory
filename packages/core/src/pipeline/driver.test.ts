@@ -1,10 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { parseVerdict } from "@factory/shared";
+import { parseVerdict, type Finding, type ParsedVerdict } from "@factory/shared";
 import { buildStep, FAKE_AWS_KEY, READY, setup, TRIAGE } from "../../test/driver-setup.js";
 import { git, GIT_TEST_TIMEOUT, reviewsPass, type FakeStep } from "../../test/helpers.js";
-import { prBody, runDirOf } from "./driver.js";
+import { blockingFindings, prBody, refutedFindings, reviewNotes, runDirOf, verifyProblems, type BlockingFinding, type LensReview } from "./driver.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -56,7 +56,7 @@ describe("PipelineDriver", () => {
 
     expect(store.listDecisions(run.id)).toMatchObject([
       { gate: "triage", outcome: "proceed", actor: "agent" },
-      { gate: "review", outcome: "escalate", comment: "reviews: code PASS, security PASS, docs PASS; capture and merge are not automated yet" },
+      { gate: "review", outcome: "escalate", comment: "reviews: code PASS, security PASS, docs PASS; gate is set to human" },
     ]);
     expect(seen.some((e) => e.type === "gate:check" && e.passed)).toBe(true);
 
@@ -84,7 +84,7 @@ describe("PipelineDriver", () => {
       const hits = ["secret or env file changed: .env", "protected path (infra/**): infra/main.tf"];
       // Hard rules hold the gate even though every review passed, unless the run is unsafe.
       const reasons = unsafe
-        ? ["capture and merge are not automated yet", `hard rules lifted by --unsafe: ${hits.join("; ")}`]
+        ? ["gate is set to human", `hard rules lifted by --unsafe: ${hits.join("; ")}`]
         : hits.map((h) => `hard rule: ${h}`);
       expect(outcome).toMatchObject({
         kind: "parked",
@@ -199,5 +199,86 @@ describe("prBody", () => {
   it("leaves out sections the builder did not write", () => {
     expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3)).toBe("## What\n- done\n\nCloses #3\n");
     expect(prBody("STATUS: READY\n", 3)).toBe("Closes #3\n");
+  });
+  it("adds the review notes before the closing line", () => {
+    expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3, false, "## Review notes\n- x\n")).toBe("## What\n- done\n\n## Review notes\n- x\n\nCloses #3\n");
+  });
+});
+
+describe("verifier helpers", () => {
+  const f = (id: string, severity: string, extra: object = {}) => ({ id, severity, claim: `claim ${id}`, evidence: "e", ...extra }) as Finding;
+  const review = (findings: Finding[]) => ({
+    header: { VERDICT: findings.some((x) => x.severity === "critical" || x.severity === "major") ? "CHANGES" : "PASS" },
+    body: "",
+    findings,
+  }) as ParsedVerdict<"review">;
+  const verify = (verdict: string, confirmed: Finding[], refuted: string[] = []) =>
+    ({
+      header: { VERDICT: verdict },
+      body: `## Summary\n- x\n\n## Findings\n\n## Refuted\n${refuted.map((r) => `- ${r}`).join("\n")}\n`,
+      findings: confirmed,
+    }) as ParsedVerdict<"verify">;
+
+  it("collects blocking findings, naming the lens when two lenses share an id", () => {
+    const reviews: LensReview[] = [
+      { lens: "code", verdict: review([f("x-1", "major"), f("code-2", "minor")]) },
+      { lens: "security", verdict: review([f("x-1", "critical"), f("security-1", "major")]) },
+    ];
+    expect(blockingFindings(reviews).map((b) => `${b.lens}:${b.finding.id}`)).toEqual(["code:code/x-1", "security:security/x-1", "security:security-1"]);
+  });
+
+  it("reads refuted lines with or without backticks", () => {
+    const body = "## Refuted\n- code-1: handled in a.ts:3\n* `security-2`: not reachable\nnot a line\n\n## Other\n- x: y\n";
+    expect(refutedFindings(body)).toEqual([
+      { id: "code-1", reason: "handled in a.ts:3" },
+      { id: "security-2", reason: "not reachable" },
+    ]);
+    expect(refutedFindings("## Summary\n- x\n")).toEqual([]);
+    // Ids may hold colons or spaces: the known ids are matched first, and nested bullets belong to the reason.
+    const odd = "## Refuted\n- code:1: off by one is fine\n  - see a.ts\n- `my finding`: duplicate\n";
+    expect(refutedFindings(odd, ["code", "code:1", "my finding"])).toEqual([
+      { id: "code:1", reason: "off by one is fine" },
+      { id: "my finding", reason: "duplicate" },
+    ]);
+  });
+
+  it("wants every blocking finding judged exactly once, and only known ones", () => {
+    const blocking: BlockingFinding[] = [
+      { lens: "code", finding: f("code-1", "major") },
+      { lens: "code", finding: f("code-2", "critical") },
+    ];
+    expect(verifyProblems(verify("CONFIRMED", [f("code-1", "major")], ["code-2: fine"]), blocking)).toEqual([]);
+    // A finding of its own about an injection attempt is allowed.
+    expect(verifyProblems(verify("CONFIRMED", [f("verifier-1", "critical")], ["code-1: no", "code-2: no"]), blocking)).toEqual([]);
+    expect(verifyProblems(verify("CONFIRMED", [f("code-1", "major"), f("code-9", "major")], ["code-1: no"]), blocking)).toEqual([
+      "confirmed finding code-9 is not one of the findings to verify",
+      "judged more than once: code-1",
+      "not judged (confirm or refute each): code-2",
+    ]);
+    expect(verifyProblems(verify("NONE_CONFIRMED", [f("code-1", "minor")], ["code-2: no", "code-7: no"]), blocking)).toEqual([
+      "confirmed finding code-1 must be critical or major; refute it if it is only minor",
+      "refuted finding code-7 is not one of the findings to verify",
+    ]);
+  });
+
+  it("notes minor findings per lens and refuted findings with why, or nothing", () => {
+    const reviews: LensReview[] = [
+      { lens: "code", verdict: review([f("code-1", "major", { file: "a.ts", line: 3 }), f("code-2", "nit", { file: "b.ts" })]) },
+      { lens: "docs", verdict: review([]) },
+    ];
+    expect(reviewNotes(reviews, verify("NONE_CONFIRMED", [], ["code-1: a.ts:2 guards it"]))).toBe(
+      [
+        "## Review notes",
+        "Left for you to judge.",
+        "",
+        "**code**",
+        "- nit: claim code-2 (b.ts)",
+        "",
+        "**Refuted by the verifier**",
+        "- code major: claim code-1 (a.ts:3)",
+        "  Refuted: a.ts:2 guards it",
+      ].join("\n"),
+    );
+    expect(reviewNotes([{ lens: "docs", verdict: review([]) }])).toBeUndefined();
   });
 });

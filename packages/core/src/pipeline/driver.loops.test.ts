@@ -49,10 +49,13 @@ describe("PipelineDriver", () => {
     });
 
     // A human grants another attempt: the next identical failure loops, the one after stalls again.
+    // Rounds keep counting, so the earlier rounds' reports stay as they were.
     new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "build", { comment: "look at check.js" });
     const again = await driver.drive(run.id);
 
-    expect(again.kind === "parked" && again.reason).toMatch(/^stalled: quality gate failed the same way in rounds 2 and 3 /);
+    expect(again.kind === "parked" && again.reason).toMatch(/^stalled: quality gate failed the same way in rounds 3 and 4 /);
+    expect(fake.calls()[3]!.stdin).toContain("The quality gate failed in round 2. Its report:");
+    expect(fake.calls()[3]!.stdin).toContain("A human sent this back to you with this comment: look at check.js");
     expect(fake.calls()).toHaveLength(5);
     expect(store.getRun(run.id)!.build_iterations).toBe(2);
   });

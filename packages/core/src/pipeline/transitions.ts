@@ -7,6 +7,7 @@ import {
   type Stage,
   type VerdictKind,
 } from "@factory/shared";
+import type { PullRequestState } from "../github/port.js";
 import type { Run, RunEvent, RunPatch, StatePatch, Store } from "../store/store.js";
 import { findingsFingerprint } from "./fingerprint.js";
 
@@ -60,6 +61,8 @@ export interface Evidence {
    * still loops, but stalls cannot be detected.
    */
   gateFingerprint?(): string;
+  /** The run's pull request as GitHub sees it now. */
+  pullRequest?(): PullRequestState;
   git: {
     head(): string;
     isClean(): boolean;
@@ -144,6 +147,14 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
     ...checksOnHead(evidence, "PASS"),
     ...cleanAndPushed(evidence),
   ],
+  "pr->merge": ({ evidence }) => cleanAndPushed(evidence),
+  // Only GitHub saying the run's own PR is merged ends the merge stage.
+  "merge->learn": ({ run, evidence }) => {
+    const pr = evidence.pullRequest?.();
+    if (!pr) return ["no pull request state"];
+    if (pr.number !== run.pr_number) return [`PR #${pr.number} is not the run's PR (#${run.pr_number ?? "none"})`];
+    return pr.state === "merged" ? [] : [`PR #${pr.number} is ${pr.state}, not merged`];
+  },
   // A failed merge attempt (conflict, failing re-gate) costs a review round so the loop is bounded.
   "merge->build": ({ run, config }) => capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
 };
@@ -165,13 +176,13 @@ const LOOPS: Partial<Record<Edge, LoopSpec>> = {
   "gate->build": {
     describe: (rounds) => `quality gate failed the same way in rounds ${rounds}`,
     file: (round) => `round-${round}/checks.md`,
-    round: (run) => run.build_iterations + 1,
+    round: (run) => run.round,
     fingerprint: (evidence) => evidence.gateFingerprint?.(),
   },
   "review->build": {
     describe: (rounds) => `the verifier confirmed the same findings in review rounds ${rounds}`,
     file: (round) => `round-${round}/verify.md`,
-    round: (run) => run.review_rounds + 1,
+    round: (run) => run.round,
     fingerprint: (evidence) => findingsFingerprint(evidence.verdict("verify").findings),
   },
 };
@@ -248,6 +259,7 @@ function triageApproved(evidence: Evidence): string[] {
 
 /** Counters bumped when a loop goes round again. Always applied after any caller patch. */
 function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
+  if (to === "gate") return { round: run.round + 1 };
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
   if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
@@ -356,6 +368,8 @@ export class RunMachine {
       parked_from: null,
       ...releaseIfTerminal(to),
       ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0 } : {}),
+      // A human sending the run (back) to the gate starts a new round, like the builder handing over.
+      ...(to === "gate" ? { round: run.round + 1 } : {}),
     };
     return this.commit(run, to, patch, () => {
       const gate = run.waiting_gate ?? "escalation";
@@ -371,6 +385,8 @@ export class RunMachine {
       this.store.appendEvent(runId, from, to, `human: ${options.comment}`, {
         gate,
         resetLoops: !!options.resetLoops,
+        // The commit the human approved, so the merge stage can tell whether the approval still holds.
+        ...(options.commitSha ? { commit: options.commitSha } : {}),
       });
     });
   }
@@ -393,6 +409,40 @@ export class RunMachine {
         comment,
       });
       this.store.appendEvent(runId, run.state, "cancelled", `human: ${comment}`);
+    });
+  }
+
+  /**
+   * The run's PR was merged or closed on GitHub, by a human or by the merge stage: finish the run.
+   * Merged ends in done, closed without merging in cancelled. Allowed from any active or parked
+   * state, but only on the run's own PR and only once GitHub says it is no longer open. A run another
+   * worker is driving is refused, so this never races that worker's own moves.
+   */
+  closeByPullRequest(runId: string, pr: Pick<PullRequestState, "number" | "state" | "mergeCommit">, owner?: string): Run {
+    const run = this.load(runId);
+    const merged = pr.state === "merged";
+    const to: RunState = merged ? "done" : "cancelled";
+    this.checkLease(run, to, owner);
+    const problems: string[] = [];
+    if (isTerminal(run.state)) problems.push(`run is already ${run.state}`);
+    if (run.pr_number === null) problems.push("run has no pull request");
+    else if (pr.number !== run.pr_number) problems.push(`PR #${pr.number} is not the run's PR (#${run.pr_number})`);
+    if (pr.state === "open") problems.push(`PR #${pr.number} is still open`);
+    if (merged && !pr.mergeCommit) problems.push(`PR #${pr.number} is merged but has no merge commit`);
+    if (problems.length) throw new TransitionError(runId, run.state, to, problems);
+
+    const reason = merged ? `merged PR #${pr.number} on GitHub` : `PR #${pr.number} was closed on GitHub without merging`;
+    return this.commit(run, to, { waiting_gate: null, parked_from: null, ...releaseIfTerminal(to) }, () => {
+      this.store.recordDecision({
+        run_id: runId,
+        gate: "merge",
+        mode: this.config.gates.merge,
+        outcome: merged ? "approve" : "reject",
+        actor: "human",
+        comment: reason,
+        commit_sha: merged ? pr.mergeCommit! : null,
+      });
+      this.store.appendEvent(runId, run.state, to, reason, { pr: pr.number, ...(merged ? { mergeCommit: pr.mergeCommit } : {}) });
     });
   }
 

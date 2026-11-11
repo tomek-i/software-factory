@@ -39,7 +39,7 @@ export const sameFailure = (attempt: number): FakeStep => ({
 
 // The gate passes only once feature.txt says "fixed". A failure names the content, plus noise that
 // changes every round (commit, timing, worktree path) and must not hide a repeated failure.
-const CHECK_JS = `const fs = require("fs");
+export const CHECK_JS = `const fs = require("fs");
 const content = fs.existsSync("feature.txt") ? fs.readFileSync("feature.txt", "utf8").trim() : "(missing)";
 const ok = content === "fixed";
 if (!ok) {
@@ -53,7 +53,7 @@ process.exit(ok ? 0 : 1);
 export function setup(steps: FakeStep[], options: { author?: string; config?: string } = {}) {
   const config =
     options.config ??
-    "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n";
+    "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n";
   const { root } = repoWithRemote({
     "README.md": "# demo\n",
     "check.js": CHECK_JS,
@@ -77,12 +77,35 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
 
   const comments: { issue: number; body: string }[] = [];
   const prs: { head: string; base: string; title: string; body: string }[] = [];
+  const edits: { number: number; body: string }[] = [];
+  // The run's PR as the fake GitHub sees it; a test may merge or close it, or make merging fail.
+  const pr: { state: "open" | "merged" | "closed"; draft: boolean; mergeCommit?: string; mergeError?: string; onView?: (count: number) => void } = {
+    state: "open",
+    draft: true,
+  };
+  let views = 0;
+  const merges: { number: number; head: string }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body }),
     findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
     createDraftPullRequest: (pr) => {
       prs.push(pr);
       return 7;
+    },
+    updatePullRequest: (number, body) => edits.push({ number, body }),
+    pullRequestState: (number) => {
+      pr.onView?.(++views);
+      return { number, state: pr.state, draft: pr.draft, head: "", ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
+    },
+    markReady: () => {
+      pr.draft = false;
+    },
+    mergePullRequest: (number, head) => {
+      if (pr.mergeError) throw new Error(pr.mergeError);
+      if (pr.draft) throw new Error("a draft PR cannot be merged");
+      merges.push({ number, head });
+      pr.state = "merged";
+      pr.mergeCommit = "e".repeat(40);
     },
   };
   const events = new FactoryEvents();
@@ -101,12 +124,12 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     events,
     watchMs: 50,
   });
-  return { root, store, project, driver, fake, comments, prs, seen };
+  return { root, store, project, driver, fake, comments, prs, edits, seen, pr, merges };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */
 export const reviewConfig = (reviews: string) =>
-  `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n${reviews}`;
+  `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n${reviews}`;
 const finding = (severity: string) =>
   `## Findings\n\`\`\`json\n[{ "id": "code-1", "severity": "${severity}", "file": "feature.txt", "line": 1, "claim": "it says fixed", "evidence": "line 1" }]\n\`\`\`\n`;
 export const review = (verdict: string, severity?: string) => `VERDICT: ${verdict}\n\n## Summary\n- reviewed\n\n${severity ? finding(severity) : "## Findings\nNone.\n"}`;

@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Store } from "@factory/core";
-import { GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
-import { BUILD, setup, TRIAGE } from "../../test/runs-setup.js";
+import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
+import { BUILD, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { runApprove, runReject, runStatus } from "./runs.js";
 
@@ -19,13 +19,13 @@ describe("approve / reject / cancel", () => {
     const approved = await runApprove(dir, "#12", { message: "go", run: false });
     expect(approved).toContain("Approved the triage gate");
     expect(approved).toContain("factory run 12");
-    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(runStatus(dir, {}, { github })).toMatch(/\bbuild\b/);
     await expect(runApprove(dir, "#12", {})).rejects.toThrow(/not waiting at a gate \(it is build\)/);
     expect(() => runReject(dir, "#12", { message: "no" })).toThrow(CliError);
   });
 
   it("keeps driving the run after an approval", async () => {
-    const { run, queue, dir, deps, printed } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()], "triage: human");
+    const { run, queue, dir, deps, printed, root } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()], "triage: human");
     queue();
     await run();
 
@@ -34,8 +34,19 @@ describe("approve / reject / cancel", () => {
     expect(printed.some((l) => /^Approved the triage gate of run-12-\w+; it moves to build\.$/.test(l))).toBe(true);
     expect(printed.some((l) => l.startsWith("[builder] ok"))).toBe(true);
     expect(message).toMatch(/waiting at the review gate/);
-    // Approving the review gate has nothing to drive yet.
-    expect(await runApprove(dir, "12", {}, deps)).toMatch(/moves to capture\.\nCapture and merge are not automated yet/);
+    // Approving the review gate drives on through capture and the PR to the merge gate.
+    expect(await runApprove(dir, "12", {}, deps)).toMatch(/is waiting at the merge gate: waiting at merge gate: gate is set to human/);
+    const s = new Store(join(root, ".factory", "factory.db"));
+    const runId = s.listRuns({})[0]!.id;
+    const head = git(s.getRun(runId)!.worktree_path!, "rev-parse", "HEAD");
+    s.close();
+
+    // Approving the merge gate records the commit that waited, and the factory merges exactly it.
+    expect(await runApprove(dir, "12", { message: "ship it" }, deps)).toMatch(/finished: done/);
+    expect(merged).toEqual([{ number: 7, head }]);
+    const after = new Store(join(root, ".factory", "factory.db"));
+    expect(after.listDecisions(runId).find((d) => d.comment === "ship it")).toMatchObject({ gate: "merge", commit_sha: head });
+    after.close();
   });
 
   it("records an approval but does not drive a run whose issue was unqueued", async () => {
@@ -49,7 +60,7 @@ describe("approve / reject / cancel", () => {
     const message = await runApprove(dir, "12", {}, deps);
 
     expect(message).toMatch(/moves to build\.\nIssue #12 is no longer queued, so the run was not continued/);
-    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(runStatus(dir, {}, { github })).toMatch(/\bbuild\b/);
     expect(fake.calls().map((c) => c.role)).toEqual(["triage"]);
   });
 
@@ -58,7 +69,7 @@ describe("approve / reject / cancel", () => {
     queue();
     await run();
     expect(runReject(dir, "#12", { message: "not now" })).toContain("Rejected");
-    expect(runStatus(dir, { all: true })).toMatch(/rejected/);
+    expect(runStatus(dir, { all: true }, { github })).toMatch(/rejected/);
   });
 
   it("explains unknown run references", async () => {

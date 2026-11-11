@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildStep, review, reviewConfig, setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, reviewsPass, type FakeStep } from "../../test/helpers.js";
+import { GIT_TEST_TIMEOUT, reviewsPass } from "../../test/helpers.js";
 import { absoluteRule } from "../agents/prompts.js";
 import { runDirOf } from "./driver.js";
 
@@ -56,26 +56,17 @@ describe("PipelineDriver", () => {
       expect(store.getRun(run.id)!.state).toBe("needs_human");
     });
 
-    it("waits for a human on a blocking finding, but minor ones never hold the run", async () => {
+    it("never holds the run for minor findings, and lists them in the PR description", async () => {
       const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
-      const blocking = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("CHANGES", "major") }], { config });
-      const run = blocking.driver.startRun(12);
-      expect(await blocking.driver.drive(run.id)).toMatchObject({
-        reason: "waiting at review gate: reviews: code CHANGES (1 blocking); verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is",
-      });
-      expect(blocking.store.listEvents(run.id).some((e) => e.to_state === "build" && e.from_state === "review")).toBe(false);
-
-      const minor = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
-      const other = minor.driver.startRun(12);
-      expect(await minor.driver.drive(other.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; capture and merge are not automated yet" });
-    });
-
-    it("shows hard-rule hits when a review asks for changes", async () => {
-      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
-      const touchInfra: FakeStep = { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "infra/main.tf": "x\n" } };
-      const { driver } = setup([{ output: TRIAGE() }, touchInfra, { role: "reviewer-code", output: review("CHANGES", "major") }], { config });
+      const { driver, fake, edits } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
       const run = driver.startRun(12);
-      expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringMatching(/approve it as is; hard rule: protected path \(infra\/\*\*\): infra\/main\.tf$/) });
+      expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; gate is set to human" });
+      expect(fake.calls().some((c) => c.role === "verifier")).toBe(false);
+      expect(edits).toHaveLength(1);
+      expect(edits[0]!.number).toBe(7);
+      expect(edits[0]!.body).toBe(
+        "## What\n- done\n\n## Review notes\nLeft for you to judge.\n\n**code**\n- minor: it says fixed (feature.txt:1)\n\nCloses #12\n",
+      );
     });
   });
 });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { findRepoRoot } from "@factory/core";
 import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
-import { BUILD, setup, TRIAGE } from "../../test/runs-setup.js";
+import { BUILD, github, setup, TRIAGE } from "../../test/runs-setup.js";
 import { runApprove, runCancel, runResume, runStatus } from "./runs.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
@@ -23,7 +23,7 @@ describe("approve / reject / cancel", () => {
     expect(existsSync(worktrees)).toBe(true);
     expect(git(dir, "worktree", "list")).toContain(".worktrees");
     expect(() => runCancel(dir, "#12", {})).toThrow(/already cancelled/);
-    expect(runStatus(dir)).toContain("No active runs");
+    expect(runStatus(dir, {}, { github })).toContain("No active runs");
   });
 
   it("resumes an escalated run to a stage it may go back to", async () => {
@@ -35,9 +35,9 @@ describe("approve / reject / cancel", () => {
     await expect(runApprove(dir, "#12", {})).rejects.toThrow(/not waiting at a gate/);
     await expect(runResume(dir, "#12", { to: "merge", message: "ship" })).rejects.toThrow(/can resume to: .*build/);
     expect(await runResume(dir, "#12", { to: "build", message: "use the flat price", resetLoops: true, run: false })).toBe(
-      "Resumed " + runStatus(dir).split("\n")[1]!.split(/\s+/)[0] + " to build with a fresh loop budget.\nContinue with `factory run 12`.",
+      "Resumed " + runStatus(dir, {}, { github }).split("\n")[1]!.split(/\s+/)[0] + " to build with a fresh loop budget.\nContinue with `factory run 12`.",
     );
-    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(runStatus(dir, {}, { github })).toMatch(/\bbuild\b/);
   });
 
   it("triages again when the issue was waiting for its author", async () => {

@@ -13,6 +13,7 @@ import {
   RunMachine,
   resumeTargets,
   trustedReader,
+  waitingCommit,
   type CommandRunner,
   type DriveOutcome,
   type FactoryEvent,
@@ -26,6 +27,7 @@ import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunSta
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
+import { reconcileRuns } from "./reconcile.js";
 
 export interface RunDeps {
   run?: CommandRunner;
@@ -147,6 +149,7 @@ export async function runRun(cwd: string, values: string[], options: { unsafe?: 
   return withProjectAsync(
     cwd,
     async ({ store, project, config }) => {
+      for (const line of reconcileRuns(store, project, config, deps)) (deps.print ?? console.log)(line);
       if (numbers.length === 1) {
         ensureQueued(store, project, config, numbers[0]!, deps);
         return driveIssue(store, project, config, numbers[0]!, options, deps);
@@ -308,13 +311,16 @@ function cost(store: Store, runId: string): number {
   return store.listAgentRuns(runId).reduce((sum, a) => sum + (a.cost_usd ?? 0), 0);
 }
 
-/** `factory status`: one line per run. */
-export function runStatus(cwd: string, options: { all?: boolean } = {}, run?: CommandRunner, style: Style = plain): string {
+/** `factory status`: one line per run, after finishing runs whose PR was merged or closed on GitHub. */
+export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pick<RunDeps, "run" | "style" | "github"> = {}): string {
+  const style = deps.style ?? plain;
   return withProject(
     cwd,
-    ({ store, project }) => {
+    ({ store, project, config }) => {
+      const reconciled = reconcileRuns(store, project, config, deps);
+      const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
-      if (runs.length === 0) return options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.";
+      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.");
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
       const rows = runs.map((r) => [
         r.id,
@@ -328,7 +334,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, run?: Co
       // Widths and padding come from the plain text; only the cell content is styled, never the padding.
       const line = (cells: string[], styled: string[]) =>
         styled.map((cell, i) => cell + " ".repeat(widths[i]! - cells[i]!.length)).join("  ").trimEnd();
-      return [
+      return notes + [
         line(header, header),
         ...rows.map((row, n) => {
           const [id, issue, state, round, money, waiting] = row as [string, string, string, string, string, string];
@@ -336,7 +342,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, run?: Co
         }),
       ].join("\n");
     },
-    run,
+    deps.run,
   );
 }
 
@@ -418,9 +424,6 @@ async function continueRun(
   options: { run?: boolean },
   deps: RunDeps,
 ): Promise<string> {
-  if (to === "capture") {
-    return `${done}\nCapture and merge are not automated yet: mark the draft PR ready and merge it yourself.`;
-  }
   if (isTerminal(to) || run.issue_number === null) return done;
   if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
   // Not re-queued here: the issue may have been unqueued on purpose, or closed on GitHub since.
@@ -448,7 +451,9 @@ export async function runApprove(
       const to = approveTarget(target);
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
-      new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved" });
+      // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
+      const commitSha = gate === "merge" ? waitingCommit(store.listEvents(target.id)) : undefined;
+      new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
       const done = `Approved the ${gate} gate of ${target.id}; it moves to ${to}.`;
       return continueRun(store, project, config, target, to, done, options, deps);
     },

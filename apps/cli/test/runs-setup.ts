@@ -3,7 +3,7 @@
  * `runs*.test.ts` files so Vitest runs them in parallel: each test drives real git and fake `claude`.
  */
 import { join } from "node:path";
-import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort } from "@factory/core";
+import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort, type PullRequestState } from "@factory/core";
 import { fakeClaude, repoWithRemote, type FakeStep } from "../../../packages/core/test/helpers.js";
 import { runRun } from "../src/commands/runs.js";
 
@@ -21,8 +21,27 @@ export const BUILD: FakeStep = {
   output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n",
 };
 
+/** PR states the fake GitHub reports; a PR not listed is open. Reset by setup(). */
+export const prStates = new Map<number, PullRequestState>();
+/** PRs the fake GitHub merged. */
+export const merged: { number: number; head: string }[] = [];
+export const github: GithubPort = {
+  commentOnIssue: () => undefined,
+  findPullRequest: () => undefined,
+  createDraftPullRequest: () => 7,
+  updatePullRequest: () => undefined,
+  markReady: () => undefined,
+  mergePullRequest: (number, head) => {
+    merged.push({ number, head });
+    prStates.set(number, { number, state: "merged", draft: false, head, mergeCommit: "e".repeat(40) });
+  },
+  pullRequestState: (number) => prStates.get(number) ?? { number, state: "open", draft: true, head: "" },
+};
+
 export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
-  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  ${gates}\n${extraConfig}`;
+  prStates.clear();
+  merged.length = 0;
+  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  review: human\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
   const store = new Store(join(root, ".factory", "factory.db"));
@@ -45,7 +64,6 @@ export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "
   store.close();
 
   const fake = fakeClaude(steps);
-  const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => undefined, createDraftPullRequest: () => 7 };
   const printed: string[] = [];
   const queue = (...numbers: number[]) => {
     const s = new Store(join(root, ".factory", "factory.db"));

@@ -1,7 +1,10 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import type { RunState } from "@factory/shared";
+import { MIGRATIONS } from "./migrations.js";
 import { Store } from "./store.js";
 
 function setup() {
@@ -20,6 +23,41 @@ describe("Store", () => {
     const second = new Store(path);
     expect(second.listProjects().map((p) => p.name)).toEqual(["a"]);
     second.close();
+  });
+
+  it("numbers the round of existing runs after the folders they already have", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "factory-db-")), "factory.db");
+    const store = new Store(path);
+    const project = store.upsertProject({ name: "a", repo_path: "/a" });
+    /** A run with these moves (`from>to`) behind it and the counter the old engine left. */
+    const make = (build_iterations: number, moves: string[]) => {
+      const run = store.createRun({ project_id: project.id, title: "t", issue_number: null });
+      for (const move of moves) {
+        const [from, to] = move.split(">") as [RunState, RunState];
+        store.appendEvent(run.id, from, to, "x");
+      }
+      store.writeState(run.id, moves.at(-1)?.split(">")[1] as RunState, { build_iterations });
+      return run.id;
+    };
+    // The old engine's folder was build_iterations + 1 at the time of the gate.
+    const gateFailed = make(2, ["build>gate", "gate>build", "build>gate", "gate>build"]); // last used round-2
+    const inGate = make(2, ["build>gate", "gate>build", "build>gate", "gate>build", "build>gate"]); // round-3
+    const parkedInReview = make(1, ["build>gate", "gate>build", "build>gate", "gate>review", "review>needs_human"]); // round-2
+    // Sent back from review by a human: the reviewed round-2 must not be reused.
+    const sentBack = make(1, ["build>gate", "gate>build", "build>gate", "gate>review", "review>needs_human", "needs_human>build"]);
+    const neverGated = make(0, ["intake>triage", "triage>needs_human"]);
+    store.close();
+    // Undo the round migration, as if this database was made before it.
+    const roundMigration = MIGRATIONS.findIndex((sql) => sql.includes("ADD COLUMN round")) + 1;
+    const db = new Database(path);
+    db.exec("ALTER TABLE runs DROP COLUMN round");
+    db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(roundMigration);
+    db.close();
+
+    const reopened = new Store(path);
+    const round = (id: string) => reopened.getRun(id)!.round;
+    expect([gateFailed, inGate, parkedInReview, sentBack, neverGated].map(round)).toEqual([2, 3, 2, 2, 0]);
+    reopened.close();
   });
 
   it("upserts projects by repo path", () => {

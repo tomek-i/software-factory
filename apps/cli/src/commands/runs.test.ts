@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runCommand, type CommandRunner } from "@factory/core";
 import { GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
-import { BUILD, ESC, fakeGh, setup, strip, TRIAGE } from "../../test/runs-setup.js";
+import { BUILD, ESC, fakeGh, github, setup, strip, TRIAGE } from "../../test/runs-setup.js";
 import { createStyle, styleFor, type Style } from "../style.js";
 import { runLogs, runRun, runStatus } from "./runs.js";
 
@@ -56,7 +56,7 @@ describe("factory run", () => {
     expect(printed.some((l) => l.startsWith("[gate] ok: passed"))).toBe(true);
     expect(printed.some((l) => l.startsWith("[builder] ok"))).toBe(true);
 
-    const status = runStatus(dir);
+    const status = runStatus(dir, {}, { github });
     expect(status.split("\n")[0]).toMatch(/^RUN\s+ISSUE\s+STATE\s+ROUND\s+COST\s+WAITING$/);
     expect(status).toMatch(/run-12-\w+\s+#12\s+needs_human\s+b1 r1\s+\$0\.21\s+review/);
 
@@ -86,9 +86,9 @@ describe("colour", () => {
     );
 
     // status keeps its columns aligned: stripping the codes gives exactly the plain table.
-    const status = runStatus(dir, { all: true }, undefined, colour);
+    const status = runStatus(dir, { all: true }, { github, style: colour });
     expect(status).toContain(ESC);
-    expect(strip(status)).toBe(runStatus(dir, { all: true }));
+    expect(strip(status)).toBe(runStatus(dir, { all: true }, { github }));
 
     const logs = await runLogs(dir, "#12", {}, { style: colour });
     expect(logs).toContain(ESC);
@@ -104,7 +104,7 @@ describe("colour", () => {
     expect(followed.map(strip)).toEqual(await follow());
 
     for (const style of [styleFor({ isTTY: true }, { NO_COLOR: "1" }), styleFor({ isTTY: false }, {})]) {
-      expect(runStatus(dir, { all: true }, undefined, style)).not.toContain(ESC);
+      expect(runStatus(dir, { all: true }, { github, style })).not.toContain(ESC);
       expect(await runLogs(dir, "#12", {}, { style })).not.toContain(ESC);
       expect((await follow(style)).join("\n")).not.toContain(ESC);
     }

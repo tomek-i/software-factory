@@ -1,6 +1,20 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { GithubError } from "./issues.js";
+
+/** A pull request as GitHub sees it now. */
+export interface PullRequestState {
+  number: number;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** The commit at the head of the PR branch. */
+  head: string;
+  /** Set once the PR is merged. */
+  mergeCommit?: string;
+}
 
 /** What the pipeline needs from GitHub. Faked in tests. */
 export interface GithubPort {
@@ -9,6 +23,13 @@ export interface GithubPort {
   findPullRequest(branch: string): number | undefined;
   /** Open a draft PR and return its number. */
   createDraftPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
+  /** Replace a PR's description. */
+  updatePullRequest(number: number, body: string): void;
+  pullRequestState(number: number): PullRequestState;
+  /** Take a draft PR out of draft. */
+  markReady(number: number): void;
+  /** Merge with a merge commit, only if the PR's head is still `head` (the commit that passed). */
+  mergePullRequest(number: number, head: string): void;
 }
 
 /** Hidden marker on every comment the factory posts, so later stages can find (and not duplicate) them. */
@@ -44,6 +65,38 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       const match = /\/pull\/(\d+)/.exec(out);
       if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       return Number(match[1]);
+    },
+    pullRequestState(number) {
+      const out = gh(["pr", "view", String(number), "-R", repo, "--json", "number,state,isDraft,headRefOid,mergeCommit"]);
+      let pr: { number?: unknown; state?: unknown; isDraft?: unknown; headRefOid?: unknown; mergeCommit?: { oid?: unknown } | null };
+      try {
+        pr = JSON.parse(out) as typeof pr;
+      } catch {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      const state = typeof pr.state === "string" ? pr.state.toLowerCase() : "";
+      if (pr.number !== number || (state !== "open" && state !== "merged" && state !== "closed") || typeof pr.headRefOid !== "string") {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200)}`);
+      }
+      const mergeCommit = typeof pr.mergeCommit?.oid === "string" ? pr.mergeCommit.oid : undefined;
+      return { number, state, draft: pr.isDraft === true, head: pr.headRefOid, ...(mergeCommit ? { mergeCommit } : {}) };
+    },
+    markReady(number) {
+      gh(["pr", "ready", String(number), "-R", repo]);
+    },
+    mergePullRequest(number, head) {
+      gh(["pr", "merge", String(number), "-R", repo, "--merge", "--match-head-commit", head]);
+    },
+    updatePullRequest(number, body) {
+      // From a file: a long description can exceed the Windows command-line limit (~32k characters).
+      const dir = mkdtempSync(join(tmpdir(), "factory-pr-"));
+      try {
+        const file = join(dir, "body.md");
+        writeFileSync(file, body);
+        gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     },
   };
 }

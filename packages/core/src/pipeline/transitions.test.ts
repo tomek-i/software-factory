@@ -50,7 +50,9 @@ function setup(configOverrides: object = {}) {
   const project = store.upsertProject({ name: "demo", repo_path: "/repo" });
   const run = store.createRun({ project_id: project.id, title: "t", issue_number: 1 });
   const machine = new RunMachine(store, config);
-  const at = (state: RunState, patch: StatePatch = {}) => store.writeState(run.id, state, patch);
+  // Like the machine, putting the run in the gate starts a new round.
+  const at = (state: RunState, patch: StatePatch = {}) =>
+    store.writeState(run.id, state, state === "gate" ? { round: store.getRun(run.id)!.round + 1, ...patch } : patch);
   const move = (to: RunState, evidence: Evidence = fakeEvidence()) =>
     machine.transition(run.id, to, { reason: "test", evidence });
   return { store, machine, run, at, move };
@@ -187,6 +189,23 @@ describe("RunMachine.transition", () => {
     expect(store.getRun(run.id)!.build_iterations).toBe(2);
   });
 
+  it("only marks the PR ready from a clean, pushed branch", () => {
+    const { at, move } = setup();
+    at("pr");
+    expect(() => move("merge", fakeEvidence({ pushed: false }))).toThrow(/not pushed/);
+    expect(move("merge").state).toBe("merge");
+  });
+
+  it("only leaves the merge stage for learn once GitHub says the run's PR is merged", () => {
+    const { at, move } = setup();
+    at("merge", { pr_number: 7 });
+    const pr = (state: "open" | "merged" | "closed", number = 7) => ({ ...fakeEvidence(), pullRequest: () => ({ number, state, draft: false, head: HEAD }) });
+    expect(() => move("learn")).toThrow(/no pull request state/);
+    expect(() => move("learn", pr("open"))).toThrow(/PR #7 is open, not merged/);
+    expect(() => move("learn", pr("merged", 8))).toThrow(/not the run's PR/);
+    expect(move("learn", pr("merged")).state).toBe("learn");
+  });
+
   it("caps review rounds, including failed merge attempts", () => {
     const { at, move } = setup({ loops: { max_review_rounds: 2 } });
     at("merge");
@@ -203,6 +222,22 @@ describe("RunMachine.transition", () => {
     expect(move("refine", revise).critic_rounds).toBe(1);
     at("critic");
     expect(() => move("refine", revise)).toThrow(/critic round cap/);
+  });
+
+  it("starts a new round each time the run enters the gate, and never resets it", () => {
+    const { store, machine, run, move } = setup({ loops: { max_build_iterations: 5 } });
+    const failed = fakeEvidence({ files: { checks: `GATE: FAIL
+COMMIT: ${HEAD}
+` } });
+    store.writeState(run.id, "build");
+    expect(move("gate").round).toBe(1);
+    expect(move("build", failed).round).toBe(1);
+    expect(move("gate").round).toBe(2);
+    move("needs_human");
+    // A human sending the run back to the gate starts a round too; a loop reset leaves rounds alone.
+    expect(machine.resume(run.id, "gate", { comment: "check again", resetLoops: true })).toMatchObject({ round: 3, build_iterations: 0 });
+    move("needs_human");
+    expect(machine.resume(run.id, "build", { comment: "fix it" }).round).toBe(3);
   });
 
   it("does not let callers reset loop counters through the patch", () => {
@@ -376,8 +411,10 @@ describe("stall detection", () => {
       { id: "R2-2", severity: "major", file: "src/a.ts", line: 9, claim: "off by one", evidence: "moved" },
       { id: "R2-3", severity: "nit", file: "src/c.ts", claim: "naming", evidence: "x" },
     ];
+    at("gate");
     at("review");
     move("build", confirmed(round1));
+    at("gate");
     at("review");
     const err = stallOf(() => move("build", confirmed(round2)));
 
@@ -432,6 +469,15 @@ describe("RunMachine.resume", () => {
     expect(resumeTargets({ parked_from: "triage" })).not.toContain("gate");
   });
 
+  it("records the commit a human approved on the resume event", () => {
+    const { machine, store, run, at } = setup();
+    at("merge");
+    machine.transition(run.id, "needs_human", { reason: "merge gate", patch: { waiting_gate: "merge" } });
+    machine.resume(run.id, "merge", { comment: "ship it", commitSha: HEAD });
+    expect(store.listEvents(run.id).at(-1)!.data).toEqual({ gate: "merge", resetLoops: false, commit: HEAD });
+    expect(store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "merge", commit_sha: HEAD });
+  });
+
   it("can send work back with a fresh loop budget", () => {
     const { machine, store, run } = parked();
     store.writeState(run.id, "needs_human", { build_iterations: 4 });
@@ -473,5 +519,52 @@ describe("RunMachine.cancel", () => {
     expect(() => machine.cancel(run.id, "")).toThrow(/comment/);
     at("done");
     expect(() => machine.cancel(run.id, "x")).toThrow(/already done/);
+  });
+});
+
+describe("RunMachine.closeByPullRequest", () => {
+  const MERGE = "c".repeat(40);
+
+  it("finishes a run parked at a gate whose PR was merged, recording a human merge decision", () => {
+    const { machine, store, run, at } = setup();
+    at("needs_human", { pr_number: 7, waiting_gate: "review", parked_from: "review" });
+
+    const done = machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE });
+
+    expect(done).toMatchObject({ state: "done", waiting_gate: null, parked_from: null });
+    expect(store.listDecisions(run.id)).toMatchObject([
+      { gate: "merge", outcome: "approve", actor: "human", comment: "merged PR #7 on GitHub", commit_sha: MERGE },
+    ]);
+    expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "needs_human", to_state: "done", data: { pr: 7, mergeCommit: MERGE } });
+  });
+
+  it("cancels a run whose PR was closed without merging", () => {
+    const { machine, store, run, at } = setup();
+    at("review", { pr_number: 7 });
+    expect(machine.closeByPullRequest(run.id, { number: 7, state: "closed" }).state).toBe("cancelled");
+    expect(store.listEvents(run.id).at(-1)!.reason).toBe("PR #7 was closed on GitHub without merging");
+    expect(store.listDecisions(run.id)).toMatchObject([{ outcome: "reject", commit_sha: null }]);
+  });
+
+  it("refuses without evidence that the run's own PR is finished", () => {
+    const { machine, store, run, at } = setup();
+    at("needs_human", { pr_number: 7, waiting_gate: "review" });
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "open" })).toThrow(/still open/);
+    expect(() => machine.closeByPullRequest(run.id, { number: 8, state: "merged", mergeCommit: MERGE })).toThrow(/not the run's PR/);
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged" })).toThrow(/no merge commit/);
+    expect(store.getRun(run.id)!.state).toBe("needs_human");
+
+    at("cancelled");
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE })).toThrow(/already cancelled/);
+  });
+
+  it("refuses a run without a PR, and a run another worker is driving", () => {
+    const { machine, store, run, at } = setup();
+    at("build");
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "closed" })).toThrow(/no pull request/);
+    at("merge", { pr_number: 7 });
+    store.acquireLease(run.id, "worker-1", 60_000);
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE })).toThrow(/leased by worker-1/);
+    expect(machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE }, "worker-1").state).toBe("done");
   });
 });

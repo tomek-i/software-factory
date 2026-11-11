@@ -64,7 +64,7 @@ export function buildProgram(): Command {
     .description("list runs")
     .option("-a, --all", "include finished runs")
     .action((options: { all?: boolean }) => {
-      console.log(runStatus(process.cwd(), options, undefined, styleFor(process.stdout)));
+      console.log(runStatus(process.cwd(), options, { style: styleFor(process.stdout) }));
     });
 
   program
