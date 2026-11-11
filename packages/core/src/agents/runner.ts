@@ -11,6 +11,8 @@ export interface AgentRunOptions {
   runId: string;
   role: string;
   model: string;
+  /** Claude Code `--effort`; unset leaves Claude Code's default. */
+  effort?: string;
   /** The agent's working directory: the run's worktree, or the repo root for read-only roles. */
   cwd: string;
   /** User message, sent on stdin (avoids command-line length and quoting limits on Windows). */
@@ -99,6 +101,7 @@ export function claudeArgs(options: AgentRunOptions, sessionId: string): string[
     "--mcp-config",
     '{"mcpServers":{}}',
   ];
+  if (options.effort) args.push("--effort", options.effort);
   if (options.maxTurns) args.push("--max-turns", String(options.maxTurns));
   for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
   args.push(...(options.resumeSessionId ? ["--resume", sessionId] : ["--session-id", sessionId]));
@@ -134,6 +137,7 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
       run_id: options.runId,
       role: options.role,
       model: options.model,
+      effort: options.effort ?? null,
       session_id: sessionId,
       log_dir: options.logDir,
     });

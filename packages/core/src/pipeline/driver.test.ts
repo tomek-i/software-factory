@@ -132,6 +132,41 @@ describe("PipelineDriver", () => {
     expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "Add the feature", body: "- done\n\nCloses #12\n" }]);
   });
 
+  it("runs each agent with its configured model and effort, upgraded when triage said HIGH", async () => {
+    const config = [
+      "version: 1",
+      "checks:",
+      "  - name: feature",
+      "    run: node check.js",
+      "trust:",
+      "  authors: [alice]",
+      "gates:",
+      "  triage: always",
+      "models:",
+      "  default: opus",
+      "  effort: high",
+      "  roles:",
+      "    triage: { model: fable, effort: medium }",
+      "    builder: sonnet",
+      "  high_risk:",
+      "    builder: { effort: xhigh }",
+      "",
+    ].join("\n");
+    const { driver, store, fake } = setup([{ output: TRIAGE().replace("RISK: LOW", "RISK: HIGH") }, buildStep("fixed")], { config });
+    const run = driver.startRun(12);
+
+    await driver.drive(run.id);
+
+    const flag = (argv: string[], name: string) => argv[argv.indexOf(name) + 1];
+    const [triage, builder] = fake.calls();
+    expect([flag(triage!.argv, "--model"), flag(triage!.argv, "--effort")]).toEqual(["fable", "medium"]);
+    expect([flag(builder!.argv, "--model"), flag(builder!.argv, "--effort")]).toEqual(["sonnet", "xhigh"]);
+    expect(store.listAgentRuns(run.id).map((a) => [a.role, a.model, a.effort])).toEqual([
+      ["triage", "fable", "medium"],
+      ["builder", "sonnet", "xhigh"],
+    ]);
+  });
+
   it("never pushes a secret: the builder must remove it from its commits first", async () => {
     const leaky: FakeStep = {
       files: { "config.js": `module.exports = "${FAKE_AWS_KEY}";\n`, "feature.txt": "fixed\n" },

@@ -117,7 +117,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `hard_rules` | Paths and triggers that always escalate to a human |
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
-| `models` | Default model and per-role overrides |
+| `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH |
 | `trust` | Whose issues and comments count as the spec |
 | `github` | Optional status labels, sync interval, daily start limit |
 

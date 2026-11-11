@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { resolveModel } from "@factory/shared";
 import { loadConfig } from "../config/load.js";
 import { Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -118,6 +119,11 @@ describe("initRepo", () => {
     expect(loadConfig(dir).checks).toEqual([{ name: "test", run: "npm run test", timeout_sec: 900 }]);
     expect(loadConfig(dir).github.status_labels).toBe(false);
     expect(loadConfig(dir).trust).toEqual({ authors: ["alice"], everyone: false });
+    // The starter config spells out a model and effort for every agent.
+    const config = loadConfig(dir);
+    expect(resolveModel(config, { role: "triage" })).toEqual({ model: "fable", effort: "high" });
+    expect(resolveModel(config, { role: "reviewer", lens: "docs" })).toEqual({ model: "haiku", effort: "low" });
+    expect(resolveModel(config, { role: "reviewer", lens: "code", risk: "HIGH" })).toEqual({ model: "opus", effort: "high" });
     expect(existsSync(join(dir, ".factory", "lessons.md"))).toBe(true);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".worktrees/");
     // The only GitHub call is reading who you are, to pre-fill the trusted authors.

@@ -105,4 +105,8 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE runs ADD COLUMN port_base INTEGER;
   ALTER TABLE agent_runs ADD COLUMN pid INTEGER;
   `,
+  // effort: the --effort an agent ran with, so usage can be compared per model and effort.
+  `
+  ALTER TABLE agent_runs ADD COLUMN effort TEXT;
+  `,
 ];
