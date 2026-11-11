@@ -5,7 +5,7 @@ import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort } 
 import { fakeClaude, git, repoWithRemote, type FakeStep } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
 import { createStyle, styleFor, type Style } from "../style.js";
-import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./runs.js";
+import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus, stopActiveRuns } from "./runs.js";
 
 const ESC = "\x1b[";
 // eslint-disable-next-line no-control-regex -- matching escape characters is the point
@@ -21,35 +21,41 @@ const BUILD: FakeStep = {
   output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n",
 };
 
-function setup(steps: FakeStep[], gates = "triage: auto") {
-  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  ${gates}\n`;
+function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
+  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
   const store = new Store(join(root, ".factory", "factory.db"));
   const project = store.upsertProject({ name: "demo", repo_path: root, github_repo: "o/r" });
-  store.upsertIssue(project.id, {
-    number: 12,
-    title: "Add the feature",
-    body: "Add feature.txt",
-    state: "open",
-    author: "alice",
-    labels: [],
-    url: "https://github.com/o/r/issues/12",
-    gh_updated_at: "2026-01-01T00:00:00Z",
-  });
+  for (const [number, title] of [
+    [12, "Add the feature"],
+    [13, "Add another feature"],
+  ] as const) {
+    store.upsertIssue(project.id, {
+      number,
+      title,
+      body: "Add feature.txt",
+      state: "open",
+      author: "alice",
+      labels: [],
+      url: `https://github.com/o/r/issues/${number}`,
+      gh_updated_at: "2026-01-01T00:00:00Z",
+    });
+  }
   store.close();
 
   const fake = fakeClaude(steps);
   const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => undefined, createDraftPullRequest: () => 7 };
   const printed: string[] = [];
-  const queue = () => {
+  const queue = (...numbers: number[]) => {
     const s = new Store(join(root, ".factory", "factory.db"));
-    s.setQueued(project.id, 12, true);
+    for (const n of numbers.length ? numbers : [12]) s.setQueued(project.id, n, true);
     s.close();
   };
   const deps = { env: fake.env, github, print: (l: string) => printed.push(l) };
-  const run = (value = "12", extra: { run?: CommandRunner } = {}) => runRun(dir, value, {}, { ...deps, ...extra });
-  return { dir, root, run, queue, printed, fake, deps };
+  const run = (value = "12", extra: { run?: CommandRunner } = {}) => runRun(dir, [value], {}, { ...deps, ...extra });
+  const db = () => new Store(join(root, ".factory", "factory.db"));
+  return { dir, root, run, queue, printed, fake, deps, db, projectId: project.id };
 }
 
 /** Answers `gh issue view` with the given issue; every other command runs for real (git). */
@@ -127,6 +133,111 @@ describe("factory run", () => {
     expect(logs).toMatch(/agent agent-\w+ builder ok \$0\.04/);
     expect(await runLogs(dir, "#12", { follow: true, intervalMs: 10 }, { print: () => undefined })).toMatch(/is needs_human/);
   });
+});
+
+describe("factory run with several issues", () => {
+  const SLOW_TRIAGE: FakeStep = { output: TRIAGE, sleepMs: 800 };
+
+  /** Each run's triage agent as [started, ended] in ms. */
+  function triageSpans(db: Store, projectId: string): Record<number, [number, number]> {
+    const spans: Record<number, [number, number]> = {};
+    for (const run of db.listRuns({ project_id: projectId })) {
+      const agent = db.listAgentRuns(run.id).find((a) => a.role === "triage")!;
+      spans[run.issue_number!] = [Date.parse(agent.started_at), Date.parse(agent.ended_at!)];
+    }
+    db.close();
+    return spans;
+  }
+
+  it("drives them at the same time and prefixes every line with its issue", async () => {
+    const { dir, deps, queue, printed, db, projectId } = setup([SLOW_TRIAGE, SLOW_TRIAGE], "triage: human");
+    queue(12, 13);
+    const listeners = process.listenerCount("SIGINT");
+
+    const message = await runRun(dir, ["12", "13", "12"], {}, deps);
+
+    // The shared Ctrl+C handler is gone once the last run finishes.
+    expect(process.listenerCount("SIGINT")).toBe(listeners);
+    const lines = message.split("\n");
+    expect(lines[0]).toMatch(/^\[#12\] Run run-12-\w+ is waiting at the triage gate/);
+    expect(lines.filter((l) => l.startsWith("[#13] Run run-13-")).length).toBe(1);
+    expect(lines.every((l) => /^\[#1[23]\] /.test(l))).toBe(true);
+    expect(printed.every((l) => /^\[#1[23]\] /.test(l))).toBe(true);
+    expect(printed).toEqual(expect.arrayContaining(["[#12] -> triage: issue loaded", "[#13] -> triage: issue loaded"]));
+
+    const spans = triageSpans(db(), projectId);
+    expect(Object.keys(spans).sort()).toEqual(["12", "13"]);
+    expect(spans[12]![0]).toBeLessThan(spans[13]![1]);
+    expect(spans[13]![0]).toBeLessThan(spans[12]![1]);
+  });
+
+  it("runs no more at once than concurrency.max_runs", async () => {
+    const { dir, deps, queue, db, projectId } = setup([SLOW_TRIAGE, SLOW_TRIAGE], "triage: human", "concurrency:\n  max_runs: 1\n");
+    queue(12, 13);
+
+    await runRun(dir, ["12", "13"], {}, deps);
+
+    const spans = triageSpans(db(), projectId);
+    expect(spans[13]![0]).toBeGreaterThanOrEqual(spans[12]![1]);
+  });
+
+  it("skips an issue it cannot run, runs the rest, and still fails the command", async () => {
+    const { dir, deps, queue } = setup([{ output: TRIAGE }], "triage: human");
+    queue(12);
+    const closed = fakeGh({ number: 13, title: "Add another feature", state: "CLOSED", author: "alice" });
+
+    const error = await runRun(dir, ["12", "13"], {}, { ...deps, run: closed }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CliError);
+    const message = (error as CliError).message;
+    expect(message).toMatch(/\[#12\] Run run-12-\w+ is waiting at the triage gate/);
+    expect(message).toContain("[#13] Skipped: Issue #13 is closed.");
+  });
+
+  it("starts no more runs once the usage limit is reached", async () => {
+    const { dir, deps, queue, fake } = setup([{ stream: "rate_limited" }], "triage: human", "concurrency:\n  max_runs: 1\n");
+    queue(12, 13);
+
+    const message = await runRun(dir, ["12", "13"], {}, deps);
+
+    expect(message).toMatch(/^\[#12\] Usage limit reached/);
+    expect(message).toContain("[#13] Not started: the usage limit was reached. Run `factory run 13` after it resets.");
+    expect(fake.calls()).toHaveLength(1);
+  });
+
+  it("checks every number before queueing or starting anything", async () => {
+    const { dir, deps, fake, db, projectId } = setup([]);
+
+    await expect(runRun(dir, ["12", "x"], {}, deps)).rejects.toThrow(/"x" is not an issue number/);
+
+    const store = db();
+    expect(store.getIssue(projectId, 12)!.queued_at).toBeFalsy();
+    expect(store.listRuns({ project_id: projectId })).toEqual([]);
+    store.close();
+    expect(fake.calls()).toEqual([]);
+  });
+
+  it("Ctrl+C stops every run it is driving and gives back their leases", async () => {
+    const hang: FakeStep = { output: TRIAGE, sleepMs: 30_000 };
+    const { dir, deps, queue, db, projectId } = setup([hang, hang], "triage: human");
+    queue(12, 13);
+
+    const running = runRun(dir, ["12", "13"], {}, deps).catch(() => undefined);
+    const store = db();
+    const agentsRunning = () =>
+      store.listRuns({ project_id: projectId }).filter((r) => store.listAgentRuns(r.id).some((a) => a.status === "running" && a.pid)).length;
+    for (let i = 0; i < 200 && agentsRunning() < 2; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(agentsRunning()).toBe(2);
+
+    expect(stopActiveRuns()).toBe(2);
+
+    for (const run of store.listRuns({ project_id: projectId })) {
+      expect(store.getRun(run.id)!.lease_owner).toBeNull();
+      expect(store.listAgentRuns(run.id).map((a) => a.status)).toEqual(["cancelled"]);
+    }
+    store.close();
+    await running;
+  }, 20_000);
 });
 
 describe("approve / reject / cancel", () => {
@@ -243,7 +354,7 @@ describe("colour", () => {
     const { queue, dir, printed, deps } = setup([{ output: TRIAGE }, BUILD]);
     queue();
 
-    const message = await runRun(dir, "12", {}, { ...deps, style: colour });
+    const message = await runRun(dir, ["12"], {}, { ...deps, style: colour });
 
     expect(message).toContain(ESC);
     expect(printed.join("\n")).toContain(ESC);
