@@ -45,7 +45,13 @@ function fileList(files: string[]): string {
  * on every OS, and anything that would leave the run folder (`..`, absolute or drive paths) is refused.
  */
 function resolveInRunDir(runDir: string, file: string, files: string[]): string {
-  const short: Record<string, string | undefined> = { triage: "triage.md", build: "build.md", checks: latestChecks(files), approval: "approval.md" };
+  const short: Record<string, string | undefined> = {
+    triage: "triage.md",
+    build: "build.md",
+    checks: latestChecks(files),
+    approval: "approval.md",
+    learn: "learn.md",
+  };
   if (Object.hasOwn(short, file)) {
     const path = short[file];
     if (!path) throw new CliError(`No round has a checks.md yet. Files in the run folder:\n${fileList(files)}`);
@@ -121,6 +127,8 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
   // The merge stage: the quality gate again after merging the default branch in, and the approver's call.
   summarise(round && `${round}/resync/checks.md`, "checks", "GATE");
   summarise("approval.md", "approver", "DECISION");
+  // After the merge: what the learner made of the run (its lessons wait in `factory lessons`).
+  summarise("learn.md", "learn", "LESSONS");
 
   lines.push("", `Files in ${runDir}:`, fileList(files), "", `Show one with \`factory show ${run.id} <file>\`, e.g. \`factory show ${run.id} triage\`.`);
   return lines.join("\n");
