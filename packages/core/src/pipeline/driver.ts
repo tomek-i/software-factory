@@ -447,7 +447,13 @@ export class PipelineDriver {
       if (!git.isPushed()) problems.push("the checked commit is not pushed");
       if (problems.length) return this.escalate(run, `quality gate passed but ${problems.join("; ")}`);
       // Reviews are not automated yet (phase 3): a human looks at the draft PR, told about any hard rule the diff trips.
-      const hits = this.hardRuleHits(run, worktree);
+      let hits: string[];
+      try {
+        hits = this.hardRuleHits(run, worktree, result.head);
+      } catch (err) {
+        // Without the check nobody knows what the diff touches: a human decides.
+        return this.escalate(run, `quality gate passed but the hard-rule check failed: ${(err as Error).message}`);
+      }
       const reasons = ["quality gate passed; reviews are not automated yet"];
       if (hits.length) reasons.push(`${run.unsafe ? "hard rules lifted by --unsafe" : "hard rules"}: ${hits.join("; ")}`);
       this.move(run, "needs_human", reasons.join("; "), { round, hardRuleHits: hits }, undefined, { waiting_gate: "review" });
@@ -510,10 +516,10 @@ export class PipelineDriver {
    * Hard rules the branch trips against where it left the default branch. The scope a deletion is
    * checked against is the issue plus triage's reading of it.
    */
-  private hardRuleHits(run: Run, worktree: Worktree): string[] {
+  private hardRuleHits(run: Run, worktree: Worktree, head: string): string[] {
     const issue = this.issueOf(run);
     const scope = [issue.title, issue.body, ...this.triageScope(this.runDir(run)).map((s) => s.body)].join("\n");
-    return diffHardRuleHits({ cwd: worktree.path, defaultBranch: this.defaultBranch, config: this.deps.config, scope, run: this.run });
+    return diffHardRuleHits({ cwd: worktree.path, defaultBranch: this.defaultBranch, config: this.deps.config, scope, head, run: this.run });
   }
 
   /** The risk triage gave this run, once triage has run. */
