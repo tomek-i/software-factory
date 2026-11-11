@@ -1,9 +1,12 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
-import { git, repoWithRemote } from "../../test/helpers.js";
+import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "../../test/helpers.js";
 import { declaredDependencies, diffHardRuleHits, globToRegExp } from "./hard-rules.js";
+
+// Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const config = (extra: object = {}) => factoryConfigSchema.parse({ version: 1, ...extra });
 
