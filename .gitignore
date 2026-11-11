@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.env
+.env.*
+
+# factory runtime state when dogfooding on this repo
+.factory/runs/
+.factory/factory.db*
+.worktrees/
+
+# local media (screenshots, walkthrough videos)
+.narrate/
+docs/*.mp4
+docs/*.vtt
+docs/*.scene.json
+docs/*.tasks.md
+docs/screenshots/
+docs/ux-review/

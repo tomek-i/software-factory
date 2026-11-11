@@ -1,0 +1,11 @@
+{
+  // Typechecks everything including tests, against workspace sources (the "source" condition).
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true
+  },
+  "include": ["apps/*/src/**/*.ts", "packages/*/src/**/*.ts"]
+}
