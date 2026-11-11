@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../test/helpers.js";
-import { issueBlock, permissionProfile, renderTask, rolePrompt, writeRoleFiles, type IssueText } from "./prompts.js";
+import { absoluteRule, issueBlock, permissionProfile, renderTask, rolePrompt, writeRoleFiles, type IssueText } from "./prompts.js";
 
 const issue: IssueText = {
   number: 7,
@@ -59,6 +60,22 @@ describe("permissionProfile", () => {
     expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
     expect(permissions.allow).toContain("Write(.factory/runs/run-1/**)");
     expect(permissions.allow).not.toContain("Write");
+  });
+
+  it("gives a reviewer no shell and only its own output file to write, as an absolute rule", () => {
+    const outputFile = join(tempDir(), "round-1", "review-code.md");
+    const { permissions } = permissionProfile("reviewer", { runDirFromCwd: "../..", outputFile });
+    expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+    expect(() => permissionProfile("reviewer", { runDirFromCwd: "x" })).toThrow(/output file/);
+  });
+
+  it("writes absolute rules the way Claude Code matches them", () => {
+    if (process.platform === "win32") {
+      expect(absoluteRule("C:\\Users\\me\\run\\review-code.md")).toBe("//c/Users/me/run/review-code.md");
+    } else {
+      expect(absoluteRule("/home/me/run/review-code.md")).toBe("//home/me/run/review-code.md");
+    }
   });
 
   it("lets the builder edit and use Bash but not push (so not force-push) or touch PRs (so not merge or mark ready)", () => {

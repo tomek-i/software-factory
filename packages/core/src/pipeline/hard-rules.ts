@@ -314,6 +314,19 @@ export function hardRuleHits({ files, config, read, scope }: HardRuleInput): str
 }
 
 /**
+ * Where `head` left the default branch, from a fresh fetch of the remote into an engine-owned ref:
+ * the builder could have moved origin/<branch> or planted replace refs in the shared repository.
+ */
+export function freshBase(cwd: string, defaultBranch: string, head = "HEAD", run: CommandRunner = runCommand): string {
+  const git = gitIn(cwd, run);
+  const fetched = git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${defaultBranch}:${BASE_REF}`]);
+  if (fetched.code !== 0) throw new Error(`git fetch of ${defaultBranch} failed: ${fetched.stderr || fetched.stdout}`);
+  const mergeBase = git(["merge-base", BASE_REF, head]);
+  if (mergeBase.code !== 0) throw new Error(`git merge-base failed: ${mergeBase.stderr || mergeBase.stdout}`);
+  return mergeBase.stdout.trim();
+}
+
+/**
  * Hard-rule hits for the commit `head` (default HEAD) against where it left the default branch.
  * The base comes from a fresh fetch of the remote into an engine-owned ref, because the builder
  * could have moved origin/<branch> or planted replace refs in the shared repository.
@@ -329,14 +342,30 @@ export function diffHardRuleHits(options: {
   const run = options.run ?? runCommand;
   const git = gitIn(options.cwd, run);
   const head = options.head ?? "HEAD";
-  const fetched = git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${options.defaultBranch}:${BASE_REF}`]);
-  if (fetched.code !== 0) throw new Error(`git fetch of ${options.defaultBranch} failed: ${fetched.stderr || fetched.stdout}`);
-  const mergeBase = git(["merge-base", BASE_REF, head]);
-  if (mergeBase.code !== 0) throw new Error(`git merge-base failed: ${mergeBase.stderr || mergeBase.stdout}`);
-  const base = mergeBase.stdout.trim();
+  const base = freshBase(options.cwd, options.defaultBranch, head, run);
   const read = (rev: "base" | "head", path: string) => {
     const shown = git(["show", `${rev === "base" ? base : head}:${path}`]);
     return shown.code === 0 ? shown.stdout : undefined;
   };
   return hardRuleHits({ files: changedFiles(options.cwd, base, head, run), config: options.config, read, scope: options.scope });
+}
+
+/**
+ * The change between `base` and `head` as text for reviewers: the commit log, then the diff.
+ * Written by the engine so reviewers need no shell. Configured diff programs (external diff,
+ * textconv, fsmonitor) are switched off: the builder could have set them in the shared repo config.
+ */
+export function changeReport(cwd: string, base: string, head: string, run: CommandRunner = runCommand): string {
+  const git = (args: string[]) => {
+    const result = run(
+      "git",
+      ["--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "core.pager=cat", ...args],
+      { cwd },
+    );
+    if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr || result.stdout}`);
+    return result.stdout;
+  };
+  const log = git(["log", "--no-color", "--no-decorate", "--stat", `${base}..${head}`]);
+  const diff = git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", `${base}...${head}`]);
+  return [`# Change ${base.slice(0, 7)}..${head.slice(0, 7)}`, "", "## Commits", "", log, "", "## Diff", "", diff, ""].join("\n");
 }

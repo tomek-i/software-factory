@@ -8,6 +8,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const FAKE_CLAUDE = join(here, "fake-claude.mjs");
 
 export interface FakeStep {
+  /** Only this role's agent takes the step (the system prompt file name, e.g. "reviewer-code"). */
+  role?: string;
   stream?: "success" | "error_max_turns" | "rate_limited";
   files?: Record<string, string>;
   exec?: string[][];
@@ -15,6 +17,13 @@ export interface FakeStep {
   exitCode?: number;
   sleepMs?: number;
 }
+
+/** A review that passes with no findings. */
+export const REVIEW_PASS = "VERDICT: PASS\n\n## Summary\n- looks good\n\n## Findings\nNone.\n";
+
+/** One passing review per lens; the default lenses are `reviews.always` (code, security, docs). */
+export const reviewsPass = (lenses: string[] = ["code", "security", "docs"]): FakeStep[] =>
+  lenses.map((lens) => ({ role: `reviewer-${lens}`, output: REVIEW_PASS }));
 
 export interface FakeInvocation {
   argv: string[];

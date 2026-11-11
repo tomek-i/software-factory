@@ -1,18 +1,29 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ReviewLens } from "@factory/shared";
 import type { TrustedReader } from "../config/trusted.js";
 
 /** Roles that have a shipped prompt and permission profile so far. */
-export type PromptRole = "triage" | "builder";
+export type PromptRole = "triage" | "builder" | "reviewer";
 
 /** Default prompts shipped with the factory (packages/core/prompts), the same from src/ and dist/. */
 export const SHIPPED_PROMPTS_DIR = fileURLToPath(new URL("../../prompts/", import.meta.url));
 
-/** The role's instructions: `.factory/prompts/<role>.md` on the default branch wins over the shipped default. */
-export function rolePrompt(role: PromptRole, read: TrustedReader): string {
-  return read(`.factory/prompts/${role}.md`) ?? readFileSync(join(SHIPPED_PROMPTS_DIR, `${role}.md`), "utf8");
+/** One prompt file: `.factory/prompts/<name>.md` on the default branch wins over the shipped default. */
+function promptFile(name: string, read: TrustedReader): string {
+  return read(`.factory/prompts/${name}.md`) ?? readFileSync(join(SHIPPED_PROMPTS_DIR, `${name}.md`), "utf8");
+}
+
+/** The role's instructions. A reviewer gets the shared reviewer contract plus its lens (`review-<lens>.md`). */
+export function rolePrompt(role: PromptRole, read: TrustedReader, lens?: ReviewLens): string {
+  if (role !== "reviewer") return promptFile(role, read);
+  if (!lens) throw new Error("a reviewer prompt needs a lens");
+  return `${promptFile("reviewer", read).trimEnd()}
+
+${promptFile(`review-${lens}`, read).trim()}
+`;
 }
 
 /** Subset of Claude Code's settings.json used for permission profiles. */
@@ -21,13 +32,36 @@ export interface ClaudeSettings {
 }
 
 /**
+ * An absolute path in Claude Code's permission-rule form: `//` plus the POSIX path, with a Windows
+ * drive as a lowercase first segment (`C:\a\b` -> `//c/a/b`). Checked against real Claude Code:
+ * relative `../` rules and `C:/` spellings do not match, and only Edit rules cover the Write tool.
+ */
+export function absoluteRule(path: string): string {
+  const posixPath = resolve(path).replace(/\\/g, "/");
+  const drive = /^([A-Za-z]):\/(.*)$/.exec(posixPath);
+  return drive ? `//${drive[1]!.toLowerCase()}/${drive[2]}` : `/${posixPath}`;
+}
+
+/**
  * What each role may do, enforced by Claude Code with --permission-mode dontAsk (anything not
  * allowed is denied). Bash deny rules are prefix matches and best effort; the real protection for
  * merges and history is GitHub branch protection plus the engine checking the result.
  */
-export function permissionProfile(role: PromptRole, options: { runDirFromCwd: string }): ClaudeSettings {
+export function permissionProfile(role: PromptRole, options: { runDirFromCwd: string; outputFile?: string }): ClaudeSettings {
   const runDir = options.runDirFromCwd.replace(/\\/g, "/").replace(/\/$/, "");
   const web = ["WebFetch", "WebSearch"];
+  if (role === "reviewer") {
+    if (!options.outputFile) throw new Error("a reviewer profile needs its output file");
+    return {
+      permissions: {
+        // No shell: even "read-only" git can write files (--output) or run configured programs.
+        // The engine puts the change in a file instead. Several reviewers run at once, so each may
+        // write only its own output file, never another lens's verdict.
+        allow: ["Read", "Grep", "Glob", `Edit(${absoluteRule(options.outputFile)})`],
+        deny: ["Bash", "PowerShell", "NotebookEdit", ...web],
+      },
+    };
+  }
   if (role === "triage") {
     return {
       permissions: {
@@ -58,7 +92,8 @@ export function permissionProfile(role: PromptRole, options: { runDirFromCwd: st
 /** Write the role's prompt and permission profile into the run folder, where they also serve as a record. */
 export function writeRoleFiles(
   runDir: string,
-  role: PromptRole,
+  /** File name: the role, or e.g. `reviewer-code` when one role runs as several agents. */
+  role: string,
   prompt: string,
   settings: ClaudeSettings,
 ): { systemPromptFile: string; settingsFile: string } {
@@ -110,6 +145,8 @@ export function issueBlock(issue: IssueText, trusted: boolean, nonce = randomByt
 
 export interface TaskInput {
   role: PromptRole;
+  /** A reviewer's lens. */
+  lens?: ReviewLens;
   runId: string;
   runDir: string;
   workDir: string;
@@ -141,7 +178,7 @@ export function renderTask(input: TaskInput): string {
     `Output file: \`${input.outputFile}\``,
   ].filter(Boolean);
 
-  const parts = [`# Task: ${input.role}`, "", ...facts];
+  const parts = [`# Task: ${input.role}${input.lens ? ` (${input.lens})` : ""}`, "", ...facts];
   if (input.checks?.length) {
     parts.push("", "## Checks the quality gate runs", ...input.checks.map((c) => `- ${c.name}: \`${c.run}\``));
   }

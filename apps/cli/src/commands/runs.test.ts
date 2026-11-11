@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort } from "@factory/core";
-import { fakeClaude, git, repoWithRemote, type FakeStep } from "../../../../packages/core/test/helpers.js";
+import { fakeClaude, git, repoWithRemote, reviewsPass, type FakeStep } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
 import { createStyle, styleFor, type Style } from "../style.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus, stopActiveRuns } from "./runs.js";
@@ -112,13 +112,14 @@ describe("factory run", () => {
   });
 
   it("drives a queued issue to the review gate and says what to do next", async () => {
-    const { run, queue, printed, dir } = setup([{ output: TRIAGE }, BUILD]);
+    const { run, queue, printed, dir } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
     queue();
 
     const message = await run();
 
     expect(message).toMatch(/waiting at the review gate/);
-    expect(message).toMatch(/See it with: `factory show run-12-\w+ build`/);
+    expect(message).toMatch(/reviews: code PASS, security PASS, docs PASS/);
+    expect(message).toMatch(/See it with: `factory show run-12-\w+`\./);
     expect(message).toContain("factory approve");
     expect(printed).toEqual(expect.arrayContaining(["-> triage: issue loaded", "-> build: triage approved"]));
     expect(printed.some((l) => l.startsWith("[gate] ok: passed"))).toBe(true);
@@ -126,7 +127,7 @@ describe("factory run", () => {
 
     const status = runStatus(dir);
     expect(status.split("\n")[0]).toMatch(/^RUN\s+ISSUE\s+STATE\s+ROUND\s+COST\s+WAITING$/);
-    expect(status).toMatch(/run-12-\w+\s+#12\s+needs_human\s+b1 r1\s+\$0\.08\s+review/);
+    expect(status).toMatch(/run-12-\w+\s+#12\s+needs_human\s+b1 r1\s+\$0\.21\s+review/);
 
     const logs = await runLogs(dir, "#12", {});
     expect(logs).toContain("intake -> triage  issue loaded");
@@ -256,7 +257,7 @@ describe("approve / reject / cancel", () => {
   });
 
   it("keeps driving the run after an approval", async () => {
-    const { run, queue, dir, deps, printed } = setup([{ output: TRIAGE }, BUILD], "triage: human");
+    const { run, queue, dir, deps, printed } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()], "triage: human");
     queue();
     await run();
 
@@ -266,7 +267,7 @@ describe("approve / reject / cancel", () => {
     expect(printed.some((l) => l.startsWith("[builder] ok"))).toBe(true);
     expect(message).toMatch(/waiting at the review gate/);
     // Approving the review gate has nothing to drive yet.
-    expect(await runApprove(dir, "12", {}, deps)).toMatch(/moves to review\.\nReviews are not automated yet/);
+    expect(await runApprove(dir, "12", {}, deps)).toMatch(/moves to capture\.\nCapture and merge are not automated yet/);
   });
 
   it("records an approval but does not drive a run whose issue was unqueued", async () => {
@@ -293,7 +294,7 @@ describe("approve / reject / cancel", () => {
   });
 
   it("cancels a run and keeps its worktree", async () => {
-    const { run, queue, dir } = setup([{ output: TRIAGE }, BUILD]);
+    const { run, queue, dir } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
     queue();
     await run();
     const worktrees = join(findRepoRoot(dir)!, ".worktrees");
@@ -334,7 +335,7 @@ describe("approve / reject / cancel", () => {
 
   it("keeps driving the run after a resume", async () => {
     const blocked = { output: "STATUS: BLOCKED\nCOMMIT: {{HEAD}}\n\n## Blocker\nPricing decision needed.\n" };
-    const { run, queue, dir, deps } = setup([{ output: TRIAGE }, blocked, BUILD]);
+    const { run, queue, dir, deps } = setup([{ output: TRIAGE }, blocked, BUILD, ...reviewsPass()]);
     queue();
     await run();
 
@@ -351,7 +352,7 @@ describe("approve / reject / cancel", () => {
 describe("colour", () => {
   it("only styles the text: colour on, the plain text is unchanged; NO_COLOR or a pipe gives no escape codes", async () => {
     const colour = createStyle(true);
-    const { queue, dir, printed, deps } = setup([{ output: TRIAGE }, BUILD]);
+    const { queue, dir, printed, deps } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
     queue();
 
     const message = await runRun(dir, ["12"], {}, { ...deps, style: colour });
@@ -364,7 +365,7 @@ describe("colour", () => {
     expect(lines.some((l) => /^\[gate\] ok: passed \(\d+\.\ds\)$/.test(l))).toBe(true);
     expect(lines.some((l) => /^\[builder\] ok \(\$0\.04\)$/.test(l))).toBe(true);
     expect(strip(message)).toMatch(
-      /^Run run-12-\w+ is waiting at the review gate: .+\nSee it with: `factory show run-12-\w+ build`\.\nApprove with `factory approve run-12-\w+`, or reject with `factory reject run-12-\w+ -m "<why>"`\.$/,
+      /^Run run-12-\w+ is waiting at the review gate: .+\nSee it with: `factory show run-12-\w+`\.\nApprove with `factory approve run-12-\w+`, or reject with `factory reject run-12-\w+ -m "<why>"`\.$/,
     );
 
     // status keeps its columns aligned: stripping the codes gives exactly the plain table.

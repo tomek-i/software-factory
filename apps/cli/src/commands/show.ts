@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { runDirOf, type CommandRunner, type Run } from "@factory/core";
-import { parseVerdict, VerdictParseError, type VerdictKind } from "@factory/shared";
+import { isBlocking, parseVerdict, VerdictParseError, type VerdictKind } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 import { findRun } from "./runs.js";
 
@@ -89,6 +89,23 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
       const verdict = parseVerdict(kind, readFileSync(join(runDir, path), "utf8"));
       lines.push(`${path} (${key}: ${String((verdict.header as Record<string, unknown>)[key])})`);
       lines.push(...(verdict.summary.length ? verdict.summary.map((s) => `  - ${s}`) : ["  (no summary)"]));
+    } catch (err) {
+      if (!(err instanceof VerdictParseError)) throw err;
+      lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
+    }
+  }
+
+  // The reviews of the latest gated round, each lens with its verdict and the findings that block.
+  const round = checks?.split("/")[0];
+  for (const path of files.filter((f) => round && f.startsWith(`${round}/review-`) && f.endsWith(".md"))) {
+    lines.push("");
+    try {
+      const review = parseVerdict("review", readFileSync(join(runDir, path), "utf8"));
+      lines.push(`${path} (VERDICT: ${review.header.VERDICT})`);
+      lines.push(...(review.summary.length ? review.summary.map((s) => `  - ${s}`) : ["  (no summary)"]));
+      for (const f of review.findings.filter(isBlocking)) {
+        lines.push(`  ${f.severity}: ${f.claim}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`);
+      }
     } catch (err) {
       if (!(err instanceof VerdictParseError)) throw err;
       lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);

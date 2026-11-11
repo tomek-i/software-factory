@@ -10,7 +10,8 @@ export interface ExecResult {
 export type CommandRunner = (cmd: string, args: string[], options: { cwd: string }) => ExecResult;
 
 export const runCommand: CommandRunner = (cmd, args, { cwd }) => {
-  const result = spawnSync(cmd, args, { cwd, encoding: "utf8", windowsHide: true });
+  // Large outputs (a whole diff) exceed the 1 MB default and would fail as ENOBUFS.
+  const result = spawnSync(cmd, args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
   if (result.error) {
     // e.g. ENOENT when the tool is not installed
     return { code: -1, stdout: "", stderr: result.error.message };

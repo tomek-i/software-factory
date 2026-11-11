@@ -2,7 +2,8 @@
 /* global process, console, setTimeout */
 /**
  * Stand-in for the `claude` CLI in tests (selected with FACTORY_CLAUDE_BIN), so no test spends
- * real usage. Each invocation consumes the next step of the scenario file in FAKE_CLAUDE_SCENARIO:
+ * real usage. Each invocation consumes the next unused step of the scenario file in FAKE_CLAUDE_SCENARIO
+ * (a step with "role", e.g. "reviewer-code", only goes to that role's agent):
  *
  *   { "steps": [{ "stream": "success", "files": {"a.txt": "x"}, "exec": [["git", "commit", ...]],
  *                 "output": "STATUS: READY\nCOMMIT: {{HEAD}}\n", "exitCode": 0, "sleepMs": 0 }] }
@@ -15,7 +16,7 @@
  * Every invocation is appended to FAKE_CLAUDE_LOG as one JSON line for assertions.
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,15 +49,24 @@ if (!scenarioPath) {
   console.error("FAKE_CLAUDE_SCENARIO is not set");
   process.exit(2);
 }
-const statePath = `${scenarioPath}.state`;
-const index = existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+const role = systemPromptFile.split(/[/\\]/).pop()?.replace(/\.md$/, "");
 const steps = JSON.parse(readFileSync(scenarioPath, "utf8")).steps;
-const step = steps[index];
+// Claim the first step not taken yet that is for any role or for this one. A claim is a file created
+// with "wx", so agents started at the same moment (parallel reviewers) never get the same step.
+let step;
+for (let i = 0; i < steps.length && !step; i++) {
+  if (steps[i].role && steps[i].role !== role) continue;
+  try {
+    closeSync(openSync(`${scenarioPath}.claimed-${i}`, "wx"));
+    step = steps[i];
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+  }
+}
 if (!step) {
-  console.error(`fake claude: no scripted step #${index}`);
+  console.error(`fake claude: no scripted step left for ${role}`);
   process.exit(3);
 }
-writeFileSync(statePath, String(index + 1));
 
 if (step.sleepMs) await new Promise((r) => setTimeout(r, step.sleepMs));
 
