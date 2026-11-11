@@ -11,6 +11,15 @@ export const checkSchema = z.object({
 
 export const HARD_RULE_TRIGGERS = ["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"] as const;
 
+/** Paths that always escalate to a human. Config can add to these but not remove them. */
+export const DEFAULT_PROTECTED_PATHS = [
+  "**/auth/**",
+  "**/migrations/**",
+  ".github/workflows/**",
+  "infra/**",
+  ".factory/**",
+] as const;
+
 export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
 
@@ -55,12 +64,18 @@ export const factoryConfigSchema = z.object({
       merge: gateMode.default("human"),
     })
     .default({}),
+  // The defaults are a floor: config can add paths but never remove them, otherwise an empty list
+  // would be a way to switch hard rules off without --unsafe.
   hard_rules: z
     .object({
       paths: z
         .array(z.string())
-        .default(["**/auth/**", "**/migrations/**", ".github/workflows/**", "infra/**", ".factory/config.yaml"]),
-      triggers: z.array(z.enum(HARD_RULE_TRIGGERS)).default([...HARD_RULE_TRIGGERS]),
+        .default([])
+        .transform((paths) => [...new Set([...DEFAULT_PROTECTED_PATHS, ...paths])]),
+      triggers: z
+        .array(z.enum(HARD_RULE_TRIGGERS))
+        .default([])
+        .transform(() => [...HARD_RULE_TRIGGERS]),
     })
     .default({}),
   loops: z

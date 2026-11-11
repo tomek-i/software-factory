@@ -33,6 +33,15 @@ describe("factoryConfigSchema", () => {
     expect(factoryConfigSchema.safeParse({ version: 1, gates: { merge: "yolo" } }).success).toBe(false);
   });
 
+  it("cannot switch hard rules off, only add to them", () => {
+    const config = factoryConfigSchema.parse({
+      version: 1,
+      hard_rules: { paths: ["billing/**"], triggers: [] },
+    });
+    expect(config.hard_rules.paths).toEqual(expect.arrayContaining([".github/workflows/**", ".factory/**", "billing/**"]));
+    expect(config.hard_rules.triggers).toEqual(["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"]);
+  });
+
   it("has no way to enable unsafe mode from config", () => {
     const config = factoryConfigSchema.parse({ version: 1, unsafe: true } as unknown);
     expect("unsafe" in config).toBe(false);

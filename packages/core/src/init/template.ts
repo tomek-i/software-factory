@@ -38,19 +38,13 @@ gates:
   pr: always
   merge: human
 
-# Changes matching these always come to you, whatever the gate mode.
-# Only a per-run --unsafe flag can lift them; it cannot be set here.
+# Changes matching hard rules always come to you, whatever the gate mode.
+# Built in and always on: **/auth/**, **/migrations/**, .github/workflows/**, infra/**, .factory/**,
+# plus new dependencies, secret/env file changes and deleting files outside the issue's scope.
+# Add your own protected paths here; the built-in ones cannot be removed.
+# Only a per-run --unsafe flag can lift hard rules; it cannot be set here.
 hard_rules:
-  paths:
-    - "**/auth/**"
-    - "**/migrations/**"
-    - ".github/workflows/**"
-    - "infra/**"
-    - ".factory/config.yaml"
-  triggers:
-    - new_dependency
-    - secrets_or_env_changes
-    - deletes_files_outside_scope
+  paths: []
 
 loops:
   max_build_iterations: 5
