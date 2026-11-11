@@ -73,7 +73,27 @@ export type RunPatch = Partial<
   >
 >;
 
+export interface Issue {
+  project_id: string;
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  author: string;
+  labels: string[];
+  url: string;
+  gh_updated_at: string;
+  synced_at: string;
+  queued_at: string | null;
+}
+
+/** An issue as fetched from GitHub, before local bookkeeping is added. */
+export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at">;
+
 type RunRow = Omit<Run, "unsafe"> & { unsafe: number };
+type IssueRow = Omit<Issue, "labels"> & { labels: string };
+
+const toIssue = (row: IssueRow): Issue => ({ ...row, labels: JSON.parse(row.labels) as string[] });
 
 const now = () => new Date().toISOString();
 
@@ -155,6 +175,66 @@ export class Store {
 
   listProjects(): Project[] {
     return this.db.prepare("SELECT * FROM projects ORDER BY name").all() as Project[];
+  }
+
+  // ---- issues -------------------------------------------------------------
+
+  /** Insert or refresh issues from GitHub. Keeps the local queue decision unless the issue was closed. */
+  upsertIssue(projectId: string, issue: IssueInput): void {
+    this.db
+      .prepare(
+        `INSERT INTO issues (project_id, number, title, body, state, author, labels, url, gh_updated_at, synced_at)
+         VALUES (@project_id, @number, @title, @body, @state, @author, @labels, @url, @gh_updated_at, @synced_at)
+         ON CONFLICT (project_id, number) DO UPDATE SET
+           title = excluded.title, body = excluded.body, state = excluded.state, author = excluded.author,
+           labels = excluded.labels, url = excluded.url, gh_updated_at = excluded.gh_updated_at,
+           synced_at = excluded.synced_at,
+           queued_at = CASE WHEN excluded.state = 'closed' THEN NULL ELSE issues.queued_at END`,
+      )
+      .run({ ...issue, project_id: projectId, labels: JSON.stringify(issue.labels), synced_at: now() });
+  }
+
+  /** Mark open issues that GitHub no longer lists as open as closed, and drop them from the queue. */
+  closeIssuesExcept(projectId: string, openNumbers: number[]): number {
+    const open = new Set(openNumbers);
+    const stale = this.listIssues({ project_id: projectId, state: "open" }).filter((i) => !open.has(i.number));
+    const close = this.db.prepare(
+      "UPDATE issues SET state = 'closed', queued_at = NULL, synced_at = ? WHERE project_id = ? AND number = ?",
+    );
+    for (const issue of stale) close.run(now(), projectId, issue.number);
+    return stale.length;
+  }
+
+  getIssue(projectId: string, number: number): Issue | undefined {
+    const row = this.db.prepare("SELECT * FROM issues WHERE project_id = ? AND number = ?").get(projectId, number) as
+      | IssueRow
+      | undefined;
+    return row && toIssue(row);
+  }
+
+  listIssues(filter: { project_id: string; state?: Issue["state"]; queued?: boolean }): Issue[] {
+    const where = ["project_id = ?"];
+    const params: unknown[] = [filter.project_id];
+    if (filter.state) {
+      where.push("state = ?");
+      params.push(filter.state);
+    }
+    if (filter.queued !== undefined) where.push(filter.queued ? "queued_at IS NOT NULL" : "queued_at IS NULL");
+    const order = filter.queued ? "queued_at" : "number DESC";
+    const rows = this.db.prepare(`SELECT * FROM issues WHERE ${where.join(" AND ")} ORDER BY ${order}`).all(...params);
+    return (rows as IssueRow[]).map(toIssue);
+  }
+
+  /** Locally decide whether the factory should work on an issue. Only open issues can be queued. */
+  setQueued(projectId: string, number: number, queued: boolean): Issue {
+    const issue = this.getIssue(projectId, number);
+    if (!issue) throw new Error(`issue #${number} is not synced yet`);
+    if (queued && issue.state !== "open") throw new Error(`issue #${number} is closed`);
+    if (queued && issue.queued_at) return issue;
+    this.db
+      .prepare("UPDATE issues SET queued_at = ? WHERE project_id = ? AND number = ?")
+      .run(queued ? now() : null, projectId, number);
+    return this.getIssue(projectId, number)!;
   }
 
   // ---- runs ---------------------------------------------------------------

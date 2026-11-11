@@ -74,4 +74,23 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX agent_runs_run ON agent_runs(run_id);
   `,
+  // Issues mirrored from GitHub. queued_at is the local intake decision: only the
+  // factory's user sets it, so nobody on GitHub can feed work in.
+  `
+  CREATE TABLE issues (
+    project_id     TEXT NOT NULL REFERENCES projects(id),
+    number         INTEGER NOT NULL,
+    title          TEXT NOT NULL,
+    body           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    author         TEXT NOT NULL,
+    labels         TEXT NOT NULL,
+    url            TEXT NOT NULL,
+    gh_updated_at  TEXT NOT NULL,
+    synced_at      TEXT NOT NULL,
+    queued_at      TEXT,
+    PRIMARY KEY (project_id, number)
+  );
+  CREATE INDEX issues_queued ON issues(project_id, queued_at);
+  `,
 ];
