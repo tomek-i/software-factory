@@ -112,15 +112,16 @@ function describeOutcome(outcome: DriveOutcome, run: Run, issue: number): string
  */
 function ensureQueued(store: Store, project: Project, config: FactoryConfig, number: number, deps: RunDeps): Issue {
   const print = deps.print ?? console.log;
-  if (!store.getIssue(project.id, number)) {
-    try {
-      fetchIssue(store, project, number, deps.run);
-    } catch (err) {
-      throw new CliError(`Could not fetch issue #${number}: ${(err as Error).message}`);
-    }
+  const known = store.getIssue(project.id, number);
+  if (known?.queued_at) return known;
+  // Fetch fresh before queueing: the local copy may be missing, or stale since the last sync
+  // (closed or edited on GitHub), and this is about to start agents on it.
+  try {
+    fetchIssue(store, project, number, deps.run);
+  } catch (err) {
+    throw new CliError(`Could not fetch issue #${number}: ${(err as Error).message}`);
   }
   const issue = store.getIssue(project.id, number)!;
-  if (issue.queued_at) return issue;
   if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
   store.setQueued(project.id, number, true);
   print(`Queued #${number} ${issue.title}`);
@@ -305,11 +306,15 @@ async function continueRun(
   options: { run?: boolean },
   deps: RunDeps,
 ): Promise<string> {
-  if (isTerminal(to) || run.issue_number === null) return done;
   if (to === "review") {
     return `${done}\nReviews are not automated yet: review the draft PR, then mark it ready and merge it yourself.`;
   }
+  if (isTerminal(to) || run.issue_number === null) return done;
   if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
+  // Not re-queued here: the issue may have been unqueued on purpose, or closed on GitHub since.
+  if (!store.getIssue(project.id, run.issue_number)?.queued_at) {
+    return `${done}\nIssue #${run.issue_number} is no longer queued, so the run was not continued. \`factory run ${run.issue_number}\` queues it again and continues.`;
+  }
   (deps.print ?? console.log)(done);
   return driveIssue(store, project, config, run.issue_number, {}, deps);
 }

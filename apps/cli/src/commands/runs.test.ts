@@ -67,11 +67,18 @@ function fakeGh(issue: { number: number; title: string; state: string; author: s
 }
 
 describe("factory run", () => {
-  it("queues a synced issue that is not queued yet, then runs it", async () => {
+  it("refreshes a synced issue that is not queued yet, queues it, then runs it", async () => {
     const { run, printed } = setup([{ output: TRIAGE }], "triage: human");
+    const gh = fakeGh({ number: 12, title: "Add the feature (edited)", state: "OPEN", author: "alice" });
 
-    expect(await run()).toMatch(/waiting at the triage gate/);
-    expect(printed[0]).toBe("Queued #12 Add the feature");
+    expect(await run("12", { run: gh })).toMatch(/waiting at the triage gate/);
+    expect(printed[0]).toBe("Queued #12 Add the feature (edited)");
+  });
+
+  it("refuses an issue closed on GitHub since the last sync", async () => {
+    const { run } = setup([]);
+    const closed = fakeGh({ number: 12, title: "Add the feature", state: "CLOSED", author: "alice" });
+    await expect(run("12", { run: closed })).rejects.toThrow(/#12 is closed/);
   });
 
   it("fetches an issue that was never synced, queues it and runs it", async () => {
@@ -133,7 +140,8 @@ describe("approve / reject / cancel", () => {
   });
 
   it("keeps driving the run after an approval", async () => {
-    const { run, dir, deps, printed } = setup([{ output: TRIAGE }, BUILD], "triage: human");
+    const { run, queue, dir, deps, printed } = setup([{ output: TRIAGE }, BUILD], "triage: human");
+    queue();
     await run();
 
     const message = await runApprove(dir, "12", { message: "go" }, deps);
@@ -143,6 +151,21 @@ describe("approve / reject / cancel", () => {
     expect(message).toMatch(/waiting at the review gate/);
     // Approving the review gate has nothing to drive yet.
     expect(await runApprove(dir, "12", {}, deps)).toMatch(/moves to review\.\nReviews are not automated yet/);
+  });
+
+  it("records an approval but does not drive a run whose issue was unqueued", async () => {
+    const { run, queue, dir, deps, root, fake } = setup([{ output: TRIAGE }], "triage: human");
+    queue();
+    await run();
+    const s = new Store(join(root, ".factory", "factory.db"));
+    s.setQueued(s.listProjects()[0]!.id, 12, false);
+    s.close();
+
+    const message = await runApprove(dir, "12", {}, deps);
+
+    expect(message).toMatch(/moves to build\.\nIssue #12 is no longer queued, so the run was not continued/);
+    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(fake.calls().map((c) => c.role)).toEqual(["triage"]);
   });
 
   it("rejects a waiting run with a reason", async () => {
@@ -195,7 +218,8 @@ describe("approve / reject / cancel", () => {
 
   it("keeps driving the run after a resume", async () => {
     const blocked = { output: "STATUS: BLOCKED\nCOMMIT: {{HEAD}}\n\n## Blocker\nPricing decision needed.\n" };
-    const { run, dir, deps } = setup([{ output: TRIAGE }, blocked, BUILD]);
+    const { run, queue, dir, deps } = setup([{ output: TRIAGE }, blocked, BUILD]);
+    queue();
     await run();
 
     expect(await runResume(dir, "12", { to: "build", message: "use the flat price" }, deps)).toMatch(/waiting at the review gate/);
