@@ -9,3 +9,12 @@ coverage/
 .factory/runs/
 .factory/factory.db*
 .worktrees/
+
+# local media (screenshots, walkthrough videos)
+.narrate/
+docs/*.mp4
+docs/*.vtt
+docs/*.scene.json
+docs/*.tasks.md
+docs/screenshots/
+docs/ux-review/
