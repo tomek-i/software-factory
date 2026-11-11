@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.env
+.env.*
+
+# factory runtime state when dogfooding on this repo
+.factory/runs/
+.factory/factory.db*
+.worktrees/
