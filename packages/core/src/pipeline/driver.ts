@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import {
   isBlocking,
   isTerminal,
@@ -38,15 +38,18 @@ const LEASE_TTL_MS = 15 * 60_000;
 const LEASE_RENEW_MS = 60_000;
 
 /**
- * Where approving a waiting gate sends the run. Triage goes straight to build until the spec
- * critic exists. Approving the review gate moves on to capture; a run parked there before reviews
- * were automated (parked from the quality gate) gets its reviews instead. Approving the PR gate
- * moves on to merge (which marks the PR ready itself), and approving the merge gate lets the merge
- * stage merge the commit that was waiting.
+ * Where approving a waiting gate sends the run. Triage goes where an approving triage would have sent
+ * it: `afterTriage`, which callers that can read the run folder get from nextAfterTriage. Approving
+ * the critic gate accepts the spec as it is and moves on to build. Approving the review gate moves
+ * on to capture; a run parked there before reviews were automated (parked from the quality gate)
+ * gets its reviews instead. Approving the PR gate moves on to merge (which marks the PR ready
+ * itself), and approving the merge gate lets the merge stage merge the commit that was waiting.
  */
-export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">): RunState | undefined {
+export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">, afterTriage: RunState = "build"): RunState | undefined {
   switch (run.waiting_gate) {
     case "triage":
+      return afterTriage;
+    case "critic":
       return "build";
     case "review":
       return run.parked_from === "gate" ? "review" : "capture";
@@ -57,6 +60,48 @@ export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">): R
       return undefined;
   }
 }
+
+/**
+ * Where an approved issue goes after triage: an INCOMPLETE one to refine, a READY one to the spec
+ * critic, or straight to build when the critic gate is set to always (no critic would run).
+ */
+export function nextAfterTriage(runDir: string, config: Pick<FactoryConfig, "gates">): "refine" | "critic" | "build" {
+  const triage = readValid("triage", join(runDir, "triage.md"), () => []);
+  if (triage?.header.READINESS === "INCOMPLETE") return "refine";
+  return config.gates.critic === "always" ? "build" : "critic";
+}
+
+/** Hidden marker of the refined spec's comment on the issue, one per issue, edited in place on later rounds. */
+export const REFINE_MARKER = "<!-- factory:refine -->";
+
+/**
+ * Spec rounds live in `spec-N/`: refine.md (when refine ran) and the critic.md that judged it. The
+ * number only grows, so a later round never overwrites an earlier one's files. Returns the highest N
+ * whose folder has `file` (either file when not given), or 0.
+ */
+export function latestSpecRound(runDir: string, file?: "refine.md" | "critic.md"): number {
+  if (!existsSync(runDir)) return 0;
+  let latest = 0;
+  for (const entry of readdirSync(runDir)) {
+    const n = Number(/^spec-(\d+)$/.exec(entry)?.[1] ?? 0);
+    const has = (name: string) => existsSync(join(runDir, entry, name));
+    if (n > latest && (file ? has(file) : has("refine.md") || has("critic.md"))) latest = n;
+  }
+  return latest;
+}
+
+/** The round a critic turn judges: the one refine just wrote, or a new one when there is none to judge. */
+function criticRound(runDir: string): number {
+  const latest = latestSpecRound(runDir);
+  return latest > 0 && !existsSync(join(runDir, `spec-${latest}`, "critic.md")) ? latest : latest + 1;
+}
+
+function specFile(runDir: string, round: number, file: "refine.md" | "critic.md"): string {
+  return join(runDir, `spec-${round}`, file);
+}
+
+/** readValid check: a refine output that is a spec (a BLOCKED one has none). */
+const refined = (v: ParsedVerdict<"refine">) => (v.header.STATUS === "REFINED" ? [] : ["refine was blocked"]);
 
 /** The commit a run waiting at the merge gate is waiting on, recorded on the event that parked it. */
 export function waitingCommit(events: RunEvent[]): string | undefined {
@@ -226,9 +271,15 @@ type StepResult = DriveOutcome | undefined;
 
 const ACTIVE: RunState[] = ["intake", "triage", "refine", "critic", "build", "gate", "review", "capture", "pr", "merge", "learn"];
 
-/** Output file of each verdict kind, relative to the run folder. Per-round files live in round-N/. */
+/**
+ * Output file of each verdict kind, relative to the run folder. Per-round files live in round-N/;
+ * refine's and the critic's live in spec-N/, read from the latest spec round that has one.
+ */
 function verdictPath(runDir: string, kind: VerdictKind, round: number): string {
   switch (kind) {
+    case "refine":
+    case "critic":
+      return specFile(runDir, latestSpecRound(runDir, `${kind}.md`) || 1, `${kind}.md`);
     case "checks":
     case "verify":
       return join(runDir, `round-${round}`, `${kind}.md`);
@@ -404,6 +455,10 @@ export class PipelineDriver {
         return this.intake(run);
       case "triage":
         return this.triage(run);
+      case "refine":
+        return this.refine(run);
+      case "critic":
+        return this.critic(run);
       case "build":
         return this.build(run);
       case "gate":
@@ -485,10 +540,8 @@ export class PipelineDriver {
     }
 
     const mode = this.deps.config.gates.triage;
-    const concerns = [
-      ...(header.READINESS !== "READY" ? ["triage rated the issue INCOMPLETE"] : []),
-      ...(header.RISK === "HIGH" ? ["triage rated the risk HIGH"] : []),
-    ];
+    // An INCOMPLETE issue is no reason to stop: refine fills in what it leaves open.
+    const concerns = header.RISK === "HIGH" ? ["triage rated the risk HIGH"] : [];
     const gate = resolveGate({
       mode,
       agentDecision: concerns.length ? { decision: "ESCALATE", reasons: concerns } : { decision: "PROCEED" },
@@ -503,10 +556,203 @@ export class PipelineDriver {
       mode,
       outcome: "proceed",
       actor: mode === "auto" ? "agent" : "system",
-      comment: mode === "auto" ? "triage approved: ready, risk not high" : "gate is set to always",
+      comment: mode === "auto" ? "triage approved: risk not high" : "gate is set to always",
     });
-    this.move(run, "build", "triage approved", undefined, runEvidence(dir, 1));
+    const next = nextAfterTriage(dir, this.deps.config);
+    this.move(run, next, next === "refine" ? "triage approved; the issue is incomplete" : "triage approved", undefined, runEvidence(dir, 1));
     return undefined;
+  }
+
+  /**
+   * Triage rated the issue INCOMPLETE, or the spec critic asked for a revision: the refine agent writes
+   * what the issue leaves open (acceptance criteria, scope, out of scope, open questions) as a new
+   * spec round, and the engine posts it on the issue.
+   */
+  private async refine(run: Run): Promise<StepResult> {
+    const issue = this.issueOf(run);
+    const dir = this.runDir(run);
+    const root = this.deps.project.repo_path;
+    const round = latestSpecRound(dir) + 1;
+    const outputFile = specFile(dir, round, "refine.md");
+    mkdirSync(dirname(outputFile), { recursive: true });
+    const files = writeRoleFiles(dir, "refine", rolePrompt("refine", this.deps.read), permissionProfile("refine", { runDirFromCwd: relative(root, dir), outputFile }));
+
+    const sections = this.triageScope(dir);
+    const previous = latestSpecRound(dir, "refine.md");
+    const spec = previous ? readValid("refine", specFile(dir, previous, "refine.md"), refined) : undefined;
+    if (spec) sections.push({ title: `Your spec from round ${previous}`, body: spec.body });
+    const critique = round > 1 ? readValid("critic", specFile(dir, round - 1, "critic.md"), () => []) : undefined;
+    if (critique) sections.push({ title: `The spec critic's verdict on round ${round - 1}: ${critique.header.VERDICT}`, body: critique.body });
+    // Only a human's call at the critic gate since refine last ran is meant for it (not, say, the triage approval).
+    const lastRefine = this.deps.store.listAgentRuns(run.id).filter((a) => a.role === "refine").at(-1)?.started_at ?? "";
+    const human = this.deps.store
+      .listDecisions(run.id)
+      .filter((d) => d.actor === "human" && d.gate === "critic" && d.created_at >= lastRefine)
+      .at(-1);
+    if (human) sections.push({ title: "A human sent the spec back with this comment", body: human.comment });
+
+    const turn = await runTurn({
+      run: this.deps.runAgent,
+      kind: "refine",
+      outputFile,
+      agent: {
+        ...this.agentBase(run, "refine", root),
+        ...files,
+        prompt: renderTask({
+          role: "refine",
+          runId: run.id,
+          runDir: dir,
+          workDir: root,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          lessons: this.lessons(),
+          sections,
+          instructions: critique
+            ? `Revise the spec of issue #${issue.number}: fix each problem the spec critic listed, then write the output file.`
+            : `Write what issue #${issue.number} leaves open, based on the issue and the code, then write the output file.`,
+        }),
+      },
+    });
+    if (turn.status !== "ok") return this.agentTrouble(run, "refine", turn);
+    const { header, body } = turn.verdict;
+    if (header.STATUS === "BLOCKED") {
+      return this.escalate(run, `refine is blocked: ${section(body, "blocker") ?? "refine reported BLOCKED without details"}`);
+    }
+    this.postSpec(run, round, body);
+    this.move(run, "critic", `refined the issue (spec round ${round})`, { specRound: round });
+    return undefined;
+  }
+
+  /**
+   * The refined spec on the issue, as one marked comment: a later round edits it in place, so the
+   * issue shows the current spec and does not fill up with old versions.
+   */
+  private postSpec(run: Run, round: number, body: string): void {
+    const { github } = this.deps;
+    const headings: [string, string][] = [
+      ["acceptance criteria", "Acceptance criteria"],
+      ["scope", "Scope"],
+      ["out of scope", "Out of scope"],
+      ["open questions", "Open questions"],
+    ];
+    const parts = headings.flatMap(([name, title]) => {
+      const text = section(body, name);
+      return text ? [`### ${title}\n${text}`] : [];
+    });
+    const text = [
+      REFINE_MARKER,
+      `The factory filled in what this issue leaves open (spec round ${round}). A spec critic checks it against the code before anything is built. If any of it is wrong, edit the issue.`,
+      ...parts,
+    ].join("\n\n");
+    const issue = run.issue_number!;
+    const existing = github.findComment(issue, REFINE_MARKER);
+    if (existing === undefined) github.commentOnIssue(issue, `${text}\n`);
+    else github.editComment(existing, `${text}\n`);
+  }
+
+  /**
+   * The spec critic gate. Like the approver, the critic agent only runs in `auto` mode: `always` passes
+   * straight on to build and `human` waits without spending an agent turn. The critic checks the
+   * issue's claims and criteria, and the refined spec, against the code. ACCEPT moves on to build,
+   * REVISE goes back to refine (up to loops.max_critic_rounds, then a human decides), REJECT ends the
+   * run, and questions only the issue's author can answer wait for them in needs_info.
+   */
+  private async critic(run: Run): Promise<StepResult> {
+    const dir = this.runDir(run);
+    const mode = this.deps.config.gates.critic;
+    if (mode !== "auto") {
+      const gate = resolveGate({ mode, hardRuleHits: [], unsafe: run.unsafe });
+      if (gate.outcome === "wait_human") return this.waitForHuman(run, "critic", gate.reasons);
+      this.recordSpecProceed(run, mode, "gate is set to always");
+      this.move(run, "build", "spec critic gate is set to always", undefined, runEvidence(dir, run.round));
+      return undefined;
+    }
+
+    const round = criticRound(dir);
+    const turn = await this.criticTurn(run, round);
+    if (turn.status !== "ok") return this.agentTrouble(run, "spec critic", turn);
+    const { header, body } = turn.verdict;
+    const problems = bullets(section(body, "problems"));
+    const questions = bullets(section(body, "questions"));
+
+    if (header.VERDICT === "REJECT") {
+      this.comment(run, "critic-reject", `The factory will not work on this issue as written:\n\n${section(body, "problems") ?? ""}`);
+      this.move(run, "rejected", "the spec critic rejected the issue", { specRound: round });
+      return undefined;
+    }
+    // Only the author can answer these, so the run waits for them as it does when triage asks. Once
+    // they have answered, `factory run` triages the issue again and the spec starts a new round.
+    if (questions.length) {
+      this.comment(run, "critic-questions", `Before the factory can build this, please answer:\n\n${section(body, "questions") ?? ""}`);
+      this.move(run, "needs_info", `the spec critic has questions only the author can answer: ${questions.join("; ")}`, { specRound: round });
+      return undefined;
+    }
+    if (header.VERDICT === "REVISE") {
+      try {
+        this.move(run, "refine", `the spec critic asked for a revision (spec round ${round})`, { specRound: round }, runEvidence(dir, run.round));
+      } catch (err) {
+        // Only the round cap is an expected stop here; anything else is reported as the error it is.
+        if (!(err instanceof TransitionError) || this.load(run.id).state !== run.state || !err.problems.some((p) => p.includes("cap reached"))) throw err;
+        const spec = readValid("refine", specFile(dir, round, "refine.md"), refined);
+        const open = [...problems, ...bullets(spec && section(spec.body, "open questions"))];
+        return this.waitForHuman(run, "critic", [`the spec critic still asks for revisions after spec round ${round}: ${err.problems.join("; ")}`, ...open.map((q) => `open: ${q}`)], {
+          specRound: round,
+        });
+      }
+      return undefined;
+    }
+
+    const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: [], unsafe: run.unsafe });
+    if (gate.outcome === "wait_human") return this.waitForHuman(run, "critic", gate.reasons);
+    this.recordSpecProceed(run, mode, `the spec critic accepted spec round ${round}`);
+    this.move(run, "build", `the spec critic accepted the spec (round ${round})`, { specRound: round }, runEvidence(dir, run.round));
+    return undefined;
+  }
+
+  /** The critic gate let the run through without a human. There is no commit yet to record. */
+  private recordSpecProceed(run: Run, mode: GateMode, comment: string): void {
+    this.deps.store.recordDecision({ run_id: run.id, gate: "critic", mode, outcome: "proceed", actor: mode === "auto" ? "agent" : "system", comment });
+  }
+
+  /** The critic checks the issue, and this round's refined spec if there is one, against the code. */
+  private criticTurn(run: Run, round: number): Promise<TurnResult<"critic">> {
+    const issue = this.issueOf(run);
+    const dir = this.runDir(run);
+    const root = this.deps.project.repo_path;
+    const outputFile = specFile(dir, round, "critic.md");
+    mkdirSync(dirname(outputFile), { recursive: true });
+    const files = writeRoleFiles(dir, "critic", rolePrompt("critic", this.deps.read), permissionProfile("critic", { runDirFromCwd: relative(root, dir), outputFile }));
+    const sections = this.triageScope(dir);
+    const spec = readValid("refine", specFile(dir, round, "refine.md"), refined);
+    if (spec) sections.push({ title: `Refined spec (round ${round})`, body: spec.body });
+    const earlier = round > 1 ? readValid("critic", specFile(dir, round - 1, "critic.md"), () => []) : undefined;
+    if (earlier) sections.push({ title: `Your verdict on round ${round - 1}: ${earlier.header.VERDICT}`, body: earlier.body });
+    return runTurn({
+      run: this.deps.runAgent,
+      kind: "critic",
+      outputFile,
+      validate: (verdict) =>
+        verdict.header.VERDICT !== "ACCEPT" && bullets(section(verdict.body, "problems")).length === 0
+          ? [`VERDICT: ${verdict.header.VERDICT} needs the problems listed under ## Problems`]
+          : [],
+      agent: {
+        ...this.agentBase(run, "critic", root),
+        ...files,
+        prompt: renderTask({
+          role: "critic",
+          runId: run.id,
+          runDir: dir,
+          workDir: root,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          lessons: this.lessons(),
+          sections,
+          instructions: `Check the claims and acceptance criteria of issue #${issue.number}${spec ? " and its refined spec" : ""} against the code, then write the output file.`,
+        }),
+      },
+    });
   }
 
   private async build(run: Run): Promise<StepResult> {
@@ -534,7 +780,7 @@ export class PipelineDriver {
           defaultBranch: this.defaultBranch,
           portBase: run.port_base,
           checks: this.deps.config.checks,
-          sections: this.triageScope(dir),
+          sections: [...this.triageScope(dir), ...this.acceptedSpec(dir)],
           instructions: [
             `Implement issue #${issue.number} in the working directory on branch \`${worktree.branch}\`.`,
             "Add tests, run the checks, commit (do not push), then write the output file.",
@@ -1193,6 +1439,21 @@ export class PipelineDriver {
   }
 
   /**
+   * What the builder gets from the latest spec round: the refined spec, and the critic's notes when
+   * it accepted it. A spec a human approved at the critic gate comes without the critic's notes.
+   */
+  private acceptedSpec(dir: string): { title: string; body: string }[] {
+    const round = latestSpecRound(dir);
+    if (!round) return [];
+    const spec = readValid("refine", specFile(dir, round, "refine.md"), refined);
+    const critique = readValid("critic", specFile(dir, round, "critic.md"), (v) => (v.header.VERDICT === "ACCEPT" ? [] : ["not accepted"]));
+    return [
+      ...(spec ? [{ title: "Refined spec", body: spec.body }] : []),
+      ...(critique ? [{ title: "Spec critic's notes", body: critique.body }] : []),
+    ];
+  }
+
+  /**
    * Hard rules the branch trips against where it left the default branch. The scope a deletion is
    * checked against is the issue plus triage's reading of it.
    */
@@ -1322,7 +1583,7 @@ export class PipelineDriver {
     this.deps.events?.emit({ type: "run:state", runId: run.id, from: run.state, to, reason });
   }
 
-  private waitForHuman(run: Run, gate: Exclude<Gate, "issue_writer" | "critic" | "plan">, reasons: string[], data?: Record<string, unknown>): StepResult {
+  private waitForHuman(run: Run, gate: Exclude<Gate, "issue_writer" | "plan">, reasons: string[], data?: Record<string, unknown>): StepResult {
     this.deps.store.recordDecision({
       run_id: run.id,
       gate,

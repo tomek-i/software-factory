@@ -43,7 +43,8 @@ export const github: GithubPort = {
 export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
   prStates.clear();
   merged.length = 0;
-  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  review: human\n  ${gates}\n${extraConfig}`;
+  // The spec critic passes straight through, so a READY issue goes from triage to build.
+  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  critic: always\n  review: human\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
   const store = new Store(join(root, ".factory", "factory.db"));

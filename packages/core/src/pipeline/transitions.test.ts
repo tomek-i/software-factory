@@ -114,6 +114,21 @@ describe("RunMachine.transition", () => {
     expect(move("build").state).toBe("build");
   });
 
+  it("builds without a critic verdict only when the critic gate is set to always", () => {
+    const always = setup({ gates: { critic: "always" } });
+    always.at("critic");
+    expect(always.move("build", fakeEvidence({ files: { critic: undefined } })).state).toBe("build");
+    const auto = setup();
+    auto.at("critic");
+    expect(() => auto.move("build", fakeEvidence({ files: { critic: undefined } }))).toThrow(/evidence unavailable/);
+  });
+
+  it("lets the spec critic wait for the issue's author", () => {
+    const { at, move } = setup();
+    at("critic");
+    expect(move("needs_info").state).toBe("needs_info");
+  });
+
   it("only lets the builder hand over a clean, committed, pushed branch it reported on", () => {
     const { at, move } = setup();
     at("build");

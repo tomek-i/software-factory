@@ -17,10 +17,11 @@ import { findingsFingerprint } from "./fingerprint.js";
  */
 const FORWARD: Partial<Record<RunState, readonly RunState[]>> = {
   intake: ["triage"],
-  // triage -> build skips refine and the spec critic, which do not exist yet (phase 3).
+  // triage -> build skips the spec critic when its gate is set to always.
   triage: ["refine", "critic", "build", "rejected", "needs_info"],
   refine: ["critic", "needs_info"],
-  critic: ["refine", "build", "rejected"],
+  // needs_info: the critic has questions only the issue's author can answer.
+  critic: ["refine", "build", "rejected", "needs_info"],
   build: ["gate"],
   gate: ["review", "build"],
   review: ["build", "capture"],
@@ -118,8 +119,9 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
   "triage->refine": ({ evidence }) => triageApproved(evidence),
   "triage->critic": ({ evidence }) => triageApproved(evidence),
   "triage->build": ({ evidence }) => triageApproved(evidence),
-  "critic->build": ({ evidence }) =>
-    evidence.verdict("critic").header.VERDICT === "ACCEPT" ? [] : ["spec critic did not ACCEPT"],
+  // With the gate set to always no critic runs, so there is no verdict to show.
+  "critic->build": ({ config, evidence }) =>
+    config.gates.critic === "always" || evidence.verdict("critic").header.VERDICT === "ACCEPT" ? [] : ["spec critic did not ACCEPT"],
   "critic->refine": ({ run, config, evidence }) => [
     ...(evidence.verdict("critic").header.VERDICT === "REVISE" ? [] : ["spec critic did not ask to REVISE"]),
     ...capProblem(run.critic_rounds, config.loops.max_critic_rounds, "spec critic round"),
