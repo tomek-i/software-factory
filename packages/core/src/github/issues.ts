@@ -31,9 +31,14 @@ function toInput(issue: GhIssue): IssueInput {
 }
 
 function gh<T>(args: string[], cwd: string, run: CommandRunner): T {
+  const command = `gh ${args.slice(0, 2).join(" ")}`;
   const result = run("gh", args, { cwd });
-  if (result.code !== 0) throw new GithubError(`gh ${args.slice(0, 2).join(" ")} failed: ${result.stderr || "unknown error"}`);
-  return JSON.parse(result.stdout) as T;
+  if (result.code !== 0) throw new GithubError(`${command} failed: ${result.stderr || "unknown error"}`);
+  try {
+    return JSON.parse(result.stdout) as T;
+  } catch {
+    throw new GithubError(`${command} returned unexpected output: ${result.stdout.slice(0, 200) || "(empty)"}`);
+  }
 }
 
 function requireRepo(project: Project): string {
@@ -53,6 +58,7 @@ export interface SyncResult {
  */
 export function syncIssues(store: Store, project: Project, run: CommandRunner = runCommand, limit = 500): SyncResult {
   const repo = requireRepo(project);
+  const syncStartedAt = new Date().toISOString();
   const issues = gh<GhIssue[]>(
     ["issue", "list", "-R", repo, "--state", "open", "--limit", String(limit), "--json", FIELDS],
     project.repo_path,
@@ -67,6 +73,7 @@ export function syncIssues(store: Store, project: Project, run: CommandRunner = 
     const closed = store.closeIssuesExcept(
       project.id,
       issues.map((i) => i.number),
+      syncStartedAt,
     );
     return { open: issues.length, closed };
   });
@@ -76,5 +83,9 @@ export function syncIssues(store: Store, project: Project, run: CommandRunner = 
 export function fetchIssue(store: Store, project: Project, number: number, run: CommandRunner = runCommand): void {
   const repo = requireRepo(project);
   const issue = gh<GhIssue>(["issue", "view", String(number), "-R", repo, "--json", FIELDS], project.repo_path, run);
+  // `gh issue view` happily returns pull requests too; a PR description is not an issue to build from.
+  if (/\/pull\/\d+/.test(issue.url)) throw new GithubError(`#${number} is a pull request, not an issue`);
+  // A transferred issue can resolve to a different number; don't silently store the wrong one.
+  if (issue.number !== number) throw new GithubError(`#${number} resolved to #${issue.number}`);
   store.upsertIssue(project.id, toInput(issue));
 }

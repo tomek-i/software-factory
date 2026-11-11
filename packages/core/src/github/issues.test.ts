@@ -90,11 +90,54 @@ describe("syncIssues", () => {
   });
 });
 
+describe("syncIssues races", () => {
+  it("does not close an issue queued while the sync's GitHub request was in flight", () => {
+    const { store, project } = setup();
+    let listed = false;
+    const run: CommandRunner = (_cmd, args) => {
+      if (args[1] === "list" && !listed) {
+        listed = true;
+        // While `gh issue list` runs, the user queues brand-new issue #20 from another terminal.
+        const later = Date.now() + 5;
+        while (Date.now() < later) {
+          // wait so the fetch is strictly after the sync started
+        }
+        fetchIssue(store, project, 20, fakeGh({ view: ghIssue(20) }).run);
+        store.setQueued(project.id, 20, true);
+        return { code: 0, stdout: JSON.stringify([ghIssue(1)]), stderr: "" };
+      }
+      return { code: 0, stdout: "[]", stderr: "" };
+    };
+
+    syncIssues(store, project, run);
+
+    expect(store.getIssue(project.id, 20)).toMatchObject({ state: "open", queued_at: expect.any(String) });
+  });
+});
+
 describe("fetchIssue", () => {
   it("stores a single issue, including closed ones", () => {
     const { store, project } = setup();
     fetchIssue(store, project, 7, fakeGh({ view: ghIssue(7, { state: "CLOSED" }) }).run);
     expect(store.getIssue(project.id, 7)!.state).toBe("closed");
+  });
+
+  it("refuses pull requests, which gh issue view also returns", () => {
+    const { store, project } = setup();
+    const pr = ghIssue(8, { url: "https://github.com/acme/shop/pull/8" });
+    expect(() => fetchIssue(store, project, 8, fakeGh({ view: pr }).run)).toThrow(/pull request/);
+    expect(store.getIssue(project.id, 8)).toBeUndefined();
+  });
+
+  it("refuses an issue that resolved to a different number", () => {
+    const { store, project } = setup();
+    expect(() => fetchIssue(store, project, 8, fakeGh({ view: ghIssue(9) }).run)).toThrow(/resolved to #9/);
+  });
+
+  it("turns unexpected gh output into a GithubError", () => {
+    const { store, project } = setup();
+    const run: CommandRunner = () => ({ code: 0, stdout: "", stderr: "" });
+    expect(() => fetchIssue(store, project, 1, run)).toThrow(GithubError);
   });
 });
 
@@ -106,15 +149,15 @@ describe("Store.setQueued", () => {
     expect(() => store.setQueued(project.id, 7, true)).toThrow(/closed/);
   });
 
-  it("lists queued issues in the order they were queued", async () => {
+  it("lists queued issues in the order they were queued, even within one millisecond", () => {
     const { store, project } = setup();
-    syncIssues(store, project, fakeGh({ list: [ghIssue(1), ghIssue(2)] }).run);
-    store.setQueued(project.id, 2, true);
-    await new Promise((r) => setTimeout(r, 5));
-    store.setQueued(project.id, 1, true);
+    syncIssues(store, project, fakeGh({ list: [ghIssue(12), ghIssue(15), ghIssue(18)] }).run);
+    for (const n of [18, 12, 15]) store.setQueued(project.id, n, true);
 
-    expect(store.listIssues({ project_id: project.id, queued: true }).map((i) => i.number)).toEqual([2, 1]);
-    store.setQueued(project.id, 2, false);
-    expect(store.listIssues({ project_id: project.id, queued: true }).map((i) => i.number)).toEqual([1]);
+    expect(store.listIssues({ project_id: project.id, queued: true }).map((i) => i.number)).toEqual([18, 12, 15]);
+    store.setQueued(project.id, 12, false);
+    expect(store.listIssues({ project_id: project.id, queued: true }).map((i) => i.number)).toEqual([18, 15]);
+    store.setQueued(project.id, 12, true);
+    expect(store.listIssues({ project_id: project.id, queued: true }).map((i) => i.number)).toEqual([18, 15, 12]);
   });
 });
