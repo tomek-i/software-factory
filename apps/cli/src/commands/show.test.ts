@@ -73,6 +73,23 @@ describe("factory show <run>", () => {
     );
   });
 
+  it("shows the latest round's reviews with their blocking findings", () => {
+    const findings = (severity: string) =>
+      `## Findings\n\`\`\`json\n[{ "id": "x-1", "severity": "${severity}", "file": "src/a.ts", "line": 3, "claim": "breaks on empty input", "evidence": "a(\\"\\")" }]\n\`\`\`\n`;
+    const { dir } = setup({
+      "round-1/checks.md": checks("PASS", "one"),
+      "round-1/review-code.md": `VERDICT: CHANGES\n\n## Summary\n- one real bug\n\n${findings("major")}`,
+      "round-1/review-docs.md": `VERDICT: PASS\n\n## Summary\n- docs fine\n\n${findings("nit")}`,
+      "round-1/review-security.md": "VERDICT: MAYBE\n",
+    });
+
+    const text = runShow(dir, "16");
+
+    expect(text).toContain("round-1/review-code.md (VERDICT: CHANGES)\n  - one real bug\n  major: breaks on empty input (src/a.ts:3)");
+    expect(text).toContain("round-1/review-docs.md (VERDICT: PASS)\n  - docs fine\n\n");
+    expect(text).toMatch(/round-1\/review-security\.md \(could not be parsed: .+\)/);
+  });
+
   it("resolves the run like the other commands", () => {
     const { dir, runId } = setup({ "triage.md": TRIAGE });
     for (const ref of ["#16", runId, runId.slice(0, runId.length - 3)]) {
@@ -165,7 +182,8 @@ describe("factory show <run> <file>", () => {
 describe("showHint", () => {
   it("names the verdict file each gate is about", () => {
     expect(showHint({ id: "run-1-a", waiting_gate: "triage" })).toBe("See it with: `factory show run-1-a triage`.");
-    expect(showHint({ id: "run-1-a", waiting_gate: "review" })).toBe("See it with: `factory show run-1-a build`.");
+    // Several lenses write reviews, so the review gate points at the overview, which lists them.
+    expect(showHint({ id: "run-1-a", waiting_gate: "review" })).toBe("See it with: `factory show run-1-a`.");
     expect(showHint({ id: "run-1-a", waiting_gate: "plan" })).toBe("See it with: `factory show run-1-a`.");
   });
 });

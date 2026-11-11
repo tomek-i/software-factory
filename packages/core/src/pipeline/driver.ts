@@ -1,14 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
+  isBlocking,
   isTerminal,
   isTrustedAuthor,
   parseVerdict,
+  REVIEW_LENSES,
   resolveModel,
   type AgentRole,
   type FactoryConfig,
-  type Gate,
   type ParsedVerdict,
+  type ReviewLens,
   type RunState,
   type VerdictKind,
 } from "@factory/shared";
@@ -24,7 +26,7 @@ import type { Issue, Project, Run, RunPatch, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate } from "./gates.js";
-import { diffHardRuleHits } from "./hard-rules.js";
+import { diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 
 export const RUNS_DIR = join(".factory", "runs");
@@ -34,12 +36,35 @@ const LEASE_RENEW_MS = 60_000;
 
 /**
  * Where approving a waiting gate sends the run. Triage goes straight to build until the spec
- * critic exists; review stays in review until reviews are automated (phase 3).
+ * critic exists. Approving the review gate moves on to capture; a run parked there before reviews
+ * were automated (parked from the quality gate) gets its reviews instead.
  */
-export const APPROVE_TARGET: Partial<Record<Gate, RunState>> = {
-  triage: "build",
-  review: "review",
-};
+export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">): RunState | undefined {
+  switch (run.waiting_gate) {
+    case "triage":
+      return "build";
+    case "review":
+      return run.parked_from === "gate" ? "review" : "capture";
+    default:
+      return undefined;
+  }
+}
+
+/** A lens's review file in a round folder. */
+function reviewPath(roundDir: string, lens: ReviewLens): string {
+  return join(roundDir, `review-${lens}.md`);
+}
+
+/** A lens's review in a round folder, if it exists and is valid. */
+function readReview(roundDir: string, lens: ReviewLens): ParsedVerdict<"review"> | undefined {
+  const path = reviewPath(roundDir, lens);
+  if (!existsSync(path)) return undefined;
+  try {
+    return parseVerdict("review", readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
 
 export function runDirOf(root: string, runId: string): string {
   return join(root, RUNS_DIR, runId);
@@ -114,7 +139,8 @@ export function runEvidence(runDir: string, round: number, git: GitEvidence = no
       if (!existsSync(path)) throw new Error(`${relative(runDir, path)} does not exist`);
       return parseVerdict(kind, readFileSync(path, "utf8"));
     },
-    reviews: () => [],
+    // Every lens that wrote a review this round; which lenses had to run is the review stage's business.
+    reviews: () => REVIEW_LENSES.flatMap((lens) => readReview(join(runDir, `round-${round}`), lens) ?? []),
     git,
   };
 }
@@ -253,6 +279,8 @@ export class PipelineDriver {
         return this.build(run);
       case "gate":
         return this.gate(run);
+      case "review":
+        return this.review(run);
       default:
         return { kind: "stopped", state: run.state, reason: `the ${run.state} stage is not automated yet` };
     }
@@ -424,6 +452,9 @@ export class PipelineDriver {
     const dir = this.runDir(run);
     const worktree = this.worktreeOf(run);
     const round = run.build_iterations + 1;
+    // Reviews in this round folder were for an earlier commit (a human sent the run back to build):
+    // they must not be reused for whatever this gate passes.
+    for (const lens of REVIEW_LENSES) rmSync(reviewPath(join(dir, `round-${round}`), lens), { force: true });
     const result = await runQualityGate({
       runId: run.id,
       worktreePath: worktree.path,
@@ -446,17 +477,7 @@ export class PipelineDriver {
       if (!git.isClean()) problems.push("the checks left uncommitted changes in the worktree");
       if (!git.isPushed()) problems.push("the checked commit is not pushed");
       if (problems.length) return this.escalate(run, `quality gate passed but ${problems.join("; ")}`);
-      // Reviews are not automated yet (phase 3): a human looks at the draft PR, told about any hard rule the diff trips.
-      let hits: string[];
-      try {
-        hits = this.hardRuleHits(run, worktree, result.head);
-      } catch (err) {
-        // Without the check nobody knows what the diff touches: a human decides.
-        return this.escalate(run, `quality gate passed but the hard-rule check failed: ${(err as Error).message}`);
-      }
-      const reasons = ["quality gate passed; reviews are not automated yet"];
-      if (hits.length) reasons.push(`${run.unsafe ? "hard rules lifted by --unsafe" : "hard rules"}: ${hits.join("; ")}`);
-      this.move(run, "needs_human", reasons.join("; "), { round, hardRuleHits: hits }, undefined, { waiting_gate: "review" });
+      this.move(run, "review", `quality gate passed (round ${round})`, { round, commit: result.head }, evidence);
       return undefined;
     }
     try {
@@ -470,6 +491,133 @@ export class PipelineDriver {
       }
       if (!err.problems.some((p) => p.includes("cap reached"))) throw err;
       return this.escalate(run, `quality gate still failing after round ${round}: ${err.problems.join("; ")}`);
+    }
+    return undefined;
+  }
+
+  /**
+   * Run the review lenses in parallel on the commit that passed the gate, then decide the review
+   * gate. A lens that already wrote a valid review for this round (e.g. before a usage limit) is
+   * not run again. Verifying findings is not automated yet (#13), so any blocking finding waits for
+   * a human; minor findings and nits never send the run back.
+   */
+  private async review(run: Run): Promise<StepResult> {
+    const dir = this.runDir(run);
+    const issue = this.issueOf(run);
+    const worktree = this.worktreeOf(run);
+    const round = run.build_iterations + 1;
+    const roundDir = join(dir, `round-${round}`);
+    const git = gitEvidence(worktree, this.defaultBranch, this.run);
+    const commit = parseVerdict("checks", readFileSync(join(roundDir, "checks.md"), "utf8")).header.COMMIT;
+    if (git.head() !== commit) {
+      return this.escalate(run, `HEAD is ${git.head().slice(0, 7)} but the quality gate passed ${commit.slice(0, 7)}; reviews only look at the gated commit`);
+    }
+    let base: string;
+    try {
+      base = freshBase(worktree.path, this.defaultBranch, commit, this.run);
+    } catch (err) {
+      return this.escalate(run, `could not find where the branch left ${this.defaultBranch}: ${(err as Error).message}`);
+    }
+
+    const lenses = this.reviewLenses(run);
+    const pending = lenses.filter((lens) => !readReview(roundDir, lens));
+    const turns = await Promise.all(pending.map((lens) => this.reviewTurn(run, issue, worktree, lens, round, base, commit)));
+    // A usage limit stops the run where it is; the reviews already written are kept for next time.
+    const limited = turns.find((t) => t.turn.status === "failed" && t.turn.agent.outcome.kind === "rate_limited");
+    const trouble = limited ?? turns.find((t) => t.turn.status !== "ok");
+    if (trouble && trouble.turn.status !== "ok") return this.agentTrouble(run, `reviewer (${trouble.lens})`, trouble.turn);
+
+    const reviews = lenses.map((lens) => ({ lens, verdict: readReview(roundDir, lens)! }));
+    const summary = `reviews: ${reviews
+      .map(({ lens, verdict }) => {
+        const blocking = verdict.findings.filter(isBlocking).length;
+        return `${lens} ${verdict.header.VERDICT}${blocking ? ` (${blocking} blocking)` : ""}`;
+      })
+      .join(", ")}`;
+    this.info(run, summary);
+
+    let hits: string[];
+    try {
+      hits = this.hardRuleHits(run, worktree, commit);
+    } catch (err) {
+      // Without the check nobody knows what the diff touches: a human decides.
+      return this.escalate(run, `${summary}; the hard-rule check failed: ${(err as Error).message}`);
+    }
+    const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
+
+    if (reviews.some(({ verdict }) => verdict.header.VERDICT === "CHANGES")) {
+      return this.waitForHuman(run, "review", [summary, "verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is", ...lifted]);
+    }
+    const gate = resolveGate({ mode: this.deps.config.gates.review, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
+    // Capture and merge are not automated yet, so even a passing review gate hands over to a human.
+    const reasons = gate.outcome === "wait_human" ? gate.reasons : ["capture and merge are not automated yet"];
+    return this.waitForHuman(run, "review", [summary, ...reasons, ...lifted]);
+  }
+
+  /** `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. */
+  private reviewLenses(run: Run): ReviewLens[] {
+    const { reviews } = this.deps.config;
+    const path = join(this.runDir(run), "triage.md");
+    const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
+    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : [])]);
+    return REVIEW_LENSES.filter((lens) => wanted.has(lens));
+  }
+
+  private async reviewTurn(run: Run, issue: Issue, worktree: Worktree, lens: ReviewLens, round: number, base: string, commit: string) {
+    const dir = this.runDir(run);
+    const outputFile = reviewPath(join(dir, `round-${round}`), lens);
+    const files = writeRoleFiles(
+      dir,
+      `reviewer-${lens}`,
+      rolePrompt("reviewer", this.deps.read, lens),
+      permissionProfile("reviewer", { runDirFromCwd: relative(worktree.path, dir) }),
+    );
+    const sections = this.triageScope(dir);
+    const previous = this.previousReview(run, lens, round);
+    if (previous) {
+      sections.push({
+        title: `Your findings from round ${previous.round}`,
+        body: ["Check each of these first and say which are fixed.", "", "```json", JSON.stringify(previous.verdict.findings, null, 2), "```"].join("\n"),
+      });
+    }
+    const turn = await runTurn({
+      run: this.deps.runAgent,
+      kind: "review",
+      outputFile,
+      agent: {
+        ...this.agentBase(run, "reviewer", worktree.path, lens),
+        role: `reviewer:${lens}`,
+        ...files,
+        addDirs: [dir],
+        prompt: renderTask({
+          role: "reviewer",
+          lens,
+          runId: run.id,
+          runDir: dir,
+          workDir: worktree.path,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          lessons: this.lessons(),
+          branch: worktree.branch,
+          defaultBranch: this.defaultBranch,
+          sections,
+          instructions: [
+            `Review the change on branch \`${worktree.branch}\` through the ${lens} lens.`,
+            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit under review: \`${commit}\`.`,
+            `See it with \`git diff ${base}...${commit}\`. Then write the output file.`,
+          ].join("\n"),
+        }),
+      },
+    });
+    return { lens, turn };
+  }
+
+  /** This lens's review from the latest earlier round that has one. */
+  private previousReview(run: Run, lens: ReviewLens, round: number): { round: number; verdict: ParsedVerdict<"review"> } | undefined {
+    for (let r = round - 1; r >= 1; r--) {
+      const verdict = readReview(join(this.runDir(run), `round-${r}`), lens);
+      if (verdict) return { round: r, verdict };
     }
     return undefined;
   }
@@ -529,13 +677,13 @@ export class PipelineDriver {
     return parseVerdict("triage", readFileSync(path, "utf8")).header.RISK;
   }
 
-  private agentBase(run: Run, role: PromptRole & AgentRole, cwd: string) {
+  private agentBase(run: Run, role: PromptRole & AgentRole, cwd: string, lens?: ReviewLens) {
     const { config, timeouts } = this.deps;
     return {
       runId: run.id,
       role,
       // Triage itself runs before there is a risk, so it never gets the high-risk settings.
-      ...resolveModel(config, { role, risk: role === "triage" ? undefined : this.triageRisk(run) }),
+      ...resolveModel(config, { role, lens, risk: role === "triage" ? undefined : this.triageRisk(run) }),
       cwd,
       logDir: join(this.runDir(run), "logs"),
       signal: this.signal,

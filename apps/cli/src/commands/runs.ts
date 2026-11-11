@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import {
-  APPROVE_TARGET,
+  approveTarget,
   applyStreamLine,
   createAgentRunner,
   emptySummary,
@@ -81,7 +81,7 @@ function formatEvent(event: FactoryEvent, style: Style): string | undefined {
 }
 
 /** The verdict file a gate is about, as a `factory show` short name. */
-const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage", review: "build" };
+const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage" };
 
 /** "See it with: `factory show ...`" for a run waiting at a gate, naming the file the gate is about. */
 export function showHint(run: Pick<Run, "id" | "waiting_gate">): string {
@@ -327,8 +327,8 @@ async function continueRun(
   options: { run?: boolean },
   deps: RunDeps,
 ): Promise<string> {
-  if (to === "review") {
-    return `${done}\nReviews are not automated yet: review the draft PR, then mark it ready and merge it yourself.`;
+  if (to === "capture") {
+    return `${done}\nCapture and merge are not automated yet: mark the draft PR ready and merge it yourself.`;
   }
   if (isTerminal(to) || run.issue_number === null) return done;
   if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
@@ -354,7 +354,7 @@ export async function runApprove(
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
-      const to = APPROVE_TARGET[target.waiting_gate];
+      const to = approveTarget(target);
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
       new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved" });

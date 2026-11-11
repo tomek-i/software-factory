@@ -314,6 +314,19 @@ export function hardRuleHits({ files, config, read, scope }: HardRuleInput): str
 }
 
 /**
+ * Where `head` left the default branch, from a fresh fetch of the remote into an engine-owned ref:
+ * the builder could have moved origin/<branch> or planted replace refs in the shared repository.
+ */
+export function freshBase(cwd: string, defaultBranch: string, head = "HEAD", run: CommandRunner = runCommand): string {
+  const git = gitIn(cwd, run);
+  const fetched = git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${defaultBranch}:${BASE_REF}`]);
+  if (fetched.code !== 0) throw new Error(`git fetch of ${defaultBranch} failed: ${fetched.stderr || fetched.stdout}`);
+  const mergeBase = git(["merge-base", BASE_REF, head]);
+  if (mergeBase.code !== 0) throw new Error(`git merge-base failed: ${mergeBase.stderr || mergeBase.stdout}`);
+  return mergeBase.stdout.trim();
+}
+
+/**
  * Hard-rule hits for the commit `head` (default HEAD) against where it left the default branch.
  * The base comes from a fresh fetch of the remote into an engine-owned ref, because the builder
  * could have moved origin/<branch> or planted replace refs in the shared repository.
@@ -329,11 +342,7 @@ export function diffHardRuleHits(options: {
   const run = options.run ?? runCommand;
   const git = gitIn(options.cwd, run);
   const head = options.head ?? "HEAD";
-  const fetched = git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${options.defaultBranch}:${BASE_REF}`]);
-  if (fetched.code !== 0) throw new Error(`git fetch of ${options.defaultBranch} failed: ${fetched.stderr || fetched.stdout}`);
-  const mergeBase = git(["merge-base", BASE_REF, head]);
-  if (mergeBase.code !== 0) throw new Error(`git merge-base failed: ${mergeBase.stderr || mergeBase.stdout}`);
-  const base = mergeBase.stdout.trim();
+  const base = freshBase(options.cwd, options.defaultBranch, head, run);
   const read = (rev: "base" | "head", path: string) => {
     const shown = git(["show", `${rev === "base" ? base : head}:${path}`]);
     return shown.code === 0 ? shown.stdout : undefined;

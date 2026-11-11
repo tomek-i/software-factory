@@ -2,13 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict } from "@factory/shared";
-import { fakeClaude, git, repoWithRemote, type FakeStep } from "../../test/helpers.js";
+import { fakeClaude, git, repoWithRemote, REVIEW_PASS, reviewsPass, type FakeStep } from "../../test/helpers.js";
 import { createAgentRunner } from "../agents/runner.js";
 import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
 import type { GithubPort } from "../github/port.js";
 import { Store } from "../store/store.js";
-import { PipelineDriver, prBody, runDirOf } from "./driver.js";
+import { approveTarget, PipelineDriver, prBody, runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
 
 const TRIAGE = (decision = "APPROVE", extra = "") =>
@@ -111,6 +111,7 @@ describe("PipelineDriver", () => {
       { output: TRIAGE() },
       buildStep("broken"),
       buildStep("fixed"),
+      ...reviewsPass(),
     ]);
     const run = driver.startRun(12);
 
@@ -123,7 +124,7 @@ describe("PipelineDriver", () => {
     expect(done.port_base).toBe(4700);
 
     const moves = store.listEvents(run.id).map((e) => `${e.from_state ?? "-"}>${e.to_state}`);
-    expect(moves).toEqual(["->intake", "intake>triage", "triage>build", "build>gate", "gate>build", "build>gate", "gate>needs_human"]);
+    expect(moves).toEqual(["->intake", "intake>triage", "triage>build", "build>gate", "gate>build", "build>gate", "gate>review", "review>needs_human"]);
 
     const dir = runDirOf(root, run.id);
     const head = git(done.worktree_path!, "rev-parse", "HEAD");
@@ -132,7 +133,15 @@ describe("PipelineDriver", () => {
     expect(existsSync(join(dir, "issue.md"))).toBe(true);
 
     const calls = fake.calls();
-    expect(calls.map((c) => c.role)).toEqual(["triage", "builder", "builder"]);
+    expect(calls.slice(0, 3).map((c) => c.role)).toEqual(["triage", "builder", "builder"]);
+    // The three default lenses review the gated commit in the worktree, each into its own file.
+    const reviewers = calls.slice(3);
+    expect(reviewers.map((c) => c.role).sort()).toEqual(["reviewer-code", "reviewer-docs", "reviewer-security"]);
+    for (const reviewer of reviewers) {
+      expect(reviewer.cwd.replace(/\\/g, "/")).toBe(done.worktree_path!.replace(/\\/g, "/"));
+      expect(reviewer.stdin).toMatch(new RegExp(`git diff [0-9a-f]{40}\\.\\.\\.${head}`));
+      expect(existsSync(join(dir, "round-2", `${reviewer.role!.replace("reviewer-", "review-")}.md`))).toBe(true);
+    }
     expect(calls[0]!.cwd.replace(/\\/g, "/")).toBe(root.replace(/\\/g, "/"));
     expect(calls[1]!.stdin).toContain("## Triage result");
     expect(calls[2]!.stdin).toContain("The quality gate failed in round 1");
@@ -140,7 +149,10 @@ describe("PipelineDriver", () => {
     const firstSession = calls[1]!.argv[calls[1]!.argv.indexOf("--session-id") + 1];
     expect(calls[2]!.argv).toEqual(expect.arrayContaining(["--resume", firstSession]));
 
-    expect(store.listDecisions(run.id)).toMatchObject([{ gate: "triage", outcome: "proceed", actor: "agent" }]);
+    expect(store.listDecisions(run.id)).toMatchObject([
+      { gate: "triage", outcome: "proceed", actor: "agent" },
+      { gate: "review", outcome: "escalate", comment: "reviews: code PASS, security PASS, docs PASS; capture and merge are not automated yet" },
+    ]);
     expect(seen.some((e) => e.type === "gate:check" && e.passed)).toBe(true);
 
     // The engine pushed and opened one draft PR; the second round reused it.
@@ -158,17 +170,103 @@ describe("PipelineDriver", () => {
       output: READY,
     };
     for (const unsafe of [false, true]) {
-      const { driver, store, prs } = setup([{ output: TRIAGE() }, touchInfra]);
+      const { driver, store, prs } = setup([{ output: TRIAGE() }, touchInfra, ...reviewsPass()]);
       const run = driver.startRun(12, { unsafe });
 
       const outcome = await driver.drive(run.id);
 
       expect(store.getRun(run.id)!.waiting_gate).toBe("review");
-      const hits = "secret or env file changed: .env; protected path (infra/**): infra/main.tf";
-      const lifted = unsafe ? "hard rules lifted by --unsafe" : "hard rules";
-      expect(outcome).toMatchObject({ kind: "parked", state: "needs_human", reason: `quality gate passed; reviews are not automated yet; ${lifted}: ${hits}` });
+      const hits = ["secret or env file changed: .env", "protected path (infra/**): infra/main.tf"];
+      // Hard rules hold the gate even though every review passed, unless the run is unsafe.
+      const reasons = unsafe
+        ? ["capture and merge are not automated yet", `hard rules lifted by --unsafe: ${hits.join("; ")}`]
+        : hits.map((h) => `hard rule: ${h}`);
+      expect(outcome).toMatchObject({
+        kind: "parked",
+        state: "needs_human",
+        reason: ["waiting at review gate: reviews: code PASS, security PASS, docs PASS", ...reasons].join("; "),
+      });
       expect(prs[0]!.body.startsWith("> [!WARNING]\n> Built with `--unsafe`")).toBe(unsafe);
     }
+  });
+
+  describe("reviews", () => {
+    const reviewConfig = (reviews: string) =>
+      `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n${reviews}`;
+    const finding = (severity: string) =>
+      `## Findings\n\`\`\`json\n[{ "id": "code-1", "severity": "${severity}", "file": "feature.txt", "line": 1, "claim": "it says fixed", "evidence": "line 1" }]\n\`\`\`\n`;
+    const review = (verdict: string, severity?: string) => `VERDICT: ${verdict}\n\n## Summary\n- reviewed\n\n${severity ? finding(severity) : "## Findings\nNone.\n"}`;
+
+    it("runs reviews.always, and reviews.ui only when triage says the change touches the UI", async () => {
+      const config = reviewConfig("reviews:\n  always: [code]\n  ui: [ux]\n");
+      for (const surfaces of ["api", "api, ui"]) {
+        const lenses = surfaces.includes("ui") ? ["code", "ux"] : ["code"];
+        const triage = TRIAGE().replace("SURFACES: api", `SURFACES: ${surfaces}`);
+        const { driver, fake } = setup([{ output: triage }, buildStep("fixed"), ...reviewsPass(lenses)], { config });
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringContaining(`reviews: ${lenses.map((l) => `${l} PASS`).join(", ")};`) });
+        expect(fake.calls().slice(2).map((c) => c.role).sort()).toEqual(lenses.map((l) => `reviewer-${l}`));
+      }
+    });
+
+    it("runs the reviewers at the same time and waits for all of them", async () => {
+      const slow = reviewsPass().map((step) => ({ ...step, sleepMs: 1000 }));
+      const { driver, store } = setup([{ output: TRIAGE() }, buildStep("fixed"), ...slow]);
+      const run = driver.startRun(12);
+
+      await driver.drive(run.id);
+
+      const reviewers = store.listAgentRuns(run.id).filter((a) => a.role.startsWith("reviewer:"));
+      expect(reviewers.map((a) => a.role).sort()).toEqual(["reviewer:code", "reviewer:docs", "reviewer:security"]);
+      expect(reviewers.every((a) => a.status === "ok")).toBe(true);
+      const lastStart = Math.max(...reviewers.map((a) => Date.parse(a.started_at)));
+      const firstEnd = Math.min(...reviewers.map((a) => Date.parse(a.ended_at!)));
+      expect(lastStart).toBeLessThan(firstEnd);
+    });
+
+    it("waits for a human on a blocking finding, but minor ones never hold the run", async () => {
+      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
+      const blocking = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("CHANGES", "major") }], { config });
+      const run = blocking.driver.startRun(12);
+      expect(await blocking.driver.drive(run.id)).toMatchObject({
+        reason: "waiting at review gate: reviews: code CHANGES (1 blocking); verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is",
+      });
+      expect(blocking.store.listEvents(run.id).some((e) => e.to_state === "build" && e.from_state === "review")).toBe(false);
+
+      const minor = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
+      const other = minor.driver.startRun(12);
+      expect(await minor.driver.drive(other.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; capture and merge are not automated yet" });
+    });
+
+    it("after a usage limit, only runs the lenses that have no review yet", async () => {
+      const { driver, fake } = setup([
+        { output: TRIAGE() },
+        buildStep("fixed"),
+        { role: "reviewer-code", output: REVIEW_PASS },
+        { role: "reviewer-docs", output: REVIEW_PASS },
+        { role: "reviewer-security", stream: "rate_limited" },
+        { role: "reviewer-security", output: REVIEW_PASS },
+      ]);
+      const run = driver.startRun(12);
+
+      expect(await driver.drive(run.id)).toMatchObject({ kind: "rate_limited" });
+      expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringContaining("reviews: code PASS, security PASS, docs PASS") });
+      expect(fake.calls().slice(2).map((c) => c.role)).toHaveLength(4);
+      expect(fake.calls().at(-1)!.role).toBe("reviewer-security");
+    });
+
+    it("approving the review gate moves on to capture", async () => {
+      const { driver, store } = setup([{ output: TRIAGE() }, buildStep("fixed"), ...reviewsPass()]);
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+
+      const parked = store.getRun(run.id)!;
+      expect(parked).toMatchObject({ waiting_gate: "review", parked_from: "review" });
+      expect(approveTarget(parked)).toBe("capture");
+      // A run parked at the review gate before reviews existed gets its reviews when approved.
+      expect(approveTarget({ ...parked, parked_from: "gate" })).toBe("review");
+    });
   });
 
   it("runs each agent with its configured model and effort, upgraded when triage said HIGH", async () => {
@@ -191,7 +289,7 @@ describe("PipelineDriver", () => {
       "    builder: { effort: xhigh }",
       "",
     ].join("\n");
-    const { driver, store, fake } = setup([{ output: TRIAGE().replace("RISK: LOW", "RISK: HIGH") }, buildStep("fixed")], { config });
+    const { driver, store, fake } = setup([{ output: TRIAGE().replace("RISK: LOW", "RISK: HIGH") }, buildStep("fixed"), ...reviewsPass()], { config });
     const run = driver.startRun(12);
 
     await driver.drive(run.id);
@@ -200,7 +298,7 @@ describe("PipelineDriver", () => {
     const [triage, builder] = fake.calls();
     expect([flag(triage!.argv, "--model"), flag(triage!.argv, "--effort")]).toEqual(["fable", "medium"]);
     expect([flag(builder!.argv, "--model"), flag(builder!.argv, "--effort")]).toEqual(["sonnet", "xhigh"]);
-    expect(store.listAgentRuns(run.id).map((a) => [a.role, a.model, a.effort])).toEqual([
+    expect(store.listAgentRuns(run.id).slice(0, 2).map((a) => [a.role, a.model, a.effort])).toEqual([
       ["triage", "fable", "medium"],
       ["builder", "sonnet", "xhigh"],
     ]);
@@ -224,7 +322,7 @@ describe("PipelineDriver", () => {
       ],
       output: READY,
     };
-    const { driver, store, fake, root } = setup([{ output: TRIAGE() }, leaky, cleaned]);
+    const { driver, store, fake, root } = setup([{ output: TRIAGE() }, leaky, cleaned, ...reviewsPass()]);
     const run = driver.startRun(12);
 
     await driver.drive(run.id);
