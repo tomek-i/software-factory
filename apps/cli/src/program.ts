@@ -3,6 +3,7 @@ import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
+import { styleFor } from "./style.js";
 
 export function buildProgram(): Command {
   const program = new Command()
@@ -30,7 +31,7 @@ export function buildProgram(): Command {
     .option("-q, --queued", "only issues queued for the factory")
     .option("-a, --all", "include closed issues")
     .action((options: { queued?: boolean; all?: boolean }) => {
-      console.log(runIssues(process.cwd(), options));
+      console.log(runIssues(process.cwd(), options, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -55,7 +56,7 @@ export function buildProgram(): Command {
     .argument("<issue>", "issue number, e.g. 12")
     .option("--unsafe", "lift hard rules for this run only (untrusted authors still wait for you)")
     .action(async (issue: string, options: { unsafe?: boolean }) => {
-      console.log(await runRun(process.cwd(), issue, options));
+      console.log(await runRun(process.cwd(), issue, options, { style: styleFor(process.stdout) }));
     });
 
   program
@@ -63,7 +64,7 @@ export function buildProgram(): Command {
     .description("list runs")
     .option("-a, --all", "include finished runs")
     .action((options: { all?: boolean }) => {
-      console.log(runStatus(process.cwd(), options));
+      console.log(runStatus(process.cwd(), options, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -72,7 +73,7 @@ export function buildProgram(): Command {
     .argument("<run>", "run id, id prefix, or issue number")
     .option("-f, --follow", "keep printing until the run stops")
     .action(async (ref: string, options: { follow?: boolean }) => {
-      console.log(await runLogs(process.cwd(), ref, options));
+      console.log(await runLogs(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
   program
@@ -92,7 +93,7 @@ export function buildProgram(): Command {
     .option("-m, --message <text>", "why (stored with the decision)")
     .option("--no-run", "only record the approval; continue later with `factory run`")
     .action(async (ref: string, options: { message?: string; run: boolean }) => {
-      console.log(await runApprove(process.cwd(), ref, options));
+      console.log(await runApprove(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
   program
@@ -113,7 +114,7 @@ export function buildProgram(): Command {
     .option("--reset-loops", "give the build and review loops a fresh budget")
     .option("--no-run", "only record the decision; continue later with `factory run`")
     .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
-      console.log(await runResume(process.cwd(), ref, options));
+      console.log(await runResume(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
   program

@@ -24,6 +24,7 @@ import {
 } from "@factory/core";
 import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
+import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
 
 export interface RunDeps {
@@ -32,6 +33,8 @@ export interface RunDeps {
   env?: NodeJS.ProcessEnv;
   github?: GithubPort;
   print?: (line: string) => void;
+  /** How to style output; plain unless the caller decided colour is on. */
+  style?: Style;
 }
 
 function parseIssueNumber(value: string): number {
@@ -56,18 +59,22 @@ export function findRun(store: Store, project: Project, ref: string): Run {
   throw new CliError(matches.length ? `"${ref}" matches several runs; use more of the id.` : `No run "${ref}". See \`factory status\`.`);
 }
 
-function formatEvent(event: FactoryEvent): string | undefined {
+function formatEvent(event: FactoryEvent, style: Style): string | undefined {
   switch (event.type) {
     case "run:state":
-      return `-> ${event.to}: ${event.reason}`;
+      return style.transition(`-> ${style.state(event.to)}: ${event.reason}`);
     case "agent:start":
-      return `[${event.role}] ${event.resumed ? "resuming" : "starting"} agent ${event.agentRunId}`;
+      return `[${event.role}] ${event.resumed ? "resuming" : "starting"} agent ${style.detail(event.agentRunId)}`;
     case "agent:activity":
       return `    ${event.summary}`;
-    case "agent:end":
-      return `[${event.role}] ${event.status}${event.costUsd != null ? ` ($${event.costUsd.toFixed(2)})` : ""}`;
-    case "gate:check":
-      return `[gate] ${event.name}: ${event.passed ? "passed" : "FAILED"} (${(event.durationMs / 1000).toFixed(1)}s)`;
+    case "agent:end": {
+      const cost = event.costUsd != null ? ` ${style.detail(`($${event.costUsd.toFixed(2)})`)}` : "";
+      return `[${event.role}] ${style.agent(event.status)}${cost}`;
+    }
+    case "gate:check": {
+      const result = style.check(event.passed, event.passed ? "passed" : "FAILED");
+      return `[gate] ${event.name}: ${result} ${style.detail(`(${(event.durationMs / 1000).toFixed(1)}s)`)}`;
+    }
     case "info":
       return `    ${event.message}`;
   }
@@ -82,26 +89,27 @@ export function showHint(run: Pick<Run, "id" | "waiting_gate">): string {
   return `See it with: \`factory show ${run.id}${file ? ` ${file}` : ""}\`.`;
 }
 
-function describeOutcome(outcome: DriveOutcome, run: Run, issue: number): string {
+function describeOutcome(outcome: DriveOutcome, run: Run, issue: number, style: Style): string {
+  const id = style.detail(run.id);
   switch (outcome.kind) {
     case "parked":
-      if (outcome.state === "needs_info") return `Run ${run.id} is waiting for answers on issue #${issue}.`;
+      if (outcome.state === "needs_info") return `Run ${id} is ${style.state("needs_info", "waiting for answers")} on issue #${issue}.`;
       return run.waiting_gate
         ? [
-            `Run ${run.id} is waiting at the ${run.waiting_gate} gate: ${outcome.reason}`,
+            `Run ${id} is ${style.state("needs_human", `waiting at the ${run.waiting_gate} gate`)}: ${outcome.reason}`,
             showHint(run),
-            `Approve with \`factory approve ${run.id}\`, or reject with \`factory reject ${run.id} -m "<why>"\`.`,
+            style.hint(`Approve with \`factory approve ${run.id}\`, or reject with \`factory reject ${run.id} -m "<why>"\`.`),
           ].join("\n")
         : [
-            `Run ${run.id} needs you: ${outcome.reason}`,
+            `Run ${id} ${style.state("needs_human", "needs you")}: ${outcome.reason}`,
             `See \`factory logs ${run.id}\`. Send it on with \`factory resume ${run.id} --to <stage> -m "<why>"\`, or stop it with \`factory cancel ${run.id}\`.`,
           ].join("\n");
     case "finished":
-      return `Run ${run.id} finished: ${outcome.state}.`;
+      return `Run ${id} finished: ${style.state(outcome.state)}.`;
     case "rate_limited":
-      return `Usage limit reached${outcome.resetsAt ? ` (resets ${outcome.resetsAt})` : ""}. Run \`factory run ${issue}\` again after that; the run continues where it stopped.`;
+      return `${style.agent("rate_limited", "Usage limit reached")}${outcome.resetsAt ? ` ${style.detail(`(resets ${outcome.resetsAt})`)}` : ""}. Run \`factory run ${issue}\` again after that; the run continues where it stopped.`;
     case "stopped":
-      return `Run ${run.id} stopped in ${outcome.state}: ${outcome.reason}`;
+      return `Run ${id} stopped in ${style.state(outcome.state)}: ${outcome.reason}`;
   }
 }
 
@@ -152,6 +160,7 @@ async function driveIssue(
   deps: RunDeps,
 ): Promise<string> {
   const print = deps.print ?? console.log;
+  const style = deps.style ?? plain;
   const issue = store.getIssue(project.id, number)!;
   const defaultBranch = workingConfig.project.default_branch;
   const read = trustedReader(project.repo_path, defaultBranch, deps.run);
@@ -159,7 +168,7 @@ async function driveIssue(
 
   const events = new FactoryEvents();
   events.on((e) => {
-    const line = formatEvent(e);
+    const line = formatEvent(e, style);
     if (line) print(line);
   });
   const owner = `cli-${process.pid}`;
@@ -182,7 +191,7 @@ async function driveIssue(
   if (options.unsafe && !run.unsafe) print(`--unsafe ignored: run ${run.id} already exists without it.`);
   // Running an issue that was waiting for its author means "they answered": triage it again.
   if (run.state === "needs_info") run = driver.retriage(run.id);
-  print(`Run ${run.id} (${run.state}) for #${number} ${issue.title}`);
+  print(`Run ${style.detail(run.id)} (${style.state(run.state)}) for #${number} ${issue.title}`);
 
   // Ctrl+C: stop this process's agent and give the lease back so the run can be continued
   // right away. Only rows still running are ours: this process holds the run's lease.
@@ -198,7 +207,7 @@ async function driveIssue(
   process.once("SIGINT", onInterrupt);
   try {
     const outcome = await driver.drive(run.id);
-    return describeOutcome(outcome, store.getRun(run.id)!, number);
+    return describeOutcome(outcome, store.getRun(run.id)!, number, style);
   } finally {
     process.off("SIGINT", onInterrupt);
   }
@@ -209,36 +218,47 @@ function cost(store: Store, runId: string): number {
 }
 
 /** `factory status`: one line per run. */
-export function runStatus(cwd: string, options: { all?: boolean } = {}, run?: CommandRunner): string {
+export function runStatus(cwd: string, options: { all?: boolean } = {}, run?: CommandRunner, style: Style = plain): string {
   return withProject(
     cwd,
     ({ store, project }) => {
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
       if (runs.length === 0) return options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.";
-      const rows = [
-        ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"],
-        ...runs.map((r) => [
-          r.id,
-          r.issue_number ? `#${r.issue_number}` : "-",
-          r.state,
-          `b${r.build_iterations + 1} r${r.review_rounds + 1}`,
-          `$${cost(store, r.id).toFixed(2)}`,
-          r.waiting_gate ?? "",
-        ]),
-      ];
-      const widths = rows[0]!.map((_, i) => Math.max(...rows.map((row) => row[i]!.length)));
-      return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i]!)).join("  ").trimEnd()).join("\n");
+      const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
+      const rows = runs.map((r) => [
+        r.id,
+        r.issue_number ? `#${r.issue_number}` : "-",
+        r.state,
+        `b${r.build_iterations + 1} r${r.review_rounds + 1}`,
+        `$${cost(store, r.id).toFixed(2)}`,
+        r.waiting_gate ?? "",
+      ]);
+      const widths = header.map((_, i) => Math.max(...[header, ...rows].map((row) => row[i]!.length)));
+      // Widths and padding come from the plain text; only the cell content is styled, never the padding.
+      const line = (cells: string[], styled: string[]) =>
+        styled.map((cell, i) => cell + " ".repeat(widths[i]! - cells[i]!.length)).join("  ").trimEnd();
+      return [
+        line(header, header),
+        ...rows.map((row, n) => {
+          const [id, issue, state, round, money, waiting] = row as [string, string, string, string, string, string];
+          return line(row, [style.detail(id), issue, style.state(runs[n]!.state, state), round, style.detail(money), style.attention(waiting)]);
+        }),
+      ].join("\n");
     },
     run,
   );
 }
 
-function renderLogs(store: Store, runId: string): string[] {
-  const lines = store.listEvents(runId).map((e) => `${e.created_at}  ${e.from_state ?? "-"} -> ${e.to_state}  ${e.reason}`);
+function renderLogs(store: Store, runId: string, style: Style): string[] {
+  const lines = store.listEvents(runId).map((e) => {
+    const from = e.from_state ? style.state(e.from_state) : "-";
+    return `${style.detail(e.created_at)}  ${from} -> ${style.state(e.to_state)}  ${e.reason}`;
+  });
   for (const agent of store.listAgentRuns(runId)) {
+    const cost = agent.cost_usd != null ? ` ${style.detail(`$${agent.cost_usd.toFixed(2)}`)}` : "";
     lines.push(
       "",
-      `agent ${agent.id} ${agent.role} ${agent.status}${agent.cost_usd != null ? ` $${agent.cost_usd.toFixed(2)}` : ""}  log: ${agent.log_path}`,
+      `agent ${style.detail(agent.id)} ${agent.role} ${style.agent(agent.status)}${cost}  ${style.detail(`log: ${agent.log_path}`)}`,
     );
     if (agent.excerpt) lines.push(...agent.excerpt.split("\n").map((l) => `  ${l}`));
   }
@@ -250,20 +270,21 @@ export async function runLogs(
   cwd: string,
   ref: string,
   options: { follow?: boolean; intervalMs?: number },
-  deps: { run?: CommandRunner; print?: (line: string) => void } = {},
+  deps: { run?: CommandRunner; print?: (line: string) => void; style?: Style } = {},
 ): Promise<string> {
   const print = deps.print ?? console.log;
+  const style = deps.style ?? plain;
   return withProjectAsync(
     cwd,
     async ({ store, project }) => {
       const run = findRun(store, project, ref);
-      if (!options.follow) return renderLogs(store, run.id).join("\n");
+      if (!options.follow) return renderLogs(store, run.id, style).join("\n");
 
       let events = 0;
       const offsets = new Map<string, number>();
       for (;;) {
         for (const e of store.listEvents(run.id).slice(events)) {
-          print(`-> ${e.to_state}: ${e.reason}`);
+          print(style.transition(`-> ${style.state(e.to_state)}: ${e.reason}`));
           events++;
         }
         const agents = store.listAgentRuns(run.id);
@@ -283,7 +304,7 @@ export async function runLogs(
         // A live lease means a worker is on it; a stale agent row from a crashed worker does not.
         const busy = current.lease_expires_at !== null && current.lease_expires_at > new Date().toISOString();
         if (!busy && (isTerminal(current.state) || current.state === "needs_human" || current.state === "needs_info")) {
-          return `Run ${run.id} is ${current.state}.`;
+          return `Run ${style.detail(run.id)} is ${style.state(current.state)}.`;
         }
         await new Promise((r) => setTimeout(r, options.intervalMs ?? 1000));
       }
