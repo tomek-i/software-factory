@@ -8,7 +8,7 @@ import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
 import type { GithubPort } from "../github/port.js";
 import { Store } from "../store/store.js";
-import { PipelineDriver, runDirOf } from "./driver.js";
+import { PipelineDriver, prBody, runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
 
 const TRIAGE = (decision = "APPROVE", extra = "") =>
@@ -145,7 +145,7 @@ describe("PipelineDriver", () => {
 
     // The engine pushed and opened one draft PR; the second round reused it.
     expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(head);
-    expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "Add the feature", body: "- done\n\nCloses #12\n" }]);
+    expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "Add the feature", body: "## What\n- done\n\nCloses #12\n" }]);
   });
 
   it("runs each agent with its configured model and effort, upgraded when triage said HIGH", async () => {
@@ -405,5 +405,47 @@ describe("PipelineDriver", () => {
     const run = driver.startRun(12);
     store.acquireLease(run.id, "someone-else", 60_000);
     expect(await driver.drive(run.id)).toMatchObject({ kind: "stopped", reason: expect.stringContaining("someone-else") });
+  });
+});
+
+describe("prBody", () => {
+  it("puts the human brief first and collapses the implementation details", () => {
+    const build = [
+      "STATUS: READY",
+      "COMMIT: abc",
+      "",
+      "## Summary",
+      "- Stops a run that keeps failing the same way",
+      "",
+      "## Testing",
+      "- unit and driver tests",
+      "",
+      "## Details",
+      "- `fingerprint.ts`: hashes failed checks",
+      "",
+    ].join("\n");
+    expect(prBody(build, 16)).toBe(
+      [
+        "## What",
+        "- Stops a run that keeps failing the same way",
+        "",
+        "## How it was tested",
+        "- unit and driver tests",
+        "",
+        "<details><summary>Implementation details</summary>",
+        "",
+        "- `fingerprint.ts`: hashes failed checks",
+        "",
+        "</details>",
+        "",
+        "Closes #16",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("leaves out sections the builder did not write", () => {
+    expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3)).toBe("## What\n- done\n\nCloses #3\n");
+    expect(prBody("STATUS: READY\n", 3)).toBe("Closes #3\n");
   });
 });
