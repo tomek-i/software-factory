@@ -10,6 +10,8 @@ import {
   type AgentRole,
   type Finding,
   type FactoryConfig,
+  type Gate,
+  type GateMode,
   type ParsedVerdict,
   type ReviewLens,
   type RunState,
@@ -22,11 +24,11 @@ import type { TrustedReader } from "../config/trusted.js";
 import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
-import { factoryComment, type GithubPort } from "../github/port.js";
-import type { Issue, Project, Run, RunPatch, Store } from "../store/store.js";
+import { factoryComment, type GithubPort, type PullRequestState } from "../github/port.js";
+import type { Issue, Project, Run, RunEvent, RunPatch, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
-import { resolveGate } from "./gates.js";
+import { resolveGate, type GateInput } from "./gates.js";
 import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 
@@ -38,7 +40,9 @@ const LEASE_RENEW_MS = 60_000;
 /**
  * Where approving a waiting gate sends the run. Triage goes straight to build until the spec
  * critic exists. Approving the review gate moves on to capture; a run parked there before reviews
- * were automated (parked from the quality gate) gets its reviews instead.
+ * were automated (parked from the quality gate) gets its reviews instead. Approving the PR gate
+ * moves on to merge (which marks the PR ready itself), and approving the merge gate lets the merge
+ * stage merge the commit that was waiting.
  */
 export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">): RunState | undefined {
   switch (run.waiting_gate) {
@@ -46,9 +50,18 @@ export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">): R
       return "build";
     case "review":
       return run.parked_from === "gate" ? "review" : "capture";
+    case "pr":
+    case "merge":
+      return "merge";
     default:
       return undefined;
   }
+}
+
+/** The commit a run waiting at the merge gate is waiting on, recorded on the event that parked it. */
+export function waitingCommit(events: RunEvent[]): string | undefined {
+  const data = events.at(-1)?.data as { commit?: unknown } | null | undefined;
+  return typeof data?.commit === "string" ? data.commit : undefined;
 }
 
 /** A lens's review file in a round folder. */
@@ -255,6 +268,11 @@ export function runEvidence(runDir: string, round: number, git: GitEvidence = no
   };
 }
 
+/** The `- ` bullets of a section's text. */
+function bullets(text: string | undefined): string[] {
+  return (text ?? "").split(/\r?\n/).flatMap((line) => /^[-*]\s+(.+)$/.exec(line.trim())?.[1] ?? []);
+}
+
 /** The text under a "## <name>" heading of an agent's output, if present. */
 function section(body: string, name: string): string | undefined {
   const match = new RegExp(`^#{2,3}\\s*${name}\\s*:?\\s*$([\\s\\S]*?)(?=^#{1,3}\\s|$(?![\\s\\S]))`, "im").exec(body);
@@ -392,6 +410,14 @@ export class PipelineDriver {
         return this.gate(run);
       case "review":
         return this.review(run);
+      case "capture":
+        return this.capture(run);
+      case "pr":
+        return this.pr(run);
+      case "merge":
+        return this.merge(run);
+      case "learn":
+        return this.learn(run);
       default:
         return { kind: "stopped", state: run.state, reason: `the ${run.state} stage is not automated yet` };
     }
@@ -547,8 +573,7 @@ export class PipelineDriver {
    * secret scan, so nothing the builder committed reaches GitHub unchecked.
    */
   private publish(worktree: Worktree, issue: Issue, buildBody: string, unsafe: boolean): number {
-    const pushed = this.run("git", ["push", "--quiet", "-u", "origin", `HEAD:refs/heads/${worktree.branch}`], { cwd: worktree.path });
-    if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
+    this.push(worktree);
     const existing = this.deps.github.findPullRequest(worktree.branch);
     if (existing !== undefined) return existing;
     return this.deps.github.createDraftPullRequest({
@@ -727,10 +752,255 @@ export class PipelineDriver {
       this.info(run, outcome.at(-1)!);
     }
     this.publishReviewNotes(run, reviews, verified);
-    const gate = resolveGate({ mode: this.deps.config.gates.review, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
-    // Capture and merge are not automated yet, so even a passing review gate hands over to a human.
-    const reasons = gate.outcome === "wait_human" ? gate.reasons : ["capture and merge are not automated yet"];
-    return this.waitForHuman(run, "review", [...outcome, ...reasons, ...lifted]);
+    const mode = this.deps.config.gates.review;
+    const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
+    if (gate.outcome === "wait_human") return this.waitForHuman(run, "review", [...outcome, ...gate.reasons, ...lifted]);
+    for (const line of lifted) this.info(run, line);
+    this.recordProceed(run, "review", mode, [...outcome, ...lifted].join("; "), commit);
+    this.move(run, "capture", `reviews clear (round ${round})`, { round, commit }, runEvidence(dir, round, git));
+    return undefined;
+  }
+
+  /** Screenshots and a walkthrough for UI changes are not automated yet, so capture passes straight on. */
+  private capture(run: Run): StepResult {
+    this.move(run, "pr", "capture (screenshots) is not automated yet");
+    return undefined;
+  }
+
+  /** The PR gate, then take the draft PR out of draft so it reads as ready for a human's review. */
+  private pr(run: Run): StepResult {
+    if (run.pr_number === null) return this.escalate(run, "the run has no pull request");
+    const mode = this.deps.config.gates.pr;
+    const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: [], unsafe: run.unsafe });
+    if (gate.outcome === "wait_human") return this.waitForHuman(run, "pr", gate.reasons);
+    const { github } = this.deps;
+    if (github.pullRequestState(run.pr_number).draft) github.markReady(run.pr_number);
+    const git = gitEvidence(this.worktreeOf(run), this.defaultBranch, this.run);
+    this.recordProceed(run, "pr", mode, `PR #${run.pr_number} marked ready`, git.head());
+    this.move(run, "merge", `PR #${run.pr_number} is ready`, undefined, runEvidence(this.runDir(run), run.round, git));
+    return undefined;
+  }
+
+  /**
+   * Merge the run's PR: bring the branch up to date with the default branch, run the quality gate
+   * again if that changed it, decide the merge gate, then merge exactly the commit that passed. A
+   * conflict or a failing gate goes back to the builder, which costs a review round.
+   */
+  private async merge(run: Run): Promise<StepResult> {
+    const { github, config } = this.deps;
+    const number = run.pr_number;
+    if (number === null) return this.escalate(run, "the run has no pull request to merge");
+    const pr = github.pullRequestState(number);
+    // Merged or closed by a human meanwhile: that settles the run.
+    if (pr.state !== "open") return this.closedOnGithub(run, pr);
+
+    const dir = this.runDir(run);
+    const worktree = this.worktreeOf(run);
+    const round = run.round;
+    const resyncDir = join(dir, `round-${round}`, "resync");
+    const git = gitEvidence(worktree, this.defaultBranch, this.run);
+    const evidence = runEvidence(dir, round, git);
+    const backToBuild = (reason: string, data: Record<string, unknown>) =>
+      this.loopBack(run, reason, { round, ...data }, evidence, "merge", `still cannot merge after round ${round}`, (why) => this.escalate(run, why));
+
+    const conflicts = this.resync(worktree, resyncDir);
+    if (conflicts) return backToBuild(`merging ${this.defaultBranch} into the branch conflicts in ${conflicts.join(", ")}`, { conflicts });
+    let head = git.head();
+    if (!this.passedOn(dir, round, head)) {
+      const result = await runQualityGate({
+        runId: run.id,
+        worktreePath: worktree.path,
+        defaultBranch: this.defaultBranch,
+        checks: config.checks,
+        roundDir: resyncDir,
+        run: this.run,
+        events: this.deps.events,
+        signal: this.signal,
+      });
+      if (!result.passed) return backToBuild(`quality gate failed after merging ${this.defaultBranch} (round ${round})`, { resync: true });
+      head = git.head();
+      if (head !== result.head || !git.isClean()) return this.escalate(run, "the worktree changed while the quality gate ran after merging the default branch");
+      this.push(worktree);
+    }
+
+    if (!this.approvalCovers(run, worktree, head)) {
+      let hits: string[];
+      try {
+        hits = this.hardRuleHits(run, worktree, head);
+      } catch (err) {
+        return this.escalate(run, `the hard-rule check failed: ${(err as Error).message}`);
+      }
+      const mode = config.gates.merge;
+      const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
+      let agentDecision: GateInput["agentDecision"];
+      // Hard rules need a human whatever the approver says, so it is only asked when it can decide.
+      if (mode === "auto" && (run.unsafe || hits.length === 0)) {
+        const turn = await this.approverTurn(run, worktree, head);
+        if (turn.status !== "ok") return this.agentTrouble(run, "approver", turn);
+        agentDecision = { decision: turn.verdict.header.DECISION, reasons: bullets(section(turn.verdict.body, "reasons")) };
+      }
+      const gate = resolveGate({ mode, agentDecision, hardRuleHits: hits, unsafe: run.unsafe });
+      if (gate.outcome === "wait_human") return this.waitForHuman(run, "merge", [...gate.reasons, ...lifted], { commit: head });
+      this.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted].join("; "), head);
+    }
+    return this.mergePullRequest(run, number, head, git);
+  }
+
+  /** Merge exactly `head`, which passed the quality gate and is what GitHub has, then move on to learn. */
+  private mergePullRequest(run: Run, number: number, head: string, git: GitEvidence): StepResult {
+    const { github } = this.deps;
+    const problems: string[] = [];
+    if (!this.passedOn(this.runDir(run), run.round, head)) problems.push(`no passing quality gate on ${head.slice(0, 7)}`);
+    if (!git.isClean()) problems.push("the worktree has uncommitted changes");
+    if (!git.isPushed()) problems.push(`${head.slice(0, 7)} is not pushed`);
+    if (problems.length) return this.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
+    try {
+      if (github.pullRequestState(number).draft) github.markReady(number);
+      // --match-head-commit: GitHub refuses if the PR's head is anything but the commit that passed.
+      github.mergePullRequest(number, head);
+    } catch (err) {
+      return this.escalate(run, `could not merge PR #${number}: ${(err as Error).message}`);
+    }
+    const merged = github.pullRequestState(number);
+    this.move(run, "learn", `merged PR #${number}`, { pr: number, commit: head, mergeCommit: merged.mergeCommit }, {
+      ...runEvidence(this.runDir(run), run.round, git),
+      pullRequest: () => merged,
+    });
+    return undefined;
+  }
+
+  /** Lessons are not captured yet (#35), so a merged run is done. */
+  private learn(run: Run): StepResult {
+    this.move(run, "done", "lessons are not captured yet");
+    return undefined;
+  }
+
+  /** The run's PR was merged or closed on GitHub before the factory merged it. */
+  private closedOnGithub(run: Run, pr: PullRequestState): StepResult {
+    const done = this.machine.closeByPullRequest(run.id, pr, this.deps.owner);
+    this.deps.events?.emit({ type: "run:state", runId: run.id, from: run.state, to: done.state, reason: this.lastReason(run.id) });
+    return undefined;
+  }
+
+  /**
+   * Merge the latest default branch into the run's branch (not pushed yet). On a conflict the merge
+   * is undone and the conflicting files are returned, and listed in `resync/conflicts.md` for the builder.
+   */
+  private resync(worktree: Worktree, resyncDir: string): string[] | undefined {
+    const git = (args: string[]) => this.run("git", args, { cwd: worktree.path });
+    const conflictsFile = join(resyncDir, "conflicts.md");
+    rmSync(conflictsFile, { force: true });
+    const fetched = git(["fetch", "--quiet", "origin", this.defaultBranch]);
+    if (fetched.code !== 0) throw new Error(`git fetch failed: ${fetched.stderr || fetched.stdout}`);
+    const merged = git(["merge", "--no-edit", `origin/${this.defaultBranch}`]);
+    if (merged.code === 0) return undefined;
+    const conflicts = git(["diff", "--name-only", "--diff-filter=U"]).stdout.split(/\r?\n/).filter(Boolean);
+    const aborted = git(["merge", "--abort"]);
+    if (aborted.code !== 0) throw new Error(`git merge --abort failed: ${aborted.stderr || aborted.stdout}`);
+    if (conflicts.length === 0) throw new Error(`git merge origin/${this.defaultBranch} failed: ${merged.stderr || merged.stdout}`);
+    mkdirSync(resyncDir, { recursive: true });
+    writeFileSync(conflictsFile, `Merging origin/${this.defaultBranch} conflicts in:\n\n${conflicts.map((f) => `- ${f}`).join("\n")}\n`);
+    return conflicts;
+  }
+
+  /** Whether this round's quality gate, or its re-run after the re-sync, passed on `head`. */
+  private passedOn(dir: string, round: number, head: string): boolean {
+    const passed = (v: ParsedVerdict<"checks">) => (v.header.GATE === "PASS" && v.header.COMMIT === head ? [] : ["not a pass on HEAD"]);
+    const roundDir = join(dir, `round-${round}`);
+    return [join(roundDir, "checks.md"), join(roundDir, "resync", "checks.md")].some((path) => readValid("checks", path, passed));
+  }
+
+  /**
+   * Whether a human's approval of the merge gate still covers `head`: nothing went back to the
+   * builder since, and `head` is the approved commit or adds only merge commits (the engine's
+   * re-syncs) on top of it. Any other change needs a fresh approval.
+   */
+  private approvalCovers(run: Run, worktree: Worktree, head: string): boolean {
+    const events = this.deps.store.listEvents(run.id);
+    let approved: string | undefined;
+    for (let i = events.length - 1; i >= 0 && approved === undefined; i--) {
+      const event = events[i]!;
+      if (event.to_state === "build") return false;
+      const data = event.data as { gate?: unknown; commit?: unknown } | null;
+      if (event.from_state !== "needs_human" || event.to_state !== "merge" || data?.gate !== "merge") continue;
+      // `factory resume --to merge` names no commit, so it approves nothing.
+      if (typeof data.commit !== "string") return false;
+      approved = data.commit;
+    }
+    if (approved === undefined) return false;
+    if (approved === head) return true;
+    const cwd = worktree.path;
+    if (this.run("git", ["merge-base", "--is-ancestor", approved, head], { cwd }).code !== 0) return false;
+    // Along the branch's own line only: the commits a re-sync brings in from the default branch are not the branch's.
+    const added = this.run("git", ["rev-list", "--first-parent", "--no-merges", `${approved}..${head}`], { cwd });
+    return added.code === 0 && added.stdout.trim() === "";
+  }
+
+  /** The approver weighs the run's reports and the final diff, and says PROCEED or ESCALATE. */
+  private async approverTurn(run: Run, worktree: Worktree, head: string): Promise<TurnResult<"approver">> {
+    const dir = this.runDir(run);
+    const issue = this.issueOf(run);
+    const outputFile = verdictPath(dir, "approver", run.round);
+    rmSync(outputFile, { force: true });
+    const base = freshBase(worktree.path, this.defaultBranch, head, this.run);
+    const changeFile = join(dir, "approval.diff");
+    writeFileSync(changeFile, changeReport(worktree.path, base, head, this.run));
+    const roundDir = join(dir, `round-${run.round}`);
+    const reports = [
+      join(dir, "build.md"),
+      join(roundDir, "checks.md"),
+      join(roundDir, "resync", "checks.md"),
+      ...REVIEW_LENSES.map((lens) => reviewPath(roundDir, lens)),
+      join(roundDir, "verify.md"),
+    ].filter((path) => existsSync(path));
+    const files = writeRoleFiles(dir, "approver", rolePrompt("approver", this.deps.read), permissionProfile("approver", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
+    return runTurn({
+      run: this.deps.runAgent,
+      kind: "approver",
+      outputFile,
+      agent: {
+        ...this.agentBase(run, "approver", worktree.path),
+        ...files,
+        addDirs: [dir],
+        prompt: renderTask({
+          role: "approver",
+          runId: run.id,
+          runDir: dir,
+          workDir: worktree.path,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          lessons: this.lessons(),
+          branch: worktree.branch,
+          defaultBranch: this.defaultBranch,
+          sections: [...this.triageScope(dir), { title: "Run files", body: reports.map((path) => `- \`${path}\``).join("\n") }],
+          instructions: [
+            `Decide whether PR #${run.pr_number} for issue #${issue.number} may be merged.`,
+            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Final commit: \`${head}\`.`,
+            `The commits and the full diff are in \`${changeFile}\`. Read the run files and the diff, then write the output file.`,
+          ].join("\n"),
+        }),
+      },
+    });
+  }
+
+  /** Push the run's branch (never forced). */
+  private push(worktree: Worktree): void {
+    const pushed = this.run("git", ["push", "--quiet", "-u", "origin", `HEAD:refs/heads/${worktree.branch}`], { cwd: worktree.path });
+    if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
+  }
+
+  /** A gate let the run through without a human: record who decided and on which commit. */
+  private recordProceed(run: Run, gate: Gate, mode: GateMode, comment: string, commit: string): void {
+    this.deps.store.recordDecision({
+      run_id: run.id,
+      gate,
+      mode,
+      outcome: "proceed",
+      actor: mode === "auto" ? "agent" : "system",
+      comment: comment || `gate is set to ${mode}`,
+      commit_sha: commit,
+    });
   }
 
   /** The verifier checks this round's blocking findings against the code. */
@@ -955,6 +1225,9 @@ export class PipelineDriver {
     if (back === "needs_human") back = events.slice(0, last).findLast((e) => e.to_state === "needs_human")?.from_state;
     const checks = back === "gate" ? readValid("checks", join(roundDir, "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
     const verify = back === "review" ? readValid("verify", join(roundDir, "verify.md"), (v) => (v.header.VERDICT === "CONFIRMED" ? [] : ["none confirmed"])) : undefined;
+    // The merge stage clears conflicts.md before each re-sync, so one that exists is from the attempt that sent the run back.
+    const conflicts = back === "merge" && existsSync(join(roundDir, "resync", "conflicts.md"));
+    const resynced = back === "merge" && !conflicts ? readValid("checks", join(roundDir, "resync", "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
     if (checks) {
       parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(join(roundDir, "checks.md"), "utf8").trim(), "");
       parts.push("Fix the cause, run the checks yourself, commit and push, then write the output file again.");
@@ -968,6 +1241,20 @@ export class PipelineDriver {
         "```",
         "",
         "Fix each one (with a test where it fits), run the checks yourself, commit and push, then write the output file again.",
+      );
+    } else if (conflicts) {
+      parts.push(
+        readFileSync(join(roundDir, "resync", "conflicts.md"), "utf8").trim(),
+        "",
+        `Merge origin/${this.defaultBranch} into your branch with git merge, resolve the conflicts so both sides keep working, run the checks yourself, commit, then write the output file again.`,
+      );
+    } else if (resynced) {
+      parts.push(
+        `After origin/${this.defaultBranch} was merged into your branch, the quality gate failed in round ${run.round}. Its report:`,
+        "",
+        readFileSync(join(roundDir, "resync", "checks.md"), "utf8").trim(),
+        "",
+        "The merge commit is on your branch. Fix the cause, run the checks yourself, commit, then write the output file again.",
       );
     }
     // Only decisions made since the builder last ran were meant for it (not, say, the triage approval).
@@ -1023,7 +1310,7 @@ export class PipelineDriver {
     this.deps.events?.emit({ type: "run:state", runId: run.id, from: run.state, to, reason });
   }
 
-  private waitForHuman(run: Run, gate: "triage" | "review", reasons: string[], data?: Record<string, unknown>): StepResult {
+  private waitForHuman(run: Run, gate: Exclude<Gate, "issue_writer" | "critic" | "plan">, reasons: string[], data?: Record<string, unknown>): StepResult {
     this.deps.store.recordDecision({
       run_id: run.id,
       gate,

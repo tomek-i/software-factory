@@ -49,6 +49,17 @@ describe("ghPort", () => {
     }
   });
 
+  it("marks a PR ready and merges it only at the commit that passed", () => {
+    const { calls, run } = fakeGh("");
+    ghPort(project, run).markReady(42);
+    ghPort(project, run).mergePullRequest(42, "abc");
+    expect(calls).toEqual([
+      ["pr", "ready", "42", "-R", "o/r"],
+      ["pr", "merge", "42", "-R", "o/r", "--merge", "--match-head-commit", "abc"],
+    ]);
+    expect(() => ghPort(project, fakeGh("", 1).run).mergePullRequest(42, "abc")).toThrow(/gh pr merge failed: boom/);
+  });
+
   it("finds an open PR for a branch", () => {
     expect(ghPort(project, fakeGh('[{"number":5}]').run).findPullRequest("b")).toBe(5);
     expect(ghPort(project, fakeGh("[]").run).findPullRequest("b")).toBeUndefined();

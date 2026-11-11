@@ -26,6 +26,10 @@ export interface GithubPort {
   /** Replace a PR's description. */
   updatePullRequest(number: number, body: string): void;
   pullRequestState(number: number): PullRequestState;
+  /** Take a draft PR out of draft. */
+  markReady(number: number): void;
+  /** Merge with a merge commit, only if the PR's head is still `head` (the commit that passed). */
+  mergePullRequest(number: number, head: string): void;
 }
 
 /** Hidden marker on every comment the factory posts, so later stages can find (and not duplicate) them. */
@@ -76,6 +80,12 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       }
       const mergeCommit = typeof pr.mergeCommit?.oid === "string" ? pr.mergeCommit.oid : undefined;
       return { number, state, draft: pr.isDraft === true, head: pr.headRefOid, ...(mergeCommit ? { mergeCommit } : {}) };
+    },
+    markReady(number) {
+      gh(["pr", "ready", String(number), "-R", repo]);
+    },
+    mergePullRequest(number, head) {
+      gh(["pr", "merge", String(number), "-R", repo, "--merge", "--match-head-commit", head]);
     },
     updatePullRequest(number, body) {
       // From a file: a long description can exceed the Windows command-line limit (~32k characters).

@@ -102,6 +102,8 @@ describe("issue commands", () => {
       findPullRequest: () => undefined,
       createDraftPullRequest: () => 1,
       updatePullRequest: () => undefined,
+    markReady: () => undefined,
+    mergePullRequest: () => undefined,
       pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
     };
 

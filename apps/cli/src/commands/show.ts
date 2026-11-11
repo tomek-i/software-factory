@@ -45,7 +45,7 @@ function fileList(files: string[]): string {
  * on every OS, and anything that would leave the run folder (`..`, absolute or drive paths) is refused.
  */
 function resolveInRunDir(runDir: string, file: string, files: string[]): string {
-  const short: Record<string, string | undefined> = { triage: "triage.md", build: "build.md", checks: latestChecks(files) };
+  const short: Record<string, string | undefined> = { triage: "triage.md", build: "build.md", checks: latestChecks(files), approval: "approval.md" };
   if (Object.hasOwn(short, file)) {
     const path = short[file];
     if (!path) throw new CliError(`No round has a checks.md yet. Files in the run folder:\n${fileList(files)}`);
@@ -80,10 +80,9 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
     return lines.join("\n");
   }
 
-  const checks = latestChecks(files);
-  for (const { kind, key } of VERDICTS) {
-    const path = kind === "checks" ? checks : `${kind}.md`;
-    if (!path || !files.includes(path)) continue;
+  /** A verdict file's header value and summary, when the file exists. */
+  const summarise = (path: string | undefined, kind: VerdictKind, key: string) => {
+    if (!path || !files.includes(path)) return;
     lines.push("");
     try {
       const verdict = parseVerdict(kind, readFileSync(join(runDir, path), "utf8"));
@@ -93,7 +92,9 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
       if (!(err instanceof VerdictParseError)) throw err;
       lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
     }
-  }
+  };
+  const checks = latestChecks(files);
+  for (const { kind, key } of VERDICTS) summarise(kind === "checks" ? checks : `${kind}.md`, kind, key);
 
   // The reviews of the latest gated round, each lens with its verdict and the findings that block,
   // then the verifier's judgement of those: the findings it confirmed and how many it refuted.
@@ -116,6 +117,10 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
       lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
     }
   }
+
+  // The merge stage: the quality gate again after merging the default branch in, and the approver's call.
+  summarise(round && `${round}/resync/checks.md`, "checks", "GATE");
+  summarise("approval.md", "approver", "DECISION");
 
   lines.push("", `Files in ${runDir}:`, fileList(files), "", `Show one with \`factory show ${run.id} <file>\`, e.g. \`factory show ${run.id} triage\`.`);
   return lines.join("\n");

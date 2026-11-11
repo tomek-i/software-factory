@@ -13,6 +13,7 @@ import {
   RunMachine,
   resumeTargets,
   trustedReader,
+  waitingCommit,
   type CommandRunner,
   type DriveOutcome,
   type FactoryEvent,
@@ -423,9 +424,6 @@ async function continueRun(
   options: { run?: boolean },
   deps: RunDeps,
 ): Promise<string> {
-  if (to === "capture") {
-    return `${done}\nCapture and merge are not automated yet: mark the draft PR ready and merge it yourself.`;
-  }
   if (isTerminal(to) || run.issue_number === null) return done;
   if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
   // Not re-queued here: the issue may have been unqueued on purpose, or closed on GitHub since.
@@ -453,7 +451,9 @@ export async function runApprove(
       const to = approveTarget(target);
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
-      new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved" });
+      // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
+      const commitSha = gate === "merge" ? waitingCommit(store.listEvents(target.id)) : undefined;
+      new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
       const done = `Approved the ${gate} gate of ${target.id}; it moves to ${to}.`;
       return continueRun(store, project, config, target, to, done, options, deps);
     },

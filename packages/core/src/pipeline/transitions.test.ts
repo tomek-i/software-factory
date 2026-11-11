@@ -189,6 +189,23 @@ describe("RunMachine.transition", () => {
     expect(store.getRun(run.id)!.build_iterations).toBe(2);
   });
 
+  it("only marks the PR ready from a clean, pushed branch", () => {
+    const { at, move } = setup();
+    at("pr");
+    expect(() => move("merge", fakeEvidence({ pushed: false }))).toThrow(/not pushed/);
+    expect(move("merge").state).toBe("merge");
+  });
+
+  it("only leaves the merge stage for learn once GitHub says the run's PR is merged", () => {
+    const { at, move } = setup();
+    at("merge", { pr_number: 7 });
+    const pr = (state: "open" | "merged" | "closed", number = 7) => ({ ...fakeEvidence(), pullRequest: () => ({ number, state, draft: false, head: HEAD }) });
+    expect(() => move("learn")).toThrow(/no pull request state/);
+    expect(() => move("learn", pr("open"))).toThrow(/PR #7 is open, not merged/);
+    expect(() => move("learn", pr("merged", 8))).toThrow(/not the run's PR/);
+    expect(move("learn", pr("merged")).state).toBe("learn");
+  });
+
   it("caps review rounds, including failed merge attempts", () => {
     const { at, move } = setup({ loops: { max_review_rounds: 2 } });
     at("merge");
@@ -450,6 +467,15 @@ describe("RunMachine.resume", () => {
   it("lets a human approve triage straight into build while there is no spec critic", () => {
     expect(resumeTargets({ parked_from: "triage" })).toEqual(expect.arrayContaining(["intake", "triage", "build", "critic"]));
     expect(resumeTargets({ parked_from: "triage" })).not.toContain("gate");
+  });
+
+  it("records the commit a human approved on the resume event", () => {
+    const { machine, store, run, at } = setup();
+    at("merge");
+    machine.transition(run.id, "needs_human", { reason: "merge gate", patch: { waiting_gate: "merge" } });
+    machine.resume(run.id, "merge", { comment: "ship it", commitSha: HEAD });
+    expect(store.listEvents(run.id).at(-1)!.data).toEqual({ gate: "merge", resetLoops: false, commit: HEAD });
+    expect(store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "merge", commit_sha: HEAD });
   });
 
   it("can send work back with a fresh loop budget", () => {

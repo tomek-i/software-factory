@@ -16,6 +16,7 @@ describe("rolePrompt", () => {
   it("uses the shipped default unless the default branch has an override", () => {
     expect(rolePrompt("triage", () => undefined)).toContain("# Role: triage");
     expect(rolePrompt("verifier", () => undefined)).toContain("# Role: verifier");
+    expect(rolePrompt("approver", () => undefined)).toContain("# Role: approver");
     const read = (p: string) => (p === ".factory/prompts/builder.md" ? "custom builder" : undefined);
     expect(rolePrompt("builder", read)).toBe("custom builder");
     expect(rolePrompt("triage", read)).toContain("# Role: triage");
@@ -77,6 +78,14 @@ describe("permissionProfile", () => {
     expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
     expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
     expect(() => permissionProfile("verifier", { runDirFromCwd: "x" })).toThrow(/verifier profile needs its output file/);
+  });
+
+  it("gives the approver the same: no shell, and only approval.md to write", () => {
+    const outputFile = join(tempDir(), "approval.md");
+    const { permissions } = permissionProfile("approver", { runDirFromCwd: "../..", outputFile });
+    expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+    expect(() => permissionProfile("approver", { runDirFromCwd: "x" })).toThrow(/approver profile needs its output file/);
   });
 
   it("writes absolute rules the way Claude Code matches them", () => {

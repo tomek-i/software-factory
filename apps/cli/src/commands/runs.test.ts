@@ -23,17 +23,25 @@ const BUILD: FakeStep = {
 
 /** PR states the fake GitHub reports; a PR not listed is open. Reset by setup(). */
 const prStates = new Map<number, PullRequestState>();
+/** PRs the fake GitHub merged. */
+const merged: { number: number; head: string }[] = [];
 const github: GithubPort = {
   commentOnIssue: () => undefined,
   findPullRequest: () => undefined,
   createDraftPullRequest: () => 7,
   updatePullRequest: () => undefined,
+  markReady: () => undefined,
+  mergePullRequest: (number, head) => {
+    merged.push({ number, head });
+    prStates.set(number, { number, state: "merged", draft: false, head, mergeCommit: "e".repeat(40) });
+  },
   pullRequestState: (number) => prStates.get(number) ?? { number, state: "open", draft: true, head: "" },
 };
 
 function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
   prStates.clear();
-  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  ${gates}\n${extraConfig}`;
+  merged.length = 0;
+  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  review: human\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
   const store = new Store(join(root, ".factory", "factory.db"));
@@ -267,7 +275,7 @@ describe("approve / reject / cancel", () => {
   });
 
   it("keeps driving the run after an approval", async () => {
-    const { run, queue, dir, deps, printed } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()], "triage: human");
+    const { run, queue, dir, deps, printed, root } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()], "triage: human");
     queue();
     await run();
 
@@ -276,8 +284,19 @@ describe("approve / reject / cancel", () => {
     expect(printed.some((l) => /^Approved the triage gate of run-12-\w+; it moves to build\.$/.test(l))).toBe(true);
     expect(printed.some((l) => l.startsWith("[builder] ok"))).toBe(true);
     expect(message).toMatch(/waiting at the review gate/);
-    // Approving the review gate has nothing to drive yet.
-    expect(await runApprove(dir, "12", {}, deps)).toMatch(/moves to capture\.\nCapture and merge are not automated yet/);
+    // Approving the review gate drives on through capture and the PR to the merge gate.
+    expect(await runApprove(dir, "12", {}, deps)).toMatch(/is waiting at the merge gate: waiting at merge gate: gate is set to human/);
+    const s = new Store(join(root, ".factory", "factory.db"));
+    const runId = s.listRuns({})[0]!.id;
+    const head = git(s.getRun(runId)!.worktree_path!, "rev-parse", "HEAD");
+    s.close();
+
+    // Approving the merge gate records the commit that waited, and the factory merges exactly it.
+    expect(await runApprove(dir, "12", { message: "ship it" }, deps)).toMatch(/finished: done/);
+    expect(merged).toEqual([{ number: 7, head }]);
+    const after = new Store(join(root, ".factory", "factory.db"));
+    expect(after.listDecisions(runId).find((d) => d.comment === "ship it")).toMatchObject({ gate: "merge", commit_sha: head });
+    after.close();
   });
 
   it("records an approval but does not drive a run whose issue was unqueued", async () => {

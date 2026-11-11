@@ -44,6 +44,19 @@ function setup(files: Record<string, string>, fields: { branch?: string; pr_numb
 }
 
 describe("factory show <run>", () => {
+  it("lists the gate run again after the re-sync and the approver's decision", () => {
+    const { dir } = setup({
+      "round-2/checks.md": checks("PASS", "round two"),
+      "round-2/resync/checks.md": checks("PASS", "after merging main"),
+      "approval.md": "DECISION: ESCALATE\n\n## Summary\n- pricing is assumed\n\n## Reasons\n- the issue leaves the price open\n",
+    });
+
+    const text = runShow(dir, "16");
+    expect(text).toContain("round-2/resync/checks.md (GATE: PASS)\n  - after merging main");
+    expect(text).toContain("approval.md (DECISION: ESCALATE)\n  - pricing is assumed");
+    expect(runShow(dir, "16", "approval")).toContain("the issue leaves the price open");
+  });
+
   it("prints the run, the verdict summaries with their paths, and the files", () => {
     const { dir, runId } = setup(
       {

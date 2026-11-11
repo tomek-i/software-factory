@@ -61,6 +61,8 @@ export interface Evidence {
    * still loops, but stalls cannot be detected.
    */
   gateFingerprint?(): string;
+  /** The run's pull request as GitHub sees it now. */
+  pullRequest?(): PullRequestState;
   git: {
     head(): string;
     isClean(): boolean;
@@ -145,6 +147,14 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
     ...checksOnHead(evidence, "PASS"),
     ...cleanAndPushed(evidence),
   ],
+  "pr->merge": ({ evidence }) => cleanAndPushed(evidence),
+  // Only GitHub saying the run's own PR is merged ends the merge stage.
+  "merge->learn": ({ run, evidence }) => {
+    const pr = evidence.pullRequest?.();
+    if (!pr) return ["no pull request state"];
+    if (pr.number !== run.pr_number) return [`PR #${pr.number} is not the run's PR (#${run.pr_number ?? "none"})`];
+    return pr.state === "merged" ? [] : [`PR #${pr.number} is ${pr.state}, not merged`];
+  },
   // A failed merge attempt (conflict, failing re-gate) costs a review round so the loop is bounded.
   "merge->build": ({ run, config }) => capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
 };
@@ -375,6 +385,8 @@ export class RunMachine {
       this.store.appendEvent(runId, from, to, `human: ${options.comment}`, {
         gate,
         resetLoops: !!options.resetLoops,
+        // The commit the human approved, so the merge stage can tell whether the approval still holds.
+        ...(options.commitSha ? { commit: options.commitSha } : {}),
       });
     });
   }
