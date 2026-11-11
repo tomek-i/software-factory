@@ -152,3 +152,43 @@ describe("Store ports and agent runs", () => {
     expect(store.getRun(run.id)).toMatchObject({ branch: "factory/1-a", state: "intake", pr_number: null });
   });
 });
+
+describe("Store lessons", () => {
+  const lesson = (rule: string) => ({ observation: "the gate failed twice", evidence: "round-1/checks.md", rule });
+
+  it("stores proposals per run and lists them by status", () => {
+    const { store, project } = setup();
+    const other = store.upsertProject({ name: "other", repo_path: "/repo/other" });
+    const run = store.createRun({ project_id: project.id, title: "a", issue_number: 1 });
+    const elsewhere = store.createRun({ project_id: other.id, title: "b", issue_number: 1 });
+
+    const added = store.addLessons(run.id, [lesson("Run lint first."), lesson("Keep tests next to the code.")]);
+    store.addLessons(elsewhere.id, [lesson("Not this project's.")]);
+
+    expect(added).toMatchObject([
+      { project_id: project.id, run_id: run.id, status: "proposed", rule: "Run lint first.", comment: null, pull_request: null, decided_at: null },
+      { rule: "Keep tests next to the code." },
+    ]);
+    expect(store.listLessons({ project_id: project.id }).map((l) => l.rule)).toEqual(["Run lint first.", "Keep tests next to the code."]);
+    expect(store.listLessons({ project_id: project.id, status: "approved" })).toEqual([]);
+    expect(store.addLessons(run.id, [])).toEqual([]);
+    expect(() => store.addLessons("run-missing", [lesson("x")])).toThrow(/not found/);
+  });
+
+  it("records a decision once, and all or none of a batch", () => {
+    const { store, project } = setup();
+    const run = store.createRun({ project_id: project.id, title: "a" });
+    const [a, b, c] = store.addLessons(run.id, [lesson("a"), lesson("b"), lesson("c")]);
+
+    expect(store.decideLessons([a!.id, b!.id], "approved", { pull_request: 9 })).toMatchObject([
+      { status: "approved", pull_request: 9, decided_at: expect.any(String) },
+      { status: "approved", pull_request: 9 },
+    ]);
+    // b is already approved, so c is left as it was.
+    expect(() => store.decideLessons([c!.id, b!.id], "rejected", { comment: "too vague" })).toThrow(`lesson ${b!.id} is not waiting for a decision`);
+    expect(store.getLesson(c!.id)).toMatchObject({ status: "proposed", comment: null });
+
+    expect(store.decideLessons([c!.id], "rejected", { comment: "too vague" })).toMatchObject([{ status: "rejected", comment: "too vague", pull_request: null }]);
+    expect(store.listLessons({ project_id: project.id, status: "proposed" })).toEqual([]);
+  });
+});

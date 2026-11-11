@@ -116,6 +116,26 @@ export interface Issue {
   queue_seq: number | null;
 }
 
+export type LessonStatus = "proposed" | "approved" | "rejected";
+
+/** A lesson the learner proposed from a run, and what a human decided about it. */
+export interface StoredLesson {
+  id: number;
+  project_id: string;
+  run_id: string;
+  status: LessonStatus;
+  observation: string;
+  evidence: string;
+  /** The line that goes into `.factory/lessons.md` once approved. */
+  rule: string;
+  /** Why a human rejected it. */
+  comment: string | null;
+  /** The PR that appends it to `.factory/lessons.md`. */
+  pull_request: number | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
 /** An issue as fetched from GitHub, before local bookkeeping is added. */
 export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq">;
 
@@ -473,5 +493,53 @@ export class Store {
 
   listDecisions(runId: string): Decision[] {
     return this.db.prepare("SELECT * FROM decisions WHERE run_id = ? ORDER BY id").all(runId) as Decision[];
+  }
+
+  // ---- lessons ------------------------------------------------------------
+
+  /** Store the learner's proposals for a run; they wait for a human as `proposed`. */
+  addLessons(runId: string, lessons: { observation: string; evidence: string; rule: string }[]): StoredLesson[] {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`run ${runId} not found`);
+    const insert = this.db.prepare(
+      `INSERT INTO lessons (project_id, run_id, status, observation, evidence, rule, created_at)
+       VALUES (?, ?, 'proposed', ?, ?, ?, ?)`,
+    );
+    return this.transaction(() =>
+      lessons.map((l) => this.getLesson(Number(insert.run(run.project_id, runId, l.observation, l.evidence, l.rule, now()).lastInsertRowid))!),
+    );
+  }
+
+  getLesson(id: number): StoredLesson | undefined {
+    return this.db.prepare("SELECT * FROM lessons WHERE id = ?").get(id) as StoredLesson | undefined;
+  }
+
+  listLessons(filter: { project_id: string; status?: LessonStatus }): StoredLesson[] {
+    const where = ["project_id = ?"];
+    const params: unknown[] = [filter.project_id];
+    if (filter.status) {
+      where.push("status = ?");
+      params.push(filter.status);
+    }
+    return this.db.prepare(`SELECT * FROM lessons WHERE ${where.join(" AND ")} ORDER BY id`).all(...params) as StoredLesson[];
+  }
+
+  /**
+   * A human's decision on proposed lessons. All or none: every id must still be proposed, so a lesson
+   * decided by another process meanwhile is never decided twice.
+   */
+  decideLessons(ids: number[], status: Exclude<LessonStatus, "proposed">, extra: { comment?: string; pull_request?: number } = {}): StoredLesson[] {
+    return this.transaction(() => {
+      const update = this.db.prepare(
+        "UPDATE lessons SET status = ?, comment = ?, pull_request = ?, decided_at = ? WHERE id = ? AND status = 'proposed'",
+      );
+      const ts = now();
+      for (const id of ids) {
+        if (update.run(status, extra.comment ?? null, extra.pull_request ?? null, ts, id).changes !== 1) {
+          throw new Error(`lesson ${id} is not waiting for a decision`);
+        }
+      }
+      return ids.map((id) => this.getLesson(id)!);
+    });
   }
 }
