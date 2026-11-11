@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { parseVerdict, VerdictParseError } from "./verdict.js";
 
+const finding = (id: string, severity: string) => ({ id, severity, claim: "c", evidence: "e" });
+const block = (items: object[]) => "```json\n" + JSON.stringify(items) + "\n```";
+
 describe("parseVerdict", () => {
   it("parses a triage verdict with summary", () => {
     const text = [
@@ -74,6 +77,47 @@ describe("parseVerdict", () => {
 
   it("rejects a file without headers", () => {
     expect(() => parseVerdict("build", "I did the work!")).toThrow(/header/);
+  });
+
+  it("requires the builder to name the commit it reports on", () => {
+    expect(() => parseVerdict("build", "STATUS: READY\n")).toThrow(/COMMIT/);
+    expect(parseVerdict("build", `STATUS: ready\nCOMMIT: ${"c".repeat(40)}\n`).header.STATUS).toBe("READY");
+  });
+
+  it("rejects duplicate header keys instead of letting the last one win", () => {
+    expect(() => parseVerdict("review", "VERDICT: CHANGES\nVERDICT: PASS\n")).toThrow(/more than once/);
+  });
+
+  it("finds sections under heading variants", () => {
+    const v = parseVerdict("review", `VERDICT: CHANGES\n\n### Findings:\n${block([finding("F1", "major")])}\n`);
+    expect(v.findings).toHaveLength(1);
+  });
+
+  it("rejects more than one findings block", () => {
+    const text = `VERDICT: CHANGES\n\n## Findings\n${block([])}\n${block([finding("F1", "major")])}\n`;
+    expect(() => parseVerdict("review", text)).toThrow(/exactly one/);
+  });
+
+  it("rejects duplicate finding ids", () => {
+    const text = `VERDICT: CHANGES\n\n## Findings\n${block([finding("F1", "major"), finding("F1", "minor")])}\n`;
+    expect(() => parseVerdict("review", text)).toThrow(/duplicate finding ids: F1/);
+  });
+
+  it("rejects a review verdict that contradicts its findings", () => {
+    expect(() => parseVerdict("review", `VERDICT: PASS\n\n## Findings\n${block([finding("F1", "critical")])}\n`)).toThrow(
+      /contradicts/,
+    );
+    expect(() => parseVerdict("review", `VERDICT: CHANGES\n\n## Findings\n${block([finding("F1", "nit")])}\n`)).toThrow(
+      /at least one/,
+    );
+    expect(parseVerdict("review", `VERDICT: PASS\n\n## Findings\n${block([finding("F1", "minor")])}\n`).findings).toHaveLength(1);
+  });
+
+  it("rejects a verifier verdict that contradicts its findings", () => {
+    expect(() => parseVerdict("verify", "VERDICT: CONFIRMED\n")).toThrow(/confirmed findings listed/);
+    expect(() => parseVerdict("verify", `VERDICT: NONE_CONFIRMED\n\n## Findings\n${block([finding("F1", "major")])}\n`)).toThrow(
+      /contradicts/,
+    );
   });
 
   it("rejects findings prose without a json block", () => {
