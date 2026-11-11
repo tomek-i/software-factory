@@ -100,13 +100,28 @@ export function blockingFindings(reviews: LensReview[]): BlockingFinding[] {
   return all.map(({ lens, finding }) => (count.get(finding.id)! > 1 ? { lens, finding: { ...finding, id: `${lens}/${finding.id}` } } : { lens, finding }));
 }
 
-/** The verifier's `## Refuted` lines: `- <id>: <why>`. */
-export function refutedFindings(body: string): { id: string; reason: string }[] {
+/**
+ * The verifier's `## Refuted` lines: `- <id>: <why>`, top-level bullets only (an indented bullet
+ * belongs to the reason above it). Reviewers may use any text as an id, so the `known` ids are tried
+ * first, longest first; otherwise the id is everything before the first ": ".
+ */
+export function refutedFindings(body: string, known: string[] = []): { id: string; reason: string }[] {
   const text = section(body, "refuted") ?? "";
+  const ids = [...known].sort((a, b) => b.length - a.length);
   return text.split(/\r?\n/).flatMap((line) => {
-    const match = /^\s*[-*]\s+`?([^`:\s]+)`?\s*:\s*(.+)$/.exec(line);
+    const item = /^[-*]\s+(.+)$/.exec(line)?.[1];
+    if (!item) return [];
+    for (const id of ids) {
+      const match = new RegExp(`^\`?${escapeRegExp(id)}\`?\\s*:\\s*(.+)$`).exec(item);
+      if (match) return [{ id, reason: match[1]!.trim() }];
+    }
+    const match = /^`?(.+?)`?\s*:\s+(.+)$/.exec(item);
     return match ? [{ id: match[1]!, reason: match[2]!.trim() }] : [];
   });
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -116,7 +131,7 @@ export function refutedFindings(body: string): { id: string; reason: string }[] 
 export function verifyProblems(verdict: ParsedVerdict<"verify">, blocking: BlockingFinding[]): string[] {
   const known = new Set(blocking.map((b) => b.finding.id));
   const confirmed = verdict.findings.map((f) => f.id);
-  const refuted = refutedFindings(verdict.body).map((r) => r.id);
+  const refuted = refutedFindings(verdict.body, [...known]).map((r) => r.id);
   const problems: string[] = [];
   for (const f of verdict.findings) {
     if (!isBlocking(f)) problems.push(`confirmed finding ${f.id} must be critical or major; refute it if it is only minor`);
@@ -137,24 +152,28 @@ function findingPlace(f: Finding): string {
 }
 
 /**
- * The PR description's review notes: minor findings and nits per lens, and the blocking findings
- * the verifier refuted, with why. Undefined when there is nothing to note.
+ * The PR description's review notes: minor findings and nits per lens, the blocking findings the
+ * verifier refuted (with why), and any it confirmed that are still open because the run stopped for
+ * a human (a stall or the review round cap). Undefined when there is nothing to note.
  */
 export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"verify">): string | undefined {
   const parts: string[] = [];
+  if (verified?.header.VERDICT === "CONFIRMED") {
+    parts.push(`**Confirmed by the verifier, not fixed**\n${verified.findings.map((f) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`).join("\n")}`);
+  }
   for (const { lens, verdict } of reviews) {
     const minor = verdict.findings.filter((f) => !isBlocking(f));
     if (minor.length) parts.push(`**${lens}**\n${minor.map((f) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`).join("\n")}`);
   }
   if (verified) {
     const byId = new Map(blockingFindings(reviews).map((b) => [b.finding.id, b]));
-    const refuted = refutedFindings(verified.body).map(({ id, reason }) => {
+    const refuted = refutedFindings(verified.body, [...byId.keys()]).map(({ id, reason }) => {
       const b = byId.get(id);
       return b ? `- ${b.lens} ${b.finding.severity}: ${b.finding.claim}${findingPlace(b.finding)}\n  Refuted: ${reason}` : `- ${id}: ${reason}`;
     });
     if (refuted.length) parts.push(`**Refuted by the verifier**\n${refuted.join("\n")}`);
   }
-  return parts.length ? `## Review notes\nNot blocking: left for you to judge.\n\n${parts.join("\n\n")}` : undefined;
+  return parts.length ? `## Review notes\nLeft for you to judge.\n\n${parts.join("\n\n")}` : undefined;
 }
 
 export function runDirOf(root: string, runId: string): string {
@@ -574,14 +593,24 @@ export class PipelineDriver {
       this.move(run, "review", `quality gate passed (round ${round})`, { round, commit: result.head }, evidence);
       return undefined;
     }
-    return this.loopBack(run, `quality gate failed (round ${round})`, { round }, evidence, "quality gate", `quality gate still failing after round ${round}`);
+    return this.loopBack(run, `quality gate failed (round ${round})`, { round }, evidence, "quality gate", `quality gate still failing after round ${round}`, (reason, data) =>
+      this.escalate(run, reason, data),
+    );
   }
 
   /**
    * Send the run back to the builder along a loop edge. A stall or the loop's cap stops it there
-   * instead and asks a human; `notes` are added to that escalation.
+   * instead, and `park` hands it to a human with the reason.
    */
-  private loopBack(run: Run, reason: string, data: unknown, evidence: Evidence, loop: string, capReason: string, notes: string[] = []): StepResult {
+  private loopBack(
+    run: Run,
+    reason: string,
+    data: unknown,
+    evidence: Evidence,
+    loop: string,
+    capReason: string,
+    park: (reason: string, data?: Record<string, unknown>) => StepResult,
+  ): StepResult {
     try {
       this.move(run, "build", reason, data, evidence);
     } catch (err) {
@@ -589,10 +618,10 @@ export class PipelineDriver {
       if (!(err instanceof TransitionError) || this.load(run.id).state !== run.state) throw err;
       if (err.stall) {
         const { fingerprint, rounds, files } = err.stall;
-        return this.escalate(run, [err.stall.reason, ...notes].join("; "), { stalled: loop, fingerprint, rounds, files });
+        return park(err.stall.reason, { stalled: loop, fingerprint, rounds, files });
       }
       if (!err.problems.some((p) => p.includes("cap reached"))) throw err;
-      return this.escalate(run, [`${capReason}: ${err.problems.join("; ")}`, ...notes].join("; "));
+      return park(`${capReason}: ${err.problems.join("; ")}`);
     }
     return undefined;
   }
@@ -600,8 +629,8 @@ export class PipelineDriver {
   /**
    * Run the review lenses in parallel on the commit that passed the gate, then decide the review
    * gate. A lens that already wrote a valid review for this round (e.g. before a usage limit) is
-   * not run again. Verifying findings is not automated yet (#13), so any blocking finding waits for
-   * a human; minor findings and nits never send the run back.
+   * not run again. Blocking findings go to the verifier: the ones it confirms send the run back to
+   * the builder; minor findings and nits never do.
    */
   private async review(run: Run): Promise<StepResult> {
     const dir = this.runDir(run);
@@ -678,7 +707,9 @@ export class PipelineDriver {
       if (verified.header.VERDICT === "CONFIRMED") {
         const confirmed = `the verifier confirmed ${verified.findings.length} of ${blocking.length} blocking findings`;
         this.info(run, confirmed);
-        // Whoever is asked to decide (a stall or the cap) may approve as is, so they must see the hard rules too.
+        // A stall or the cap stops the run at the review gate, where a human may approve it as is
+        // (`factory approve`), so they see the hard rules and the PR lists the open findings.
+        const found = verified;
         return this.loopBack(
           run,
           `${confirmed} (round ${round})`,
@@ -686,7 +717,10 @@ export class PipelineDriver {
           runEvidence(dir, round, git),
           "reviews",
           `reviews still have confirmed findings after round ${round}`,
-          [...held, ...lifted],
+          (reason, data) => {
+            this.publishReviewNotes(run, reviews, found);
+            return this.waitForHuman(run, "review", [summary, reason, ...held, ...lifted], data);
+          },
         );
       }
       outcome.push(`the verifier refuted all ${blocking.length} blocking findings`);
@@ -914,14 +948,18 @@ export class PipelineDriver {
   private builderFollowUp(run: Run, outputFile: string): string {
     const parts: string[] = [];
     const roundDir = join(this.runDir(run), `round-${run.round}`);
-    const back = this.deps.store.listEvents(run.id).filter((e) => e.to_state === "build").at(-1)?.from_state;
-    const checks = join(roundDir, "checks.md");
-    const verify = join(roundDir, "verify.md");
-    if (back === "gate" && existsSync(checks)) {
-      parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(checks, "utf8").trim(), "");
+    const events = this.deps.store.listEvents(run.id);
+    const last = events.findLastIndex((e) => e.to_state === "build");
+    let back = events[last]?.from_state;
+    // Sent back by a human: what failed is whatever made the run stop where it was parked.
+    if (back === "needs_human") back = events.slice(0, last).findLast((e) => e.to_state === "needs_human")?.from_state;
+    const checks = back === "gate" ? readValid("checks", join(roundDir, "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
+    const verify = back === "review" ? readValid("verify", join(roundDir, "verify.md"), (v) => (v.header.VERDICT === "CONFIRMED" ? [] : ["none confirmed"])) : undefined;
+    if (checks) {
+      parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(join(roundDir, "checks.md"), "utf8").trim(), "");
       parts.push("Fix the cause, run the checks yourself, commit and push, then write the output file again.");
-    } else if (back === "review" && existsSync(verify)) {
-      const { findings } = parseVerdict("verify", readFileSync(verify, "utf8"));
+    } else if (verify) {
+      const { findings } = verify;
       parts.push(
         `The reviewers of round ${run.round} found problems, and a verifier confirmed these against the code:`,
         "",
@@ -985,7 +1023,7 @@ export class PipelineDriver {
     this.deps.events?.emit({ type: "run:state", runId: run.id, from: run.state, to, reason });
   }
 
-  private waitForHuman(run: Run, gate: "triage" | "review", reasons: string[]): StepResult {
+  private waitForHuman(run: Run, gate: "triage" | "review", reasons: string[], data?: Record<string, unknown>): StepResult {
     this.deps.store.recordDecision({
       run_id: run.id,
       gate,
@@ -994,7 +1032,7 @@ export class PipelineDriver {
       actor: "system",
       comment: reasons.join("; "),
     });
-    this.move(run, "needs_human", `waiting at ${gate} gate: ${reasons.join("; ")}`, { reasons }, undefined, { waiting_gate: gate });
+    this.move(run, "needs_human", `waiting at ${gate} gate: ${reasons.join("; ")}`, { ...data, reasons }, undefined, { waiting_gate: gate });
     return undefined;
   }
 

@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { CommandRunner } from "../util/exec.js";
 import type { Project } from "../store/store.js";
@@ -23,10 +24,18 @@ describe("ghPort", () => {
     expect(calls[0]).toEqual(["pr", "create", "-R", "o/r", "--draft", "--head", "factory/1-x", "--base", "main", "--title", "T", "--body", "B"]);
   });
 
-  it("replaces a PR's description", () => {
-    const { calls, run } = fakeGh("");
+  it("replaces a PR's description from a file, which it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
     ghPort(project, run).updatePullRequest(42, "new body");
-    expect(calls[0]).toEqual(["pr", "edit", "42", "-R", "o/r", "--body", "new body"]);
+    expect(calls[0]!.slice(0, -1)).toEqual(["pr", "edit", "42", "-R", "o/r", "--body-file"]);
+    expect(sent).toBe("new body");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
   });
 
   it("finds an open PR for a branch", () => {

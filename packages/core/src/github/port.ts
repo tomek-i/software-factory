@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { GithubError } from "./issues.js";
@@ -48,7 +51,15 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       return Number(match[1]);
     },
     updatePullRequest(number, body) {
-      gh(["pr", "edit", String(number), "-R", repo, "--body", body]);
+      // From a file: a long description can exceed the Windows command-line limit (~32k characters).
+      const dir = mkdtempSync(join(tmpdir(), "factory-pr-"));
+      try {
+        const file = join(dir, "body.md");
+        writeFileSync(file, body);
+        gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     },
   };
 }

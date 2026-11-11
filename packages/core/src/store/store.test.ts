@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import type { RunState } from "@factory/shared";
 import { MIGRATIONS } from "./migrations.js";
 import { Store } from "./store.js";
 
@@ -28,16 +29,23 @@ describe("Store", () => {
     const path = join(mkdtempSync(join(tmpdir(), "factory-db-")), "factory.db");
     const store = new Store(path);
     const project = store.upsertProject({ name: "a", repo_path: "/a" });
-    const make = (state: Parameters<Store["writeState"]>[1], build_iterations: number, parked_from: string | null = null) => {
+    /** A run with these moves (`from>to`) behind it and the counter the old engine left. */
+    const make = (build_iterations: number, moves: string[]) => {
       const run = store.createRun({ project_id: project.id, title: "t", issue_number: null });
-      store.writeState(run.id, state, { build_iterations, parked_from: parked_from as never });
+      for (const move of moves) {
+        const [from, to] = move.split(">") as [RunState, RunState];
+        store.appendEvent(run.id, from, to, "x");
+      }
+      store.writeState(run.id, moves.at(-1)?.split(">")[1] as RunState, { build_iterations });
       return run.id;
     };
-    const building = make("build", 2);
-    const gated = make("gate", 2);
-    const reviewing = make("review", 1);
-    const parkedInReview = make("needs_human", 1, "review");
-    const parkedInTriage = make("needs_human", 0, "triage");
+    // The old engine's folder was build_iterations + 1 at the time of the gate.
+    const gateFailed = make(2, ["build>gate", "gate>build", "build>gate", "gate>build"]); // last used round-2
+    const inGate = make(2, ["build>gate", "gate>build", "build>gate", "gate>build", "build>gate"]); // round-3
+    const parkedInReview = make(1, ["build>gate", "gate>build", "build>gate", "gate>review", "review>needs_human"]); // round-2
+    // Sent back from review by a human: the reviewed round-2 must not be reused.
+    const sentBack = make(1, ["build>gate", "gate>build", "build>gate", "gate>review", "review>needs_human", "needs_human>build"]);
+    const neverGated = make(0, ["intake>triage", "triage>needs_human"]);
     store.close();
     // Undo the round migration, as if this database was made before it.
     const roundMigration = MIGRATIONS.findIndex((sql) => sql.includes("ADD COLUMN round")) + 1;
@@ -48,8 +56,7 @@ describe("Store", () => {
 
     const reopened = new Store(path);
     const round = (id: string) => reopened.getRun(id)!.round;
-    // A run in build last gated in round build_iterations; one at or past the gate is in round build_iterations + 1.
-    expect([building, gated, reviewing, parkedInReview, parkedInTriage].map(round)).toEqual([2, 3, 2, 2, 0]);
+    expect([gateFailed, inGate, parkedInReview, sentBack, neverGated].map(round)).toEqual([2, 3, 2, 2, 0]);
     reopened.close();
   });
 

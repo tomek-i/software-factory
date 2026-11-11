@@ -111,12 +111,18 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // round: how many times the run has entered the quality gate. It names the round-N folder of
   // checks, reviews and verification, so a run sent back to build never overwrites an earlier round.
-  // Existing runs keep their folders: round N was build_iterations + 1 once the gate was reached.
+  // Existing runs continue from the last folder they used: build_iterations + 1 as it was when they
+  // last entered the gate, which is one less now if the gate sent them back to build since.
   `
   ALTER TABLE runs ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
-  UPDATE runs SET round = build_iterations + 1
-    WHERE state IN ('gate', 'review', 'capture', 'pr', 'merge', 'learn')
-       OR (state = 'needs_human' AND parked_from IN ('gate', 'review', 'capture', 'pr', 'merge', 'learn'));
-  UPDATE runs SET round = build_iterations WHERE round = 0;
+  UPDATE runs SET round = CASE
+    WHEN NOT EXISTS (SELECT 1 FROM run_events g WHERE g.run_id = runs.id AND g.to_state = 'gate') THEN 0
+    WHEN EXISTS (
+      SELECT 1 FROM run_events b
+      WHERE b.run_id = runs.id AND b.from_state = 'gate' AND b.to_state = 'build'
+        AND b.id > (SELECT MAX(g.id) FROM run_events g WHERE g.run_id = runs.id AND g.to_state = 'gate')
+    ) THEN build_iterations
+    ELSE build_iterations + 1
+  END;
   `,
 ];

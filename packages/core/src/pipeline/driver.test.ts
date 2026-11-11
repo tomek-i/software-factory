@@ -249,7 +249,7 @@ describe("PipelineDriver", () => {
       expect(edits).toHaveLength(1);
       expect(edits[0]!.number).toBe(7);
       expect(edits[0]!.body).toBe(
-        "## What\n- done\n\n## Review notes\nNot blocking: left for you to judge.\n\n**code**\n- minor: it says fixed (feature.txt:1)\n\nCloses #12\n",
+        "## What\n- done\n\n## Review notes\nLeft for you to judge.\n\n**code**\n- minor: it says fixed (feature.txt:1)\n\nCloses #12\n",
       );
     });
 
@@ -367,8 +367,8 @@ describe("PipelineDriver", () => {
         expect(fake.calls().filter((c) => c.role === "reviewer-code")).toHaveLength(1);
       });
 
-      it("escalates when the verifier confirms the same findings two rounds in a row", async () => {
-        const { driver, store } = setup(
+      it("stops at the review gate when the verifier confirms the same findings two rounds in a row", async () => {
+        const { driver, store, edits } = setup(
           [
             { output: TRIAGE() },
             buildStep("fixed"),
@@ -384,24 +384,45 @@ describe("PipelineDriver", () => {
 
         expect(await driver.drive(run.id)).toMatchObject({
           kind: "parked",
-          reason: "stalled: the verifier confirmed the same findings in review rounds 1 and 2 (see round-1/verify.md and round-2/verify.md)",
+          reason:
+            "waiting at review gate: reviews: code CHANGES (1 blocking); stalled: the verifier confirmed the same findings in review rounds 1 and 2 (see round-1/verify.md and round-2/verify.md)",
         });
-        expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "review", review_rounds: 1 });
+        const parked = store.getRun(run.id)!;
+        expect(parked).toMatchObject({ state: "needs_human", parked_from: "review", waiting_gate: "review", review_rounds: 1 });
+        // A human may approve it as is, and the PR lists what is still open.
+        expect(approveTarget(parked)).toBe("capture");
+        expect(store.listEvents(run.id).at(-1)!.data).toMatchObject({ stalled: "reviews", rounds: [1, 2] });
+        expect(edits.at(-1)!.body).toContain("**Confirmed by the verifier, not fixed**\n- major: it says fixed (feature.txt:1)");
       });
 
-      it("escalates at the review round cap, naming the hard rules the change trips", async () => {
+      it("stops at the review round cap, naming the hard rules, and tells the builder the findings when a human sends it back", async () => {
         const config = `${codeOnly}loops:\n  max_review_rounds: 1\n`;
         const touchInfra: FakeStep = { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "infra/main.tf": "x\n" } };
-        const { driver } = setup(
-          [{ output: TRIAGE() }, touchInfra, { role: "reviewer-code", output: review("CHANGES", "major") }, { role: "verifier", output: confirmed() }],
+        const { driver, store, fake } = setup(
+          [
+            { output: TRIAGE() },
+            touchInfra,
+            { role: "reviewer-code", output: review("CHANGES", "major") },
+            { role: "verifier", output: confirmed() },
+            rework(1),
+            { role: "reviewer-code", output: REVIEW_PASS },
+          ],
           { config },
         );
         const run = driver.startRun(12);
 
         expect(await driver.drive(run.id)).toMatchObject({
           kind: "parked",
-          reason: "reviews still have confirmed findings after round 1: review round cap reached (1); hard rule: protected path (infra/**): infra/main.tf",
+          reason:
+            "waiting at review gate: reviews: code CHANGES (1 blocking); reviews still have confirmed findings after round 1: review round cap reached (1); hard rule: protected path (infra/**): infra/main.tf",
         });
+
+        new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "build", { comment: "one more try" });
+        await driver.drive(run.id);
+        const rebuilt = fake.calls().filter((c) => c.role === "builder")[1]!;
+        expect(rebuilt.stdin).toContain("The reviewers of round 1 found problems, and a verifier confirmed these");
+        expect(rebuilt.stdin).toContain("A human sent this back to you with this comment: one more try");
+        expect(store.getRun(run.id)).toMatchObject({ round: 2, waiting_gate: "review" });
       });
     });
 
@@ -656,6 +677,8 @@ describe("PipelineDriver", () => {
     const again = await driver.drive(run.id);
 
     expect(again.kind === "parked" && again.reason).toMatch(/^stalled: quality gate failed the same way in rounds 3 and 4 /);
+    expect(fake.calls()[3]!.stdin).toContain("The quality gate failed in round 2. Its report:");
+    expect(fake.calls()[3]!.stdin).toContain("A human sent this back to you with this comment: look at check.js");
     expect(fake.calls()).toHaveLength(5);
     expect(store.getRun(run.id)!.build_iterations).toBe(2);
   });
@@ -823,6 +846,12 @@ describe("verifier helpers", () => {
       { id: "security-2", reason: "not reachable" },
     ]);
     expect(refutedFindings("## Summary\n- x\n")).toEqual([]);
+    // Ids may hold colons or spaces: the known ids are matched first, and nested bullets belong to the reason.
+    const odd = "## Refuted\n- code:1: off by one is fine\n  - see a.ts\n- `my finding`: duplicate\n";
+    expect(refutedFindings(odd, ["code", "code:1", "my finding"])).toEqual([
+      { id: "code:1", reason: "off by one is fine" },
+      { id: "my finding", reason: "duplicate" },
+    ]);
   });
 
   it("wants every blocking finding judged exactly once, and only known ones", () => {
@@ -852,7 +881,7 @@ describe("verifier helpers", () => {
     expect(reviewNotes(reviews, verify("NONE_CONFIRMED", [], ["code-1: a.ts:2 guards it"]))).toBe(
       [
         "## Review notes",
-        "Not blocking: left for you to judge.",
+        "Left for you to judge.",
         "",
         "**code**",
         "- nit: claim code-2 (b.ts)",
