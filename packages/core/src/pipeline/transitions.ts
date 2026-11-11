@@ -7,7 +7,8 @@ import {
   type Stage,
   type VerdictKind,
 } from "@factory/shared";
-import type { Run, RunPatch, StatePatch, Store } from "../store/store.js";
+import type { Run, RunEvent, RunPatch, StatePatch, Store } from "../store/store.js";
+import { findingsFingerprint } from "./fingerprint.js";
 
 /**
  * Forward edges of the pipeline. Every non-terminal state may additionally move to needs_human,
@@ -54,6 +55,11 @@ export interface Evidence {
   verdict<K extends VerdictKind>(kind: K): ParsedVerdict<K>;
   /** Review verdicts of the current round, one per lens. */
   reviews(): ParsedVerdict<"review">[];
+  /**
+   * Fingerprint of this round's quality-gate failure (gateFingerprint). Without it a failed gate
+   * still loops, but stalls cannot be detected.
+   */
+  gateFingerprint?(): string;
   git: {
     head(): string;
     isClean(): boolean;
@@ -142,6 +148,100 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
   "merge->build": ({ run, config }) => capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
 };
 
+type Edge = `${RunState}->${RunState}`;
+
+/** A loop edge that sends work back to the builder, and how to tell one failure from another. */
+interface LoopSpec {
+  /** Names the repeated failure, e.g. "quality gate failed the same way in rounds 2 and 3". */
+  describe: (rounds: string) => string;
+  /** Output file of a round, relative to the run folder. */
+  file: (round: number) => string;
+  /** The round that just failed (the move bumps the counter). */
+  round: (run: Run) => number;
+  fingerprint: (evidence: Evidence) => string | undefined;
+}
+
+const LOOPS: Partial<Record<Edge, LoopSpec>> = {
+  "gate->build": {
+    describe: (rounds) => `quality gate failed the same way in rounds ${rounds}`,
+    file: (round) => `round-${round}/checks.md`,
+    round: (run) => run.build_iterations + 1,
+    fingerprint: (evidence) => evidence.gateFingerprint?.(),
+  },
+  "review->build": {
+    describe: (rounds) => `the verifier confirmed the same findings in review rounds ${rounds}`,
+    file: (round) => `round-${round}/verify.md`,
+    round: (run) => run.review_rounds + 1,
+    fingerprint: (evidence) => findingsFingerprint(evidence.verdict("verify").findings),
+  },
+};
+
+interface LoopFailure {
+  fingerprint: string;
+  round: number;
+}
+
+/** A loop that failed the same way twice in a row. */
+export interface Stall {
+  edge: Edge;
+  fingerprint: string;
+  rounds: [number, number];
+  /** Both rounds' output files, relative to the run folder. */
+  files: [string, string];
+  /** "stalled: ..." naming both rounds; also the problem the refused move reports. */
+  reason: string;
+}
+
+/** This round's failure on a loop edge; undefined when it cannot be fingerprinted (no stall check then). */
+function loopFailure(spec: LoopSpec, run: Run, evidence: Evidence): LoopFailure | undefined {
+  try {
+    const fingerprint = spec.fingerprint(evidence);
+    return fingerprint === undefined ? undefined : { fingerprint, round: spec.round(run) };
+  } catch {
+    return undefined; // the guard already reports evidence it cannot read
+  }
+}
+
+/**
+ * The failure the builder was last sent back with, if it came through the same loop edge. Walking
+ * back, a human resume or any other way back to build ends the search: "in a row" means the builder
+ * got the same failure twice with nothing else in between.
+ */
+function previousFailure(events: RunEvent[], edge: Edge): LoopFailure | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.from_state === "needs_human") return undefined;
+    if (event.to_state !== "build") continue;
+    if (`${event.from_state}->${event.to_state}` !== edge) return undefined;
+    const data = event.data as { fingerprint?: unknown; round?: unknown } | null;
+    return typeof data?.fingerprint === "string" && typeof data.round === "number"
+      ? { fingerprint: data.fingerprint, round: data.round }
+      : undefined;
+  }
+  return undefined;
+}
+
+function stallOf(events: RunEvent[], edge: Edge, spec: LoopSpec, current: LoopFailure): Stall | undefined {
+  const previous = previousFailure(events, edge);
+  if (!previous || previous.fingerprint !== current.fingerprint) return undefined;
+  const rounds: [number, number] = [previous.round, current.round];
+  const files: [string, string] = [spec.file(previous.round), spec.file(current.round)];
+  return {
+    edge,
+    fingerprint: current.fingerprint,
+    rounds,
+    files,
+    reason: `stalled: ${spec.describe(`${rounds[0]} and ${rounds[1]}`)} (see ${files[0]} and ${files[1]})`,
+  };
+}
+
+/** Event data of a loop move: the caller's data plus the failure's fingerprint and round. */
+function withLoopData(data: unknown, loop: LoopFailure): unknown {
+  if (data === undefined || data === null) return { ...loop };
+  if (typeof data === "object" && !Array.isArray(data)) return { ...data, ...loop };
+  return { data, ...loop };
+}
+
 function triageApproved(evidence: Evidence): string[] {
   return evidence.verdict("triage").header.DECISION === "APPROVE" ? [] : ["triage did not APPROVE"];
 }
@@ -160,6 +260,8 @@ export class TransitionError extends Error {
     readonly from: RunState,
     readonly to: RunState,
     readonly problems: string[],
+    /** Set when the move was refused because the loop failed the same way twice in a row. */
+    readonly stall?: Stall,
   ) {
     super(`cannot move ${runId} from ${from} to ${to}: ${problems.join("; ")}`);
     this.name = "TransitionError";
@@ -210,11 +312,18 @@ export class RunMachine {
       throw new TransitionError(runId, from, to, [`no edge from ${from} to ${to}`]);
     }
 
-    const guard = GUARDS[`${from}->${to}`];
+    const edge: Edge = `${from}->${to}`;
+    const guard = GUARDS[edge];
+    let loop: LoopFailure | undefined;
     if (guard) {
       if (!options.evidence) throw new TransitionError(runId, from, to, ["evidence is required for this move"]);
       const problems = runGuard(guard, { run, config: this.config, evidence: options.evidence });
-      if (problems.length) throw new TransitionError(runId, from, to, problems);
+      const spec = LOOPS[edge];
+      loop = spec && loopFailure(spec, run, options.evidence);
+      const stall = spec && loop && stallOf(this.store.listEvents(runId), edge, spec, loop);
+      // Listed first: when the cap applies in the same round, the stall is the better reason.
+      if (stall) problems.unshift(stall.reason);
+      if (problems.length) throw new TransitionError(runId, from, to, problems, stall);
     }
 
     const patch: StatePatch = {
@@ -223,7 +332,9 @@ export class RunMachine {
       ...releaseIfTerminal(to),
       ...loopPatch(run, from, to),
     };
-    return this.commit(run, to, patch, () => this.store.appendEvent(runId, from, to, options.reason, options.data));
+    // The fingerprint goes into the loop's event, so stall detection survives a restarted worker.
+    const data = loop ? withLoopData(options.data, loop) : options.data;
+    return this.commit(run, to, patch, () => this.store.appendEvent(runId, from, to, options.reason, data));
   }
 
   /** A human resolves a parked run: approve it onward, send it back, reject or cancel it. */

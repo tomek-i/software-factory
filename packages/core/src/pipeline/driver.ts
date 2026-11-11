@@ -22,6 +22,7 @@ import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktre
 import { factoryComment, type GithubPort } from "../github/port.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
+import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate } from "./gates.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 
@@ -430,7 +431,8 @@ export class PipelineDriver {
       signal: this.signal,
     });
     const git = gitEvidence(worktree, this.defaultBranch, this.run);
-    const evidence = runEvidence(dir, round, git);
+    const fingerprint = gateFingerprint(result, worktree.path);
+    const evidence: Evidence = { ...runEvidence(dir, round, git), gateFingerprint: () => fingerprint };
 
     if (result.passed) {
       // The same facts the gate->review guard needs: the pass is for HEAD, nothing changed since,
@@ -447,9 +449,13 @@ export class PipelineDriver {
     try {
       this.move(run, "build", `quality gate failed (round ${round})`, { round }, evidence);
     } catch (err) {
-      // Only the loop cap is an expected stop here; anything else is reported as the error it is.
-      const capped = err instanceof TransitionError && err.problems.some((p) => p.includes("cap reached"));
-      if (!capped || this.load(run.id).state !== "gate") throw err;
+      // Only a stall or the loop cap is an expected stop here; anything else is reported as the error it is.
+      if (!(err instanceof TransitionError) || this.load(run.id).state !== "gate") throw err;
+      if (err.stall) {
+        const { fingerprint, rounds, files } = err.stall;
+        return this.escalate(run, err.stall.reason, { stalled: "quality gate", fingerprint, rounds, files });
+      }
+      if (!err.problems.some((p) => p.includes("cap reached"))) throw err;
       return this.escalate(run, `quality gate still failing after round ${round}: ${err.problems.join("; ")}`);
     }
     return undefined;
@@ -588,8 +594,8 @@ export class PipelineDriver {
     return undefined;
   }
 
-  private escalate(run: Run, reason: string): StepResult {
-    this.move(run, "needs_human", reason);
+  private escalate(run: Run, reason: string, data?: unknown): StepResult {
+    this.move(run, "needs_human", reason, data);
     return undefined;
   }
 

@@ -23,10 +23,12 @@ function fakeEvidence(
     clean?: boolean;
     ahead?: number;
     pushed?: boolean;
+    gateFingerprint?: string;
   } = {},
 ): Evidence {
   const files: Record<string, string | undefined> = { ...FILES, ...overrides.files };
   return {
+    ...(overrides.gateFingerprint !== undefined ? { gateFingerprint: () => overrides.gateFingerprint! } : {}),
     verdict: (kind) => {
       const text = files[kind];
       if (text === undefined) throw new Error(`${kind} output missing`);
@@ -264,6 +266,135 @@ describe("RunMachine.transition", () => {
     store.acquireLease(run.id, "worker-2", 60_000);
     const cancelled = machine.transition(run.id, "cancelled", { reason: "x", owner: "worker-2" });
     expect(cancelled.lease_owner).toBeNull();
+  });
+});
+
+describe("stall detection", () => {
+  const failedGate = (fingerprint: string) =>
+    fakeEvidence({ files: { checks: `GATE: FAIL\nCOMMIT: ${HEAD}\n` }, gateFingerprint: fingerprint });
+  const confirmed = (findings: object[]) =>
+    fakeEvidence({ files: { verify: `VERDICT: CONFIRMED\n\n## Findings\n\`\`\`json\n${JSON.stringify(findings)}\n\`\`\`\n` } });
+  const stallOf = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (err) {
+      return err as TransitionError;
+    }
+    throw new Error("expected the move to be refused");
+  };
+
+  it("records the failure's fingerprint and round on the loop's event", () => {
+    const { store, run, at, move } = setup();
+    at("gate");
+    move("build", failedGate("A"));
+    expect(store.listEvents(run.id).at(-1)!.data).toEqual({ fingerprint: "A", round: 1 });
+  });
+
+  it("refuses to loop the gate on the same failure twice in a row, naming both rounds", () => {
+    const { at, move } = setup({ loops: { max_build_iterations: 10 } });
+    at("gate");
+    move("build", failedGate("A"));
+    at("gate");
+    move("build", failedGate("B"));
+    at("gate");
+    const err = stallOf(() => move("build", failedGate("B")));
+
+    const reason = "stalled: quality gate failed the same way in rounds 2 and 3 (see round-2/checks.md and round-3/checks.md)";
+    expect(err.problems).toEqual([reason]);
+    expect(err.stall).toEqual({
+      edge: "gate->build",
+      fingerprint: "B",
+      rounds: [2, 3],
+      files: ["round-2/checks.md", "round-3/checks.md"],
+      reason,
+    });
+  });
+
+  it("keeps looping when failures alternate (A, B, A)", () => {
+    const { at, move } = setup({ loops: { max_build_iterations: 10 } });
+    for (const fp of ["A", "B", "A", "B"]) {
+      at("gate");
+      expect(move("build", failedGate(fp)).state).toBe("build");
+    }
+  });
+
+  it("does not compare across another way back to build", () => {
+    const { at, move } = setup({ loops: { max_build_iterations: 10 } });
+    at("gate");
+    move("build", failedGate("A"));
+    at("review");
+    move("build", confirmed([{ id: "F1", severity: "major", claim: "bug", evidence: "x" }]));
+    at("gate");
+    expect(move("build", failedGate("A")).state).toBe("build");
+  });
+
+  it("names the stall, not the cap, when both apply in the same round", () => {
+    const { at, move } = setup({ loops: { max_build_iterations: 2 } });
+    at("gate");
+    move("build", failedGate("A"));
+    at("gate");
+    const err = stallOf(() => move("build", failedGate("A")));
+    expect(err.stall?.rounds).toEqual([1, 2]);
+    expect(err.problems).toEqual([expect.stringMatching(/^stalled: /), "build iteration cap reached (2)"]);
+  });
+
+  it("starts a fresh comparison after a human resumes the run, with or without a loop reset", () => {
+    for (const resetLoops of [false, true]) {
+      const { machine, run, at, move } = setup({ loops: { max_build_iterations: 10 } });
+      at("gate");
+      move("build", failedGate("A"));
+      at("gate");
+      expect(stallOf(() => move("build", failedGate("A"))).stall).toBeDefined();
+      machine.transition(run.id, "needs_human", { reason: "stalled" });
+      machine.resume(run.id, "build", { comment: "try another approach", resetLoops });
+
+      at("gate");
+      expect(move("build", failedGate("A")).state).toBe("build");
+      at("gate");
+      expect(stallOf(() => move("build", failedGate("A"))).stall).toBeDefined();
+    }
+  });
+
+  it("does not detect stalls without a gate fingerprint", () => {
+    const { at, move } = setup({ loops: { max_build_iterations: 10 } });
+    const failed = fakeEvidence({ files: { checks: `GATE: FAIL\nCOMMIT: ${HEAD}\n` } });
+    at("gate");
+    move("build", failed);
+    at("gate");
+    expect(move("build", failed).state).toBe("build");
+  });
+
+  it("refuses to send identical confirmed findings back to the builder twice in a row", () => {
+    const { store, run, at, move } = setup({ loops: { max_review_rounds: 10 } });
+    const round1 = [
+      { id: "F1", severity: "major", file: "src/a.ts", line: 3, claim: "off by one", evidence: "uses <=" },
+      { id: "F2", severity: "critical", file: "src/b.ts", claim: "sql injection", evidence: "string concat" },
+    ];
+    // Same findings with new ids, shifted lines, other evidence and in another order.
+    const round2 = [
+      { id: "R2-1", severity: "critical", file: "src/b.ts", line: 12, claim: "sql injection", evidence: "still concatenated" },
+      { id: "R2-2", severity: "major", file: "src/a.ts", line: 9, claim: "off by one", evidence: "moved" },
+      { id: "R2-3", severity: "nit", file: "src/c.ts", claim: "naming", evidence: "x" },
+    ];
+    at("review");
+    move("build", confirmed(round1));
+    at("review");
+    const err = stallOf(() => move("build", confirmed(round2)));
+
+    expect(err.stall).toMatchObject({ edge: "review->build", rounds: [1, 2], files: ["round-1/verify.md", "round-2/verify.md"] });
+    expect(err.problems[0]).toBe(
+      "stalled: the verifier confirmed the same findings in review rounds 1 and 2 (see round-1/verify.md and round-2/verify.md)",
+    );
+    expect(store.getRun(run.id)!.review_rounds).toBe(1);
+  });
+
+  it("loops review back to the builder when the confirmed findings differ", () => {
+    const { at, move } = setup({ loops: { max_review_rounds: 10 } });
+    at("review");
+    move("build", confirmed([{ id: "F1", severity: "major", file: "src/a.ts", claim: "off by one", evidence: "x" }]));
+    at("review");
+    const next = move("build", confirmed([{ id: "F1", severity: "major", file: "src/a.ts", claim: "missing test", evidence: "x" }]));
+    expect(next.review_rounds).toBe(2);
   });
 });
 

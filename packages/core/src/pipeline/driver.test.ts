@@ -28,10 +28,26 @@ const buildStep = (content: string, output = READY): FakeStep => ({
 // Built by concatenation so this file contains no secret-shaped string.
 const FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE";
 
-// The gate passes only once feature.txt says "fixed".
+/** A builder round that commits a change but leaves feature.txt broken, so the gate fails the same way. */
+const sameFailure = (attempt: number): FakeStep => ({
+  files: { "feature.txt": "broken\n", "attempt.txt": `${attempt}\n` },
+  exec: [
+    ["git", "add", "-A"],
+    ["git", "commit", "-qm", `fix: attempt ${attempt}`],
+  ],
+  output: READY,
+});
+
+// The gate passes only once feature.txt says "fixed". A failure names the content, plus noise that
+// changes every round (commit, timing, worktree path) and must not hide a repeated failure.
 const CHECK_JS = `const fs = require("fs");
-const ok = fs.existsSync("feature.txt") && fs.readFileSync("feature.txt", "utf8").trim() === "fixed";
-if (!ok) console.error("feature.txt is not fixed yet");
+const content = fs.existsSync("feature.txt") ? fs.readFileSync("feature.txt", "utf8").trim() : "(missing)";
+const ok = content === "fixed";
+if (!ok) {
+  const head = require("child_process").execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
+  console.error("checked " + head + " in " + (Date.now() % 997) + "ms at " + process.cwd());
+  console.error("feature.txt is not fixed yet: " + content);
+}
 process.exit(ok ? 0 : 1);
 `;
 
@@ -254,17 +270,53 @@ describe("PipelineDriver", () => {
     expect(() => driver.retriage(run.id)).toThrow(/not waiting for information/);
   });
 
-  it("escalates when the gate keeps failing past max_build_iterations", async () => {
+  it("keeps looping on different failures until max_build_iterations, then escalates", async () => {
     const config =
-      "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: always\nloops:\n  max_build_iterations: 2\n";
-    const { driver, store } = setup([{ output: TRIAGE() }, buildStep("broken 1"), buildStep("broken 2")], { config });
+      "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: always\nloops:\n  max_build_iterations: 3\n";
+    const { driver, store, fake } = setup([{ output: TRIAGE() }, buildStep("broken 1"), buildStep("broken 2"), buildStep("broken 3")], { config });
     const run = driver.startRun(12);
 
     const outcome = await driver.drive(run.id);
 
     expect(outcome).toMatchObject({ kind: "parked", state: "needs_human" });
-    expect(outcome.kind === "parked" && outcome.reason).toMatch(/still failing after round 2.*cap reached \(2\)/);
-    expect(store.getRun(run.id)!.build_iterations).toBe(1);
+    expect(outcome.kind === "parked" && outcome.reason).toMatch(/still failing after round 3.*cap reached \(3\)/);
+    expect(store.getRun(run.id)!.build_iterations).toBe(2);
+    expect(fake.calls().map((c) => c.role)).toEqual(["triage", "builder", "builder", "builder"]);
+  });
+
+  it("escalates a gate that fails the same way twice in a row, before the cap", async () => {
+    const config =
+      "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: always\nloops:\n  max_build_iterations: 5\n";
+    const { driver, store, fake } = setup([{ output: TRIAGE() }, sameFailure(1), sameFailure(2), sameFailure(3), sameFailure(4)], { config });
+    const run = driver.startRun(12);
+
+    const outcome = await driver.drive(run.id);
+
+    expect(outcome).toMatchObject({ kind: "parked", state: "needs_human" });
+    expect(outcome.kind === "parked" && outcome.reason).toBe(
+      "stalled: quality gate failed the same way in rounds 1 and 2 (see round-1/checks.md and round-2/checks.md)",
+    );
+    expect(fake.calls().map((c) => c.role)).toEqual(["triage", "builder", "builder"]);
+    expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "gate", build_iterations: 1 });
+
+    // The loop event holds round 1's fingerprint; the escalation links both rounds to it.
+    const events = store.listEvents(run.id);
+    const loop = events.find((e) => e.from_state === "gate" && e.to_state === "build")!.data as { fingerprint: string; round: number };
+    expect(loop).toMatchObject({ round: 1, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(events.at(-1)!.data).toEqual({
+      stalled: "quality gate",
+      fingerprint: loop.fingerprint,
+      rounds: [1, 2],
+      files: ["round-1/checks.md", "round-2/checks.md"],
+    });
+
+    // A human grants another attempt: the next identical failure loops, the one after stalls again.
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "build", { comment: "look at check.js" });
+    const again = await driver.drive(run.id);
+
+    expect(again.kind === "parked" && again.reason).toMatch(/^stalled: quality gate failed the same way in rounds 2 and 3 /);
+    expect(fake.calls()).toHaveLength(5);
+    expect(store.getRun(run.id)!.build_iterations).toBe(2);
   });
 
   it("waits for a human at triage for an untrusted author, even when the gate is set to always", async () => {

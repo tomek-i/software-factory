@@ -17,7 +17,7 @@ issue writer → triage → (refine) → spec critic → build → quality gate 
 ```
 
 - **Gates** after issue writer, triage, critic, plan, review, PR and merge each have a mode: `always` (pass through), `auto` (the agent decides or escalates with reasons) or `human` (always stop for you).
-- **Loops** (failed checks, confirmed review findings) always go back to the builder, up to a cap, then escalate to you.
+- **Loops** (failed checks, confirmed review findings) always go back to the builder, up to a cap, then escalate to you. A loop that fails the same way twice in a row escalates early, so a stuck builder does not use up the cap.
 - **Hard rules** (protected paths, new dependencies, secret/env changes) always escalate to you, whatever the gate mode. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
 - **State changes need evidence**: for example, reviews only start when the commit that passed the quality gate is the branch's current HEAD.
 
@@ -79,10 +79,10 @@ What `factory run` does today:
 
 1. **Triage**: an agent with no shell reads the issue and the code and writes `triage.md` (`APPROVE`, `REJECT` or `NEEDS_INFO`). Rejections and questions are posted on the issue. The `triage` gate then decides whether to continue. After the author answers, `factory run` again triages the issue again (run `factory sync` first so it sees an edited issue).
 2. **Build**: a builder agent works in its own worktree (`.worktrees/<run>`, branch `factory/<issue>-<slug>`, created from the latest `origin/<default branch>`) and commits. It cannot push. The engine scans every new commit for secrets (gitleaks if installed, otherwise built-in patterns) and sends the builder back if it finds one, so a leaked key never reaches GitHub. Then the engine pushes the branch (never forced) and opens a **draft** PR that closes the issue. Its description starts with a short brief for you (What, How it was tested), with the builder's implementation notes collapsed underneath.
-3. **Quality gate**: the engine runs your `checks` on the pushed commit, plus the secret scan again. Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment. On failure the builder gets the report and tries again, up to `loops.max_build_iterations`, then the run waits for you.
+3. **Quality gate**: the engine runs your `checks` on the pushed commit, plus the secret scan again. Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment. On failure the builder gets the report and tries again, up to `loops.max_build_iterations`, then the run waits for you. If two rounds in a row fail the same way (same failed checks with the same output and exit code, and the same secret-scan hits, ignoring timings, commit shas and the worktree path), the run stops before the cap and waits for you.
 4. On a pass the run waits at the `review` gate: review the draft PR yourself.
 
-When a run escalates (agent failed, builder blocked, loop cap reached), `factory run` tells you why; send it on with `factory resume` or stop it with `factory cancel`. If your Claude usage limit is hit, the run stops where it is; run `factory run` again after the reset and it continues the same agent session. A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
+When a run escalates (agent failed, builder blocked, loop cap reached, loop stalled), `factory run` tells you why; a stall names both rounds, for example `stalled: quality gate failed the same way in rounds 2 and 3 (see round-2/checks.md and round-3/checks.md)`. Send it on with `factory resume` or stop it with `factory cancel`. After a resume, stall detection starts afresh (with or without `--reset-loops`): only two more identical failures in a row stop the run again. If your Claude usage limit is hit, the run stops where it is; run `factory run` again after the reset and it continues the same agent session. A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
 
 Run artifacts (issue, triage, build report, `round-N/checks.md` and `checks.log`, agent prompts, permission profiles and full stream logs) are in `.factory/runs/<run>/`.
 
