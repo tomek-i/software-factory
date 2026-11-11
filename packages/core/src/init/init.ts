@@ -4,7 +4,7 @@ import { CONFIG_FILE, FACTORY_DIR, loadConfig } from "../config/load.js";
 import { factoryLabels } from "../github/labels.js";
 import { Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
-import { findRepoRoot, githubRepoOf } from "../util/git.js";
+import { findRepoRoot, githubLogin, githubRepoOf } from "../util/git.js";
 import { detectProject, type Detection } from "./detect.js";
 import { renderConfig } from "./template.js";
 
@@ -60,7 +60,7 @@ export function initRepo(options: InitOptions): InitResult {
   if (existsSync(configFile)) {
     steps.push({ status: "skipped", message: `${FACTORY_DIR}/${CONFIG_FILE} already exists, left unchanged` });
   } else {
-    writeFileSync(configFile, renderConfig(detection));
+    writeFileSync(configFile, renderConfig(detection, { operatorLogin: githubLogin(root, run) }));
     const found = detection.checks.map((c) => c.name).join(", ") || "none - add them by hand";
     steps.push({ status: "done", message: `Wrote ${FACTORY_DIR}/${CONFIG_FILE} (checks: ${found})` });
   }

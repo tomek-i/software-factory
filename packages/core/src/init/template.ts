@@ -3,7 +3,8 @@ import type { Detection } from "./detect.js";
 const q = (s: string) => JSON.stringify(s);
 
 /** Render a commented starter config. Values not listed fall back to the schema defaults. */
-export function renderConfig(detection: Detection): string {
+export function renderConfig(detection: Detection, options: { operatorLogin?: string } = {}): string {
+  const authors = options.operatorLogin ? `[${q(options.operatorLogin)}]` : "[]   # add your GitHub handle";
   // An empty `checks:` key would parse as null, so write an explicit empty list when nothing was found.
   const checks = detection.checks.length
     ? `checks:\n${detection.checks.map((c) => `  - name: ${q(c.name)}\n    run: ${q(c.run)}`).join("\n")}`
@@ -66,6 +67,13 @@ models:
 
 concurrency:
   max_runs: 2
+
+# Whose issues and comments agents may treat as the spec. Others are handled as untrusted data,
+# and their triage always waits for your approval before anything is built.
+# Set everyone: true for private repos where only approved people can open issues.
+trust:
+  authors: ${authors}
+  everyone: false
 
 # Issues are synced from GitHub into the local database and you choose which ones to queue.
 # Labels are optional and only mirror run status onto the issue; they never feed work in.

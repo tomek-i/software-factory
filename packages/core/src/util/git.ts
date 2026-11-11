@@ -12,6 +12,12 @@ export function parseGithubRemote(url: string): string | undefined {
   return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
+/** The login `gh` is authenticated as, used to pre-fill the trusted authors. */
+export function githubLogin(cwd: string, run: CommandRunner = runCommand): string | undefined {
+  const result = run("gh", ["api", "user", "--jq", ".login"], { cwd });
+  return result.code === 0 && result.stdout ? result.stdout : undefined;
+}
+
 export function githubRepoOf(root: string, run: CommandRunner = runCommand): string | undefined {
   const result = run("git", ["remote", "get-url", "origin"], { cwd: root });
   return result.code === 0 ? parseGithubRemote(result.stdout) : undefined;

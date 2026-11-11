@@ -31,6 +31,7 @@ function withFakeGh(ghCode = 0) {
   const run: CommandRunner = (cmd, args, opts) => {
     if (cmd === "gh") {
       calls.push(args);
+      if (args[0] === "api") return { code: 0, stdout: "alice", stderr: "" };
       return { code: ghCode, stdout: "", stderr: ghCode ? "HTTP 403" : "" };
     }
     return runCommand(cmd, args, opts);
@@ -116,9 +117,11 @@ describe("initRepo", () => {
     expect(result.githubRepo).toBe("acme/shop");
     expect(loadConfig(dir).checks).toEqual([{ name: "test", run: "npm run test", timeout_sec: 900 }]);
     expect(loadConfig(dir).github.status_labels).toBe(false);
+    expect(loadConfig(dir).trust).toEqual({ authors: ["alice"], everyone: false });
     expect(existsSync(join(dir, ".factory", "lessons.md"))).toBe(true);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".worktrees/");
-    expect(gh.calls).toEqual([]);
+    // The only GitHub call is reading who you are, to pre-fill the trusted authors.
+    expect(gh.calls).toEqual([["api", "user", "--jq", ".login"]]);
     expect(result.steps.at(-1)).toMatchObject({ status: "skipped" });
 
     const store = new Store(join(dir, ".factory", "factory.db"));
@@ -133,7 +136,7 @@ describe("initRepo", () => {
 
     initRepo({ cwd: dir, run: gh.run });
 
-    expect(gh.calls.map((c) => c[2])).toEqual([
+    expect(gh.calls.filter((c) => c[0] === "label").map((c) => c[2])).toEqual([
       "factory",
       "factory:in-progress",
       "factory:needs-info",

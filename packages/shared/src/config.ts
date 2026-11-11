@@ -87,6 +87,15 @@ export const factoryConfigSchema = z.object({
       max_runs: z.number().int().min(1).default(2),
     })
     .default({}),
+  // Whose issue text and comments the agents may treat as the spec. Anything else is handled as
+  // untrusted data and triage always waits for a human before it can lead to a build.
+  trust: z
+    .object({
+      authors: z.array(z.string().min(1)).default([]),
+      // For private repos where only approved people can open issues.
+      everyone: z.boolean().default(false),
+    })
+    .default({}),
   github: z
     .object({
       // Labels only mirror run status onto GitHub issues. They are never read as input:
@@ -100,4 +109,11 @@ export const factoryConfigSchema = z.object({
 });
 
 export type FactoryConfig = z.infer<typeof factoryConfigSchema>;
+
+/** GitHub logins are case-insensitive. */
+export function isTrustedAuthor(config: Pick<FactoryConfig, "trust">, login: string): boolean {
+  if (config.trust.everyone) return true;
+  const wanted = login.toLowerCase();
+  return config.trust.authors.some((a) => a.replace(/^@/, "").toLowerCase() === wanted);
+}
 export type FactoryConfigInput = z.input<typeof factoryConfigSchema>;

@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { factoryConfigSchema } from "./config.js";
+import { factoryConfigSchema, isTrustedAuthor } from "./config.js";
+
+describe("isTrustedAuthor", () => {
+  it("trusts nobody by default", () => {
+    expect(isTrustedAuthor(factoryConfigSchema.parse({ version: 1 }), "alice")).toBe(false);
+  });
+
+  it("matches listed handles case-insensitively, with or without @", () => {
+    const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["Alice", "@bob"] } });
+    expect(isTrustedAuthor(config, "alice")).toBe(true);
+    expect(isTrustedAuthor(config, "BOB")).toBe(true);
+    expect(isTrustedAuthor(config, "mallory")).toBe(false);
+  });
+
+  it("trusts everyone when the repo is configured that way", () => {
+    expect(isTrustedAuthor(factoryConfigSchema.parse({ version: 1, trust: { everyone: true } }), "anyone")).toBe(true);
+  });
+});
 
 describe("factoryConfigSchema", () => {
   it("fills safe defaults from a minimal config", () => {
