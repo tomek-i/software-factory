@@ -37,6 +37,25 @@ export const AGENT_ROLES = [
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
+/** Claude Code's `--effort` levels. */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORT_LEVELS)[number];
+
+export interface ModelSpec {
+  model?: string;
+  effort?: Effort;
+}
+
+/** A model alias on its own, or a model and/or effort. Either half may be left to the fallbacks. */
+const modelSpec = z
+  .union([
+    z.string().min(1),
+    z
+      .object({ model: z.string().min(1).optional(), effort: z.enum(EFFORT_LEVELS).optional() })
+      .strict(),
+  ])
+  .transform((spec): ModelSpec => (typeof spec === "string" ? { model: spec } : spec));
+
 export const factoryConfigSchema = z.object({
   version: z.literal(1),
   project: z
@@ -93,8 +112,14 @@ export const factoryConfigSchema = z.object({
     .default({}),
   models: z
     .object({
-      default: z.string().default("opus"),
-      roles: z.record(z.enum(AGENT_ROLES), z.string()).default({}),
+      default: z.string().min(1).default("opus"),
+      // Unset means Claude Code's own default effort.
+      effort: z.enum(EFFORT_LEVELS).optional(),
+      roles: z.record(z.enum(AGENT_ROLES), modelSpec).default({}),
+      // Per review lens; a lens without an entry uses roles.reviewer.
+      reviews: z.record(z.enum(REVIEW_LENSES), modelSpec).default({}),
+      // Applied on top of everything else when triage rated the issue RISK: HIGH.
+      high_risk: z.record(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec).default({}),
     })
     .default({}),
   concurrency: z
@@ -132,3 +157,25 @@ export function isTrustedAuthor(config: Pick<FactoryConfig, "trust">, login: str
   return config.trust.authors.some((a) => a.replace(/^@/, "").toLowerCase() === wanted);
 }
 export type FactoryConfigInput = z.input<typeof factoryConfigSchema>;
+
+/**
+ * The model and effort for one agent. Model and effort resolve separately, so an entry that only
+ * sets effort keeps the model it would otherwise get. Most specific wins: high-risk lens, high-risk
+ * role, lens, role, then the defaults.
+ */
+export function resolveModel(
+  config: Pick<FactoryConfig, "models">,
+  target: { role: AgentRole; lens?: ReviewLens; risk?: "LOW" | "MEDIUM" | "HIGH" },
+): { model: string; effort?: Effort } {
+  const { models } = config;
+  const highRisk = target.risk === "HIGH";
+  const chain: (ModelSpec | undefined)[] = [
+    highRisk && target.lens ? models.high_risk[target.lens] : undefined,
+    highRisk ? models.high_risk[target.role] : undefined,
+    target.lens ? models.reviews[target.lens] : undefined,
+    models.roles[target.role],
+  ];
+  const model = chain.find((s) => s?.model)?.model ?? models.default;
+  const effort = chain.find((s) => s?.effort)?.effort ?? models.effort;
+  return effort ? { model, effort } : { model };
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { factoryConfigSchema, isTrustedAuthor } from "./config.js";
+import { factoryConfigSchema, isTrustedAuthor, resolveModel } from "./config.js";
 
 describe("isTrustedAuthor", () => {
   it("trusts nobody by default", () => {
@@ -45,5 +45,54 @@ describe("factoryConfigSchema", () => {
   it("has no way to enable unsafe mode from config", () => {
     const config = factoryConfigSchema.parse({ version: 1, unsafe: true } as unknown);
     expect("unsafe" in config).toBe(false);
+  });
+});
+
+describe("resolveModel", () => {
+  const config = factoryConfigSchema.parse({
+    version: 1,
+    models: {
+      default: "opus",
+      effort: "high",
+      roles: { triage: "fable", reviewer: { model: "sonnet", effort: "medium" }, verifier: { effort: "low" } },
+      reviews: { docs: { model: "haiku", effort: "low" }, security: "opus" },
+      high_risk: { code: { model: "opus" }, builder: { effort: "xhigh" } },
+    },
+  });
+
+  it("accepts a plain alias or a model/effort object and rejects unknown effort", () => {
+    expect(config.models.roles.triage).toEqual({ model: "fable" });
+    expect(config.models.roles.reviewer).toEqual({ model: "sonnet", effort: "medium" });
+    expect(
+      factoryConfigSchema.safeParse({ version: 1, models: { roles: { builder: { effort: "turbo" } } } }).success,
+    ).toBe(false);
+    expect(
+      factoryConfigSchema.safeParse({ version: 1, models: { roles: { builder: { modle: "opus" } } } }).success,
+    ).toBe(false);
+  });
+
+  it("falls back from role to the defaults", () => {
+    expect(resolveModel(config, { role: "triage" })).toEqual({ model: "fable", effort: "high" });
+    expect(resolveModel(config, { role: "builder" })).toEqual({ model: "opus", effort: "high" });
+  });
+
+  it("resolves model and effort separately", () => {
+    expect(resolveModel(config, { role: "verifier" })).toEqual({ model: "opus", effort: "low" });
+    expect(resolveModel(config, { role: "reviewer", lens: "security" })).toEqual({ model: "opus", effort: "medium" });
+  });
+
+  it("uses the lens entry, then the reviewer role", () => {
+    expect(resolveModel(config, { role: "reviewer", lens: "docs" })).toEqual({ model: "haiku", effort: "low" });
+    expect(resolveModel(config, { role: "reviewer", lens: "code" })).toEqual({ model: "sonnet", effort: "medium" });
+  });
+
+  it("applies high_risk only when triage said HIGH", () => {
+    expect(resolveModel(config, { role: "reviewer", lens: "code", risk: "MEDIUM" }).model).toBe("sonnet");
+    expect(resolveModel(config, { role: "reviewer", lens: "code", risk: "HIGH" })).toEqual({ model: "opus", effort: "medium" });
+    expect(resolveModel(config, { role: "builder", risk: "HIGH" })).toEqual({ model: "opus", effort: "xhigh" });
+  });
+
+  it("leaves effort unset when nothing configures it", () => {
+    expect(resolveModel(factoryConfigSchema.parse({ version: 1 }), { role: "builder" })).toEqual({ model: "opus" });
   });
 });
