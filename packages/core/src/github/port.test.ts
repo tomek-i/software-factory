@@ -60,6 +60,47 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).mergePullRequest(42, "abc")).toThrow(/gh pr merge failed: boom/);
   });
 
+  it("opens an issue from a body file, which it removes afterwards, and returns its number", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "https://github.com/o/r/issues/31", stderr: "" };
+    };
+    expect(ghPort(project, run).createIssue({ title: "Add export", body: "## Why\nx\n" })).toBe(31);
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "create", "-R", "o/r", "--title", "Add export", "--body-file"]);
+    expect(sent).toBe("## Why\nx\n");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
+    expect(() => ghPort(project, fakeGh("created").run).createIssue({ title: "t", body: "b" })).toThrow(/unexpected output: created/);
+  });
+
+  it("links a sub-issue by the node ids of both issues", () => {
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      const stdout = args[1] === "view" ? JSON.stringify({ id: `I_${args[2]}` }) : '{"data":{"addSubIssue":{"issue":{"number":10}}}}';
+      return { code: 0, stdout, stderr: "" };
+    };
+    ghPort(project, run).addSubIssue(10, 11);
+    expect(calls).toEqual([
+      ["issue", "view", "10", "-R", "o/r", "--json", "id"],
+      ["issue", "view", "11", "-R", "o/r", "--json", "id"],
+      [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}",
+        "-f",
+        "p=I_10",
+        "-f",
+        "c=I_11",
+      ],
+    ]);
+    expect(() => ghPort(project, fakeGh("{}").run).addSubIssue(10, 11)).toThrow(/no id for #10/);
+    expect(() => ghPort(project, fakeGh("", 1).run).addSubIssue(10, 11)).toThrow(/gh issue view failed: boom/);
+  });
+
   it("finds an open PR for a branch", () => {
     expect(ghPort(project, fakeGh('[{"number":5}]').run).findPullRequest("b")).toBe(5);
     expect(ghPort(project, fakeGh("[]").run).findPullRequest("b")).toBeUndefined();
