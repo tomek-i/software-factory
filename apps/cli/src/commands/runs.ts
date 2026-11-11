@@ -61,7 +61,7 @@ export function findRun(store: Store, project: Project, ref: string): Run {
   throw new CliError(matches.length ? `"${ref}" matches several runs; use more of the id.` : `No run "${ref}". See \`factory status\`.`);
 }
 
-function formatEvent(event: FactoryEvent, style: Style): string | undefined {
+export function formatEvent(event: FactoryEvent, style: Style): string | undefined {
   switch (event.type) {
     case "run:state":
       return style.transition(`-> ${style.state(event.to)}: ${event.reason}`);
