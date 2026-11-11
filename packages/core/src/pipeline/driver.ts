@@ -26,7 +26,7 @@ import type { Issue, Project, Run, RunPatch, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate } from "./gates.js";
-import { diffHardRuleHits, freshBase } from "./hard-rules.js";
+import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 
 export const RUNS_DIR = join(".factory", "runs");
@@ -521,11 +521,27 @@ export class PipelineDriver {
 
     const lenses = this.reviewLenses(run);
     const pending = lenses.filter((lens) => !readReview(roundDir, lens));
-    const turns = await Promise.all(pending.map((lens) => this.reviewTurn(run, issue, worktree, lens, round, base, commit)));
+    // The engine writes the change for the reviewers, who get no shell (see permissionProfile).
+    const changeFile = join(roundDir, "change.diff");
+    if (pending.length) {
+      try {
+        mkdirSync(roundDir, { recursive: true });
+        writeFileSync(changeFile, changeReport(worktree.path, base, commit, this.run));
+      } catch (err) {
+        return this.escalate(run, `could not prepare the change for the reviewers: ${(err as Error).message}`);
+      }
+    }
+    const turns = await Promise.all(pending.map((lens) => this.reviewTurn(run, issue, worktree, lens, round, base, commit, changeFile)));
     // A usage limit stops the run where it is; the reviews already written are kept for next time.
     const limited = turns.find((t) => t.turn.status === "failed" && t.turn.agent.outcome.kind === "rate_limited");
-    const trouble = limited ?? turns.find((t) => t.turn.status !== "ok");
-    if (trouble && trouble.turn.status !== "ok") return this.agentTrouble(run, `reviewer (${trouble.lens})`, trouble.turn);
+    if (limited && limited.turn.status !== "ok") return this.agentTrouble(run, `reviewer (${limited.lens})`, limited.turn);
+    const troubles = turns.flatMap((t) => (t.turn.status === "ok" ? [] : [{ lens: t.lens, turn: t.turn }]));
+    if (troubles.length === 1) return this.agentTrouble(run, `reviewer (${troubles[0]!.lens})`, troubles[0]!.turn);
+    if (troubles.length > 1) {
+      if (this.load(run.id).state !== run.state) return undefined; // cancelled while the reviewers ran
+      // Every failed lens is named; the lenses that did write a review are kept for the next attempt.
+      return this.escalate(run, troubles.map((t) => this.troubleReason(`reviewer (${t.lens})`, t.turn)).join("; "));
+    }
 
     const reviews = lenses.map((lens) => ({ lens, verdict: readReview(roundDir, lens)! }));
     const summary = `reviews: ${reviews
@@ -544,9 +560,16 @@ export class PipelineDriver {
       return this.escalate(run, `${summary}; the hard-rule check failed: ${(err as Error).message}`);
     }
     const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
+    const held = run.unsafe ? [] : hits.map((h) => `hard rule: ${h}`);
 
     if (reviews.some(({ verdict }) => verdict.header.VERDICT === "CHANGES")) {
-      return this.waitForHuman(run, "review", [summary, "verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is", ...lifted]);
+      // Whoever decides here may approve as is, so they must see the hard rules too.
+      return this.waitForHuman(run, "review", [
+        summary,
+        "verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is",
+        ...held,
+        ...lifted,
+      ]);
     }
     const gate = resolveGate({ mode: this.deps.config.gates.review, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
     // Capture and merge are not automated yet, so even a passing review gate hands over to a human.
@@ -563,14 +586,23 @@ export class PipelineDriver {
     return REVIEW_LENSES.filter((lens) => wanted.has(lens));
   }
 
-  private async reviewTurn(run: Run, issue: Issue, worktree: Worktree, lens: ReviewLens, round: number, base: string, commit: string) {
+  private async reviewTurn(
+    run: Run,
+    issue: Issue,
+    worktree: Worktree,
+    lens: ReviewLens,
+    round: number,
+    base: string,
+    commit: string,
+    changeFile: string,
+  ) {
     const dir = this.runDir(run);
     const outputFile = reviewPath(join(dir, `round-${round}`), lens);
     const files = writeRoleFiles(
       dir,
       `reviewer-${lens}`,
       rolePrompt("reviewer", this.deps.read, lens),
-      permissionProfile("reviewer", { runDirFromCwd: relative(worktree.path, dir) }),
+      permissionProfile("reviewer", { runDirFromCwd: relative(worktree.path, dir), outputFile }),
     );
     const sections = this.triageScope(dir);
     const previous = this.previousReview(run, lens, round);
@@ -605,7 +637,7 @@ export class PipelineDriver {
           instructions: [
             `Review the change on branch \`${worktree.branch}\` through the ${lens} lens.`,
             `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit under review: \`${commit}\`.`,
-            `See it with \`git diff ${base}...${commit}\`. Then write the output file.`,
+            `The commits and the full diff are in \`${changeFile}\`. Read it, then the code around the change, then write the output file.`,
           ].join("\n"),
         }),
       },
@@ -778,9 +810,15 @@ export class PipelineDriver {
       this.info(run, `usage limit reached${outcome.resetsAt ? `, resets at ${outcome.resetsAt}` : ""}`);
       return { kind: "rate_limited", resetsAt: outcome.resetsAt };
     }
-    if (turn.status === "invalid") return this.escalate(run, `${role} output was rejected twice: ${turn.problems.join("; ")}`);
+    return this.escalate(run, this.troubleReason(role, turn));
+  }
+
+  /** Why an agent's turn did not produce a usable output. */
+  private troubleReason(role: string, turn: Exclude<TurnResult<VerdictKind>, { status: "ok" }>): string {
+    if (turn.status === "invalid") return `${role} output was rejected twice: ${turn.problems.join("; ")}`;
+    const { outcome } = turn.agent;
     const detail = outcome.kind === "error" ? `${outcome.subtype}: ${outcome.message}` : outcome.kind;
-    return this.escalate(run, `${role} agent failed (${detail.slice(0, 500)})`);
+    return `${role} agent failed (${detail.slice(0, 500)})`;
   }
 
   /** An unexpected error parks the run for a human instead of leaving it half-done. */

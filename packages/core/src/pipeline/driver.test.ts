@@ -1,8 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict } from "@factory/shared";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, reviewsPass, type FakeStep } from "../../test/helpers.js";
+import { absoluteRule } from "../agents/prompts.js";
 import { createAgentRunner } from "../agents/runner.js";
 import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
@@ -139,7 +140,8 @@ describe("PipelineDriver", () => {
     expect(reviewers.map((c) => c.role).sort()).toEqual(["reviewer-code", "reviewer-docs", "reviewer-security"]);
     for (const reviewer of reviewers) {
       expect(reviewer.cwd.replace(/\\/g, "/")).toBe(done.worktree_path!.replace(/\\/g, "/"));
-      expect(reviewer.stdin).toMatch(new RegExp(`git diff [0-9a-f]{40}\\.\\.\\.${head}`));
+      expect(reviewer.stdin).toContain(`Commit under review: \`${head}\``);
+      expect(reviewer.stdin).toContain(join(dir, "round-2", "change.diff"));
       expect(existsSync(join(dir, "round-2", `${reviewer.role!.replace("reviewer-", "review-")}.md`))).toBe(true);
     }
     expect(calls[0]!.cwd.replace(/\\/g, "/")).toBe(root.replace(/\\/g, "/"));
@@ -266,6 +268,66 @@ describe("PipelineDriver", () => {
       expect(approveTarget(parked)).toBe("capture");
       // A run parked at the review gate before reviews existed gets its reviews when approved.
       expect(approveTarget({ ...parked, parked_from: "gate" })).toBe("review");
+    });
+
+    it("reviews a run that was parked at the review gate before reviews existed, once approved", async () => {
+      const { driver, store, fake, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), ...reviewsPass(), ...reviewsPass()]);
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+      // What the old driver left behind: parked straight from the quality gate, no reviews.
+      store.writeState(run.id, "needs_human", { parked_from: "gate", waiting_gate: "review" });
+      for (const lens of ["code", "security", "docs"]) rmSync(join(runDirOf(root, run.id), "round-1", `review-${lens}.md`));
+
+      const parked = store.getRun(run.id)!;
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, approveTarget(parked)!, { comment: "approved" });
+      expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringContaining("reviews: code PASS, security PASS, docs PASS") });
+      expect(fake.calls().filter((c) => c.role!.startsWith("reviewer-"))).toHaveLength(6);
+    });
+
+    it("gives reviewers the change in a file, no shell, and only their own output file to write", async () => {
+      const { driver, store, fake, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), ...reviewsPass()]);
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+
+      const dir = runDirOf(root, run.id);
+      const change = readFileSync(join(dir, "round-1", "change.diff"), "utf8");
+      expect(change).toContain("feat: fixed");
+      expect(change).toContain("+fixed");
+      const code = fake.calls().find((c) => c.role === "reviewer-code")!;
+      expect(code.stdin).toContain(join(dir, "round-1", "change.diff"));
+      const settings = JSON.parse(readFileSync(join(dir, "agent", "reviewer-code.settings.json"), "utf8"));
+      expect(settings.permissions.deny).toContain("Bash");
+      expect(settings.permissions.allow.filter((r: string) => r.startsWith("Edit"))).toEqual([`Edit(${absoluteRule(join(dir, "round-1", "review-code.md"))})`]);
+      expect(store.getRun(run.id)!.state).toBe("needs_human");
+    });
+
+    it("names every reviewer that failed, keeps the others' reviews, and reruns only the failed ones", async () => {
+      const failed: FakeStep = { stream: "error_max_turns" };
+      const { driver, store, fake } = setup([
+        { output: TRIAGE() },
+        buildStep("fixed"),
+        { role: "reviewer-code", output: REVIEW_PASS },
+        { role: "reviewer-docs", ...failed },
+        { role: "reviewer-security", ...failed },
+        { role: "reviewer-docs", output: REVIEW_PASS },
+        { role: "reviewer-security", output: REVIEW_PASS },
+      ]);
+      const run = driver.startRun(12);
+
+      const outcome = await driver.drive(run.id);
+      expect(outcome).toMatchObject({ kind: "parked", reason: expect.stringMatching(/^reviewer \(security\) agent failed .*; reviewer \(docs\) agent failed /) });
+
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "review", { comment: "try again" });
+      expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringContaining("reviews: code PASS, security PASS, docs PASS") });
+      expect(fake.calls().filter((c) => c.role === "reviewer-code")).toHaveLength(1);
+    });
+
+    it("shows hard-rule hits when a review asks for changes", async () => {
+      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
+      const touchInfra: FakeStep = { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "infra/main.tf": "x\n" } };
+      const { driver } = setup([{ output: TRIAGE() }, touchInfra, { role: "reviewer-code", output: review("CHANGES", "major") }], { config });
+      const run = driver.startRun(12);
+      expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringMatching(/approve it as is; hard rule: protected path \(infra\/\*\*\): infra\/main\.tf$/) });
     });
   });
 
