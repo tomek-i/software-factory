@@ -1,0 +1,78 @@
+# Software factory configuration. Commit this file.
+# Detected stack: node
+version: 1
+
+project:
+  name: "software-factory-monorepo"
+  default_branch: "main"
+
+# Quality gate: every command must exit 0 before reviews start.
+# The gate always uses the copy of this file on the default branch, so a branch cannot weaken its own checks.
+checks:
+  # Each run's worktree starts without node_modules.
+  - name: "install"
+    run: "pnpm install --frozen-lockfile"
+  - name: "lint"
+    run: "pnpm run lint"
+  - name: "typecheck"
+    run: "pnpm run typecheck"
+  - name: "build"
+    run: "pnpm run build"
+  - name: "test"
+    run: "pnpm run test"
+
+# How to start the app for screenshots and walkthrough videos. {port} is replaced per run.
+app:
+  # start: "npm run dev"
+  url: "http://localhost:{port}"
+  port_env: "PORT"
+
+# Gate modes: always (pass through) | auto (agent decides or escalates) | human (always stop for you)
+gates:
+  issue_writer: human
+  triage: human
+  critic: human
+  plan: human
+  review: human
+  pr: human
+  merge: human
+
+# Changes matching hard rules always come to you, whatever the gate mode.
+# Built in and always on: **/auth/**, **/migrations/**, .github/workflows/**, infra/**, .factory/**,
+# plus new dependencies, secret/env file changes and deleting files outside the issue's scope.
+# Add your own protected paths here; the built-in ones cannot be removed.
+# Only a per-run --unsafe flag can lift hard rules; it cannot be set here.
+hard_rules:
+  paths: []
+
+loops:
+  max_build_iterations: 5
+  max_review_rounds: 3
+  max_critic_rounds: 2
+
+reviews:
+  always: [code, security, docs]
+  ui: [ux, ui] # only when the change touches the UI
+
+models:
+  default: "opus"
+  roles: {} # e.g. reviewer: "sonnet"
+
+concurrency:
+  max_runs: 2
+
+# Whose issues and comments agents may treat as the spec. Others are handled as untrusted data,
+# and their triage always waits for your approval before anything is built.
+# Set everyone: true for private repos where only approved people can open issues.
+trust:
+  authors: ["tomek-i"]
+  everyone: false
+
+# Issues are synced from GitHub into the local database and you choose which ones to queue.
+# Labels are optional and only mirror run status onto the issue; they never feed work in.
+# After enabling status_labels, run `factory init` again to create them.
+github:
+  status_labels: false
+  label_prefix: "factory"
+  poll_interval_sec: 120
+  max_starts_per_day: 10
