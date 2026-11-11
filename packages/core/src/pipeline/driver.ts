@@ -24,6 +24,7 @@ import type { Issue, Project, Run, RunPatch, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate } from "./gates.js";
+import { diffHardRuleHits } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 
 export const RUNS_DIR = join(".factory", "runs");
@@ -128,8 +129,11 @@ function section(body: string, name: string): string | undefined {
  * The draft PR description from the builder's hand-over: a short brief for the human reviewer first,
  * with the implementation notes (useful to reviewing agents, noisy for people) collapsed below it.
  */
-export function prBody(buildBody: string, issueNumber: number): string {
+export function prBody(buildBody: string, issueNumber: number, unsafe = false): string {
   const parts: string[] = [];
+  if (unsafe) {
+    parts.push("> [!WARNING]\n> Built with `--unsafe`: hard rules (protected paths, new dependencies, secret files, deletions) were lifted for this run.");
+  }
   const summary = section(buildBody, "summary");
   const testing = section(buildBody, "testing");
   const details = section(buildBody, "details");
@@ -392,7 +396,7 @@ export class PipelineDriver {
       const blocker = section(turn.verdict.body, "blocker") ?? "the builder reported BLOCKED without details";
       return this.escalate(run, `builder is blocked: ${blocker}`);
     }
-    const pr = this.publish(worktree, issue, turn.verdict.body);
+    const pr = this.publish(worktree, issue, turn.verdict.body, run.unsafe);
     this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.build_iterations + 1, git), {
       pr_number: pr,
     });
@@ -403,7 +407,7 @@ export class PipelineDriver {
    * Push the branch (never forced) and make sure a draft PR exists. Done by the engine, after the
    * secret scan, so nothing the builder committed reaches GitHub unchecked.
    */
-  private publish(worktree: Worktree, issue: Issue, buildBody: string): number {
+  private publish(worktree: Worktree, issue: Issue, buildBody: string, unsafe: boolean): number {
     const pushed = this.run("git", ["push", "--quiet", "-u", "origin", `HEAD:refs/heads/${worktree.branch}`], { cwd: worktree.path });
     if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
     const existing = this.deps.github.findPullRequest(worktree.branch);
@@ -412,7 +416,7 @@ export class PipelineDriver {
       head: worktree.branch,
       base: this.defaultBranch,
       title: issue.title,
-      body: prBody(buildBody, issue.number),
+      body: prBody(buildBody, issue.number, unsafe),
     });
   }
 
@@ -442,8 +446,11 @@ export class PipelineDriver {
       if (!git.isClean()) problems.push("the checks left uncommitted changes in the worktree");
       if (!git.isPushed()) problems.push("the checked commit is not pushed");
       if (problems.length) return this.escalate(run, `quality gate passed but ${problems.join("; ")}`);
-      // Reviews are not automated yet (phase 3): a human looks at the draft PR.
-      this.move(run, "needs_human", "quality gate passed; reviews are not automated yet", { round }, undefined, { waiting_gate: "review" });
+      // Reviews are not automated yet (phase 3): a human looks at the draft PR, told about any hard rule the diff trips.
+      const hits = this.hardRuleHits(run, worktree);
+      const reasons = ["quality gate passed; reviews are not automated yet"];
+      if (hits.length) reasons.push(`${run.unsafe ? "hard rules lifted by --unsafe" : "hard rules"}: ${hits.join("; ")}`);
+      this.move(run, "needs_human", reasons.join("; "), { round, hardRuleHits: hits }, undefined, { waiting_gate: "review" });
       return undefined;
     }
     try {
@@ -497,6 +504,16 @@ export class PipelineDriver {
     if (!existsSync(path)) return [];
     const body = parseVerdict("triage", readFileSync(path, "utf8")).body;
     return [{ title: "Triage result", body }];
+  }
+
+  /**
+   * Hard rules the branch trips against where it left the default branch. The scope a deletion is
+   * checked against is the issue plus triage's reading of it.
+   */
+  private hardRuleHits(run: Run, worktree: Worktree): string[] {
+    const issue = this.issueOf(run);
+    const scope = [issue.title, issue.body, ...this.triageScope(this.runDir(run)).map((s) => s.body)].join("\n");
+    return diffHardRuleHits({ cwd: worktree.path, defaultBranch: this.defaultBranch, config: this.deps.config, scope, run: this.run });
   }
 
   /** The risk triage gave this run, once triage has run. */
