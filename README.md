@@ -59,7 +59,20 @@ factory queue 12 15 #18    # queue issues for the factory (fetches unsynced ones
 factory unqueue 15         # take one back out
 ```
 
-Issues closed on GitHub drop out of the queue on the next sync. Issue text is still treated as untrusted data by the agents, because anyone can write an issue.
+Issues closed on GitHub drop out of the queue on the next sync.
+
+### Trusted authors
+
+Anyone who can open an issue can write text the agents will read, so the factory distinguishes trusted authors:
+
+```yaml
+trust:
+  authors: ["your-handle", "teammate"]   # init pre-fills your own gh login
+  everyone: false                        # true for private repos where only approved people open issues
+```
+
+- **Trusted** issues and comments are treated as the spec.
+- **Untrusted** ones (e.g. strangers on a public repo) can still be queued, but their text is handled as untrusted data and triage always waits for your approval before anything is built. `factory issues` marks them `(untrusted)`.
 
 **Status labels (optional).** With `github.status_labels: true`, the factory mirrors run status onto the issue (`factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human`, `factory:unsafe`). They are display-only and never read as input. Run `factory init` again after enabling them to create the labels.
 
@@ -76,6 +89,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
 | `models` | Default model and per-role overrides |
+| `trust` | Whose issues and comments count as the spec |
 | `github` | Optional status labels, sync interval, daily start limit |
 
 ## Development
