@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseVerdict } from "@factory/shared";
+import { factoryConfigSchema, parseVerdict } from "@factory/shared";
 import { fakeClaude, git, repoWithRemote, type FakeStep } from "../../test/helpers.js";
 import { createAgentRunner } from "../agents/runner.js";
 import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
@@ -9,21 +9,24 @@ import { FactoryEvents, type FactoryEvent } from "../events.js";
 import type { GithubPort } from "../github/port.js";
 import { Store } from "../store/store.js";
 import { PipelineDriver, runDirOf } from "./driver.js";
+import { RunMachine } from "./transitions.js";
 
 const TRIAGE = (decision = "APPROVE", extra = "") =>
   `DECISION: ${decision}\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- looks fine\n${extra}`;
 const READY = "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n";
 
-/** A builder round that writes feature.txt, commits and pushes, then reports READY. */
+/** A builder round that writes feature.txt and commits it (the engine pushes), then reports READY. */
 const buildStep = (content: string, output = READY): FakeStep => ({
   files: { "feature.txt": `${content}\n` },
   exec: [
     ["git", "add", "-A"],
     ["git", "commit", "-qm", `feat: ${content}`],
-    ["git", "push", "-q", "-u", "origin", "HEAD"],
   ],
   output,
 });
+
+// Built by concatenation so this file contains no secret-shaped string.
+const FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE";
 
 // The gate passes only once feature.txt says "fixed".
 const CHECK_JS = `const fs = require("fs");
@@ -58,9 +61,14 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
   store.setQueued(project.id, 12, true);
 
   const comments: { issue: number; body: string }[] = [];
+  const prs: { head: string; base: string; title: string; body: string }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body }),
-    findPullRequest: (branch) => (git(root, "ls-remote", "origin", `refs/heads/${branch}`) ? 7 : undefined),
+    findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
+    createDraftPullRequest: (pr) => {
+      prs.push(pr);
+      return 7;
+    },
   };
   const events = new FactoryEvents();
   const seen: FactoryEvent[] = [];
@@ -76,13 +84,14 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
     github,
     owner: "test-worker",
     events,
+    watchMs: 50,
   });
-  return { root, store, project, driver, fake, comments, seen };
+  return { root, store, project, driver, fake, comments, prs, seen };
 }
 
 describe("PipelineDriver", () => {
   it("approves, builds, fails the gate, fixes it, passes and parks at review", async () => {
-    const { driver, store, fake, root, seen } = setup([
+    const { driver, store, fake, root, seen, prs } = setup([
       { output: TRIAGE() },
       buildStep("broken"),
       buildStep("fixed"),
@@ -117,6 +126,97 @@ describe("PipelineDriver", () => {
 
     expect(store.listDecisions(run.id)).toMatchObject([{ gate: "triage", outcome: "proceed", actor: "agent" }]);
     expect(seen.some((e) => e.type === "gate:check" && e.passed)).toBe(true);
+
+    // The engine pushed and opened one draft PR; the second round reused it.
+    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(head);
+    expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "Add the feature", body: "- done\n\nCloses #12\n" }]);
+  });
+
+  it("never pushes a secret: the builder must remove it from its commits first", async () => {
+    const leaky: FakeStep = {
+      files: { "config.js": `module.exports = "${FAKE_AWS_KEY}";\n`, "feature.txt": "fixed\n" },
+      exec: [
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "feat: add feature"],
+      ],
+      output: READY,
+    };
+    const cleaned: FakeStep = {
+      files: { "config.js": "module.exports = process.env.KEY;\n" },
+      exec: [
+        ["git", "reset", "-q", "--soft", "origin/main"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "feat: add feature"],
+      ],
+      output: READY,
+    };
+    const { driver, store, fake, root } = setup([{ output: TRIAGE() }, leaky, cleaned]);
+    const run = driver.startRun(12);
+
+    await driver.drive(run.id);
+
+    expect(fake.calls()[2]!.stdin).toContain("possible secret in config.js:1 (aws-access-key-id)");
+    expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", waiting_gate: "review" });
+    const published = git(root, "log", "-p", "origin/factory/12-add-the-feature");
+    expect(published).not.toContain(FAKE_AWS_KEY);
+  });
+
+  it("stops the running agent promptly when the run is cancelled from elsewhere", async () => {
+    const { driver, store } = setup([{ output: TRIAGE() }, { sleepMs: 30_000 }]);
+    const run = driver.startRun(12);
+    const started = Date.now();
+    const cancelWhenBuilding = setInterval(() => {
+      if (store.listAgentRuns(run.id).some((a) => a.role === "builder" && a.status === "running")) {
+        clearInterval(cancelWhenBuilding);
+        new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).cancel(run.id, "changed my mind");
+      }
+    }, 50);
+
+    const outcome = await driver.drive(run.id);
+
+    clearInterval(cancelWhenBuilding);
+    expect(outcome).toEqual({ kind: "finished", state: "cancelled" });
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(store.listAgentRuns(run.id).at(-1)).toMatchObject({ role: "builder", status: "cancelled" });
+  });
+
+  it("tells the builder only about human decisions made since it last ran", async () => {
+    const config = "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: human\n";
+    const { driver, store, fake } = setup([{ output: TRIAGE() }, buildStep("broken"), buildStep("fixed")], { config });
+    const run = driver.startRun(12);
+    await driver.drive(run.id);
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "build", { comment: "approved the triage" });
+
+    await driver.drive(run.id);
+
+    expect(fake.calls()[2]!.stdin).toContain("The quality gate failed in round 1");
+    expect(fake.calls()[2]!.stdin).not.toContain("approved the triage");
+  });
+
+  it("closes agent rows left running by a worker that died", async () => {
+    const { driver, store, root } = setup([{ stream: "rate_limited" }]);
+    const run = driver.startRun(12);
+    const orphan = store.startAgentRun({ run_id: run.id, role: "triage", model: "opus", session_id: "s", log_dir: root });
+    store.setAgentPid(orphan.id, 999999);
+
+    await driver.drive(run.id);
+
+    expect(store.getAgentRun(orphan.id)).toMatchObject({ status: "error", pid: null });
+  });
+
+  it("triages again after the author was asked for information", async () => {
+    const config = "version: 1\nchecks: []\ntrust:\n  authors: [alice]\ngates:\n  triage: human\n";
+    const { driver, store } = setup([{ output: TRIAGE("NEEDS_INFO", "\n## Questions\n- Which format?\n") }, { output: TRIAGE() }], { config });
+    const run = driver.startRun(12);
+    await driver.drive(run.id);
+    expect(store.getRun(run.id)!.state).toBe("needs_info");
+
+    driver.retriage(run.id);
+    const outcome = await driver.drive(run.id);
+
+    expect(outcome).toMatchObject({ kind: "parked", state: "needs_human" });
+    expect(store.getRun(run.id)!.waiting_gate).toBe("triage");
+    expect(() => driver.retriage(run.id)).toThrow(/not waiting for information/);
   });
 
   it("escalates when the gate keeps failing past max_build_iterations", async () => {
@@ -184,22 +284,16 @@ describe("PipelineDriver", () => {
   });
 
   it("escalates when the builder's hand-over is rejected twice", async () => {
-    const notPushed: FakeStep = {
-      files: { "feature.txt": "fixed\n" },
-      exec: [
-        ["git", "add", "-A"],
-        ["git", "commit", "-qm", "feat: x"],
-      ],
-      output: READY,
-    };
-    const { driver, store, fake } = setup([{ output: TRIAGE() }, notPushed, { output: READY }]);
+    const uncommitted: FakeStep = { files: { "feature.txt": "fixed\n" }, output: READY };
+    const { driver, store, fake, root } = setup([{ output: TRIAGE() }, uncommitted, { output: READY }]);
     const run = driver.startRun(12);
 
     const outcome = await driver.drive(run.id);
 
-    expect(outcome.kind === "parked" && outcome.reason).toMatch(/builder output was rejected twice: .*not pushed/);
-    expect(fake.calls()[2]!.stdin).toContain("the branch is not pushed");
+    expect(outcome.kind === "parked" && outcome.reason).toMatch(/builder output was rejected twice: .*uncommitted changes/);
+    expect(fake.calls()[2]!.stdin).toContain("the worktree has uncommitted changes");
     expect(store.getRun(run.id)!.state).toBe("needs_human");
+    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature")).toBe("");
   });
 
   it("escalates when the builder is blocked", async () => {

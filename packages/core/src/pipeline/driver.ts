@@ -16,7 +16,7 @@ import type { AgentRunner } from "../agents/runner.js";
 import { runTurn, type TurnResult } from "../agents/turn.js";
 import type { TrustedReader } from "../config/trusted.js";
 import type { FactoryEvents } from "../events.js";
-import { runQualityGate } from "../gate/gate.js";
+import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { factoryComment, type GithubPort } from "../github/port.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../store/store.js";
@@ -58,6 +58,8 @@ export interface DriverDeps {
   portBase?: number;
   /** Per-role agent timeouts. */
   timeouts?: Partial<Record<PromptRole, number>>;
+  /** How often to check for cancellation and renew the lease while a stage runs. */
+  watchMs?: number;
 }
 
 export type DriveOutcome =
@@ -128,6 +130,8 @@ function section(body: string, name: string): string | undefined {
 export class PipelineDriver {
   private readonly machine: RunMachine;
   private readonly run: CommandRunner;
+  /** Aborted when the run being driven is cancelled or this worker loses its lease. */
+  private signal?: AbortSignal;
 
   constructor(private readonly deps: DriverDeps) {
     this.machine = new RunMachine(deps.store, deps.config);
@@ -140,11 +144,23 @@ export class PipelineDriver {
     const issue = store.getIssue(project.id, issueNumber);
     if (!issue) throw new Error(`issue #${issueNumber} is not synced`);
     if (!issue.queued_at) throw new Error(`issue #${issueNumber} is not queued`);
-    const active = store
-      .listRuns({ project_id: project.id, states: [...ACTIVE, "needs_info", "needs_human"] })
-      .find((r) => r.issue_number === issueNumber);
-    if (active) return active;
-    return store.createRun({ project_id: project.id, title: issue.title, issue_number: issueNumber, unsafe: options.unsafe });
+    // One transaction, so two `factory run` calls at once cannot both create a run.
+    return store.transaction(() => {
+      const active = store
+        .listRuns({ project_id: project.id, states: [...ACTIVE, "needs_info", "needs_human"] })
+        .find((r) => r.issue_number === issueNumber);
+      if (active) return active;
+      return store.createRun({ project_id: project.id, title: issue.title, issue_number: issueNumber, unsafe: options.unsafe });
+    });
+  }
+
+  /** Send a run that was waiting for the author's answers back to triage. */
+  retriage(runId: string, reason = "triage again with the current issue text"): Run {
+    const run = this.load(runId);
+    if (run.state !== "needs_info") throw new Error(`run ${runId} is ${run.state}, not waiting for information`);
+    this.machine.transition(runId, "triage", { reason });
+    this.deps.events?.emit({ type: "run:state", runId, from: run.state, to: "triage", reason });
+    return this.load(runId);
   }
 
   async drive(runId: string): Promise<DriveOutcome> {
@@ -153,8 +169,23 @@ export class PipelineDriver {
       const run = store.getRun(runId);
       return { kind: "stopped", state: run?.state ?? "failed", reason: `run is being worked on by ${run?.lease_owner}` };
     }
-    const renew = setInterval(() => store.acquireLease(runId, owner, LEASE_TTL_MS), LEASE_RENEW_MS);
-    renew.unref();
+    this.closeOrphanedAgents(runId);
+
+    // Watch the run while a stage works on it: a human may cancel it from another process, or
+    // this worker may lose its lease. Either way the running agent or check must stop now, not
+    // when it finishes on its own.
+    const controller = new AbortController();
+    this.signal = controller.signal;
+    let renewedAt = Date.now();
+    const watch = setInterval(() => {
+      const run = store.getRun(runId);
+      if (!run || isTerminal(run.state) || run.lease_owner !== owner) return controller.abort();
+      if (Date.now() - renewedAt >= LEASE_RENEW_MS) {
+        if (!store.acquireLease(runId, owner, LEASE_TTL_MS)) return controller.abort();
+        renewedAt = Date.now();
+      }
+    }, this.deps.watchMs ?? 2000);
+    watch.unref();
     try {
       for (;;) {
         const run = this.load(runId);
@@ -171,8 +202,21 @@ export class PipelineDriver {
         if (outcome) return outcome;
       }
     } finally {
-      clearInterval(renew);
+      clearInterval(watch);
+      this.signal = undefined;
       store.releaseLease(runId, owner);
+    }
+  }
+
+  /**
+   * Agent rows still marked running when a worker takes the lease belong to a worker that died
+   * (crash, Ctrl+C). Close them so nothing treats their stale pid as a live agent.
+   */
+  private closeOrphanedAgents(runId: string): void {
+    for (const agent of this.deps.store.listAgentRuns(runId)) {
+      if (agent.status === "running") {
+        this.deps.store.finishAgentRun(agent.id, { status: "error", excerpt: `${agent.excerpt ?? ""}\nagent was orphaned: the factory process stopped`.trim() });
+      }
     }
   }
 
@@ -305,7 +349,7 @@ export class PipelineDriver {
           sections: this.triageScope(dir),
           instructions: [
             `Implement issue #${issue.number} in the working directory on branch \`${worktree.branch}\`.`,
-            "Add tests, run the checks, commit, push, open the draft pull request, then write the output file.",
+            "Add tests, run the checks, commit (do not push), then write the output file.",
           ].join("\n"),
         });
 
@@ -320,7 +364,8 @@ export class PipelineDriver {
         resumeSessionId: session,
         prompt,
       },
-      validate: (verdict) => (verdict.header.STATUS === "READY" ? this.handOverProblems(worktree, git, verdict.header.COMMIT) : []),
+      validate: (verdict) =>
+        verdict.header.STATUS === "READY" ? this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.build_iterations + 1}`)) : [],
     });
     if (turn.status !== "ok") return this.agentTrouble(run, "builder", turn);
 
@@ -328,11 +373,29 @@ export class PipelineDriver {
       const blocker = section(turn.verdict.body, "blocker") ?? "the builder reported BLOCKED without details";
       return this.escalate(run, `builder is blocked: ${blocker}`);
     }
-    const pr = this.deps.github.findPullRequest(worktree.branch);
+    const pr = this.publish(worktree, issue, turn.verdict.body);
     this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.build_iterations + 1, git), {
       pr_number: pr,
     });
     return undefined;
+  }
+
+  /**
+   * Push the branch (never forced) and make sure a draft PR exists. Done by the engine, after the
+   * secret scan, so nothing the builder committed reaches GitHub unchecked.
+   */
+  private publish(worktree: Worktree, issue: Issue, buildBody: string): number {
+    const pushed = this.run("git", ["push", "--quiet", "-u", "origin", `HEAD:refs/heads/${worktree.branch}`], { cwd: worktree.path });
+    if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
+    const existing = this.deps.github.findPullRequest(worktree.branch);
+    if (existing !== undefined) return existing;
+    const summary = section(buildBody, "summary") ?? "";
+    return this.deps.github.createDraftPullRequest({
+      head: worktree.branch,
+      base: this.defaultBranch,
+      title: issue.title,
+      body: `${summary}\n\nCloses #${issue.number}\n`.trimStart(),
+    });
   }
 
   private async gate(run: Run): Promise<StepResult> {
@@ -347,10 +410,19 @@ export class PipelineDriver {
       roundDir: join(dir, `round-${round}`),
       run: this.run,
       events: this.deps.events,
+      signal: this.signal,
     });
-    const evidence = runEvidence(dir, round, gitEvidence(worktree, this.defaultBranch, this.run));
+    const git = gitEvidence(worktree, this.defaultBranch, this.run);
+    const evidence = runEvidence(dir, round, git);
 
     if (result.passed) {
+      // The same facts the gate->review guard needs: the pass is for HEAD, nothing changed since,
+      // and it is pushed. Checks that leave the tree dirty or a commit made meanwhile show up here.
+      const problems: string[] = [];
+      if (git.head() !== result.head) problems.push("HEAD changed after the gate ran");
+      if (!git.isClean()) problems.push("the checks left uncommitted changes in the worktree");
+      if (!git.isPushed()) problems.push("the checked commit is not pushed");
+      if (problems.length) return this.escalate(run, `quality gate passed but ${problems.join("; ")}`);
       // Reviews are not automated yet (phase 3): a human looks at the draft PR.
       this.move(run, "needs_human", "quality gate passed; reviews are not automated yet", { round }, undefined, { waiting_gate: "review" });
       return undefined;
@@ -358,7 +430,9 @@ export class PipelineDriver {
     try {
       this.move(run, "build", `quality gate failed (round ${round})`, { round }, evidence);
     } catch (err) {
-      if (!(err instanceof TransitionError) || this.load(run.id).state !== "gate") throw err;
+      // Only the loop cap is an expected stop here; anything else is reported as the error it is.
+      const capped = err instanceof TransitionError && err.problems.some((p) => p.includes("cap reached"));
+      if (!capped || this.load(run.id).state !== "gate") throw err;
       return this.escalate(run, `quality gate still failing after round ${round}: ${err.problems.join("; ")}`);
     }
     return undefined;
@@ -410,6 +484,7 @@ export class PipelineDriver {
       model: config.models.roles[role] ?? config.models.default,
       cwd,
       logDir: join(this.runDir(run), "logs"),
+      signal: this.signal,
       timeoutMs: timeouts?.[role] ?? (role === "builder" ? 90 * 60_000 : 20 * 60_000),
     };
   }
@@ -422,23 +497,28 @@ export class PipelineDriver {
       parts.push(`The quality gate failed in round ${run.build_iterations}. Its report:`, "", readFileSync(checks, "utf8").trim(), "");
       parts.push("Fix the cause, run the checks yourself, commit and push, then write the output file again.");
     }
-    const human = this.deps.store.listDecisions(run.id).at(-1);
-    if (human?.actor === "human") parts.push("", `A human sent this back to you with this comment: ${human.comment}`);
+    // Only decisions made since the builder last ran were meant for it (not, say, the triage approval).
+    const lastBuild = this.deps.store.listAgentRuns(run.id).filter((a) => a.role === "builder").at(-1)?.started_at ?? "";
+    const human = this.deps.store
+      .listDecisions(run.id)
+      .filter((d) => d.actor === "human" && d.created_at >= lastBuild)
+      .at(-1);
+    if (human) parts.push("", `A human sent this back to you with this comment: ${human.comment}`);
     if (parts.length === 0) parts.push("Continue where you stopped and finish the hand-over.");
     parts.push("", `Output file: \`${outputFile}\``);
     return parts.join("\n").trim() + "\n";
   }
 
-  /** The hand-over must be the commit that is checked out, committed, pushed, with a PR. */
-  private handOverProblems(worktree: Worktree, git: GitEvidence, commit: string): string[] {
+  /** The hand-over must be the checked-out commit, fully committed, with no secrets in any new commit. */
+  private handOverProblems(worktree: Worktree, git: GitEvidence, commit: string, reportDir: string): string[] {
     const problems: string[] = [];
     const head = git.head();
     if (commit !== head) problems.push(`COMMIT ${commit.slice(0, 7)} is not HEAD (${head.slice(0, 7)})`);
     if (!git.isClean()) problems.push("the worktree has uncommitted changes");
     if (git.commitsAhead() < 1) problems.push(`the branch has no commits ahead of origin/${this.defaultBranch}`);
-    if (!git.isPushed()) problems.push(`the branch is not pushed: run git push -u origin ${worktree.branch}`);
-    else if (this.deps.github.findPullRequest(worktree.branch) === undefined) {
-      problems.push(`no open pull request for ${worktree.branch}: open a draft PR`);
+    const secrets = scanSecrets({ worktreePath: worktree.path, defaultBranch: this.defaultBranch, reportDir }, this.run);
+    for (const hit of secrets.hits) {
+      problems.push(`possible secret in ${hit.file}:${hit.line} (${hit.rule}): remove it from the unpushed commits`);
     }
     return problems;
   }

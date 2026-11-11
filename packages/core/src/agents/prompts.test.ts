@@ -61,12 +61,12 @@ describe("permissionProfile", () => {
     expect(permissions.allow).not.toContain("Write");
   });
 
-  it("lets the builder edit and use Bash but not force-push, merge or mark ready", () => {
+  it("lets the builder edit and use Bash but not push (so not force-push) or touch PRs (so not merge or mark ready)", () => {
     const { permissions } = permissionProfile("builder", { runDirFromCwd: "../.." });
     expect(permissions.allow).toEqual(expect.arrayContaining(["Edit", "Write", "Bash"]));
     expect(permissions.allow).not.toContain("PowerShell");
     expect(permissions.deny).toEqual(
-      expect.arrayContaining(["Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(gh pr merge:*)", "Bash(gh pr ready:*)"]),
+      expect.arrayContaining(["Bash(git push:*)", "Bash(gh pr:*)", "Bash(gh api:*)"]),
     );
   });
 });
