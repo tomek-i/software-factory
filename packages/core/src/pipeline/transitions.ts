@@ -7,6 +7,7 @@ import {
   type Stage,
   type VerdictKind,
 } from "@factory/shared";
+import type { PullRequestState } from "../github/port.js";
 import type { Run, RunEvent, RunPatch, StatePatch, Store } from "../store/store.js";
 import { findingsFingerprint } from "./fingerprint.js";
 
@@ -396,6 +397,40 @@ export class RunMachine {
         comment,
       });
       this.store.appendEvent(runId, run.state, "cancelled", `human: ${comment}`);
+    });
+  }
+
+  /**
+   * The run's PR was merged or closed on GitHub, by a human or by the merge stage: finish the run.
+   * Merged ends in done, closed without merging in cancelled. Allowed from any active or parked
+   * state, but only on the run's own PR and only once GitHub says it is no longer open. A run another
+   * worker is driving is refused, so this never races that worker's own moves.
+   */
+  closeByPullRequest(runId: string, pr: Pick<PullRequestState, "number" | "state" | "mergeCommit">, owner?: string): Run {
+    const run = this.load(runId);
+    const merged = pr.state === "merged";
+    const to: RunState = merged ? "done" : "cancelled";
+    this.checkLease(run, to, owner);
+    const problems: string[] = [];
+    if (isTerminal(run.state)) problems.push(`run is already ${run.state}`);
+    if (run.pr_number === null) problems.push("run has no pull request");
+    else if (pr.number !== run.pr_number) problems.push(`PR #${pr.number} is not the run's PR (#${run.pr_number})`);
+    if (pr.state === "open") problems.push(`PR #${pr.number} is still open`);
+    if (merged && !pr.mergeCommit) problems.push(`PR #${pr.number} is merged but has no merge commit`);
+    if (problems.length) throw new TransitionError(runId, run.state, to, problems);
+
+    const reason = merged ? `merged PR #${pr.number} on GitHub` : `PR #${pr.number} was closed on GitHub without merging`;
+    return this.commit(run, to, { waiting_gate: null, parked_from: null, ...releaseIfTerminal(to) }, () => {
+      this.store.recordDecision({
+        run_id: runId,
+        gate: "merge",
+        mode: this.config.gates.merge,
+        outcome: merged ? "approve" : "reject",
+        actor: "human",
+        comment: reason,
+        commit_sha: merged ? pr.mergeCommit! : null,
+      });
+      this.store.appendEvent(runId, run.state, to, reason, { pr: pr.number, ...(merged ? { mergeCommit: pr.mergeCommit } : {}) });
     });
   }
 

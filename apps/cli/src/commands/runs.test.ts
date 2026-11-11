@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort } from "@factory/core";
+import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort, type PullRequestState } from "@factory/core";
 import { fakeClaude, git, repoWithRemote, reviewsPass, type FakeStep } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
 import { createStyle, styleFor, type Style } from "../style.js";
@@ -21,7 +21,18 @@ const BUILD: FakeStep = {
   output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n",
 };
 
+/** PR states the fake GitHub reports; a PR not listed is open. Reset by setup(). */
+const prStates = new Map<number, PullRequestState>();
+const github: GithubPort = {
+  commentOnIssue: () => undefined,
+  findPullRequest: () => undefined,
+  createDraftPullRequest: () => 7,
+  updatePullRequest: () => undefined,
+  pullRequestState: (number) => prStates.get(number) ?? { number, state: "open", draft: true, head: "" },
+};
+
 function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
+  prStates.clear();
   const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
@@ -45,7 +56,6 @@ function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
   store.close();
 
   const fake = fakeClaude(steps);
-  const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => undefined, createDraftPullRequest: () => 7, updatePullRequest: () => undefined };
   const printed: string[] = [];
   const queue = (...numbers: number[]) => {
     const s = new Store(join(root, ".factory", "factory.db"));
@@ -125,7 +135,7 @@ describe("factory run", () => {
     expect(printed.some((l) => l.startsWith("[gate] ok: passed"))).toBe(true);
     expect(printed.some((l) => l.startsWith("[builder] ok"))).toBe(true);
 
-    const status = runStatus(dir);
+    const status = runStatus(dir, {}, { github });
     expect(status.split("\n")[0]).toMatch(/^RUN\s+ISSUE\s+STATE\s+ROUND\s+COST\s+WAITING$/);
     expect(status).toMatch(/run-12-\w+\s+#12\s+needs_human\s+b1 r1\s+\$0\.21\s+review/);
 
@@ -251,7 +261,7 @@ describe("approve / reject / cancel", () => {
     const approved = await runApprove(dir, "#12", { message: "go", run: false });
     expect(approved).toContain("Approved the triage gate");
     expect(approved).toContain("factory run 12");
-    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(runStatus(dir, {}, { github })).toMatch(/\bbuild\b/);
     await expect(runApprove(dir, "#12", {})).rejects.toThrow(/not waiting at a gate \(it is build\)/);
     expect(() => runReject(dir, "#12", { message: "no" })).toThrow(CliError);
   });
@@ -281,7 +291,7 @@ describe("approve / reject / cancel", () => {
     const message = await runApprove(dir, "12", {}, deps);
 
     expect(message).toMatch(/moves to build\.\nIssue #12 is no longer queued, so the run was not continued/);
-    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(runStatus(dir, {}, { github })).toMatch(/\bbuild\b/);
     expect(fake.calls().map((c) => c.role)).toEqual(["triage"]);
   });
 
@@ -290,7 +300,7 @@ describe("approve / reject / cancel", () => {
     queue();
     await run();
     expect(runReject(dir, "#12", { message: "not now" })).toContain("Rejected");
-    expect(runStatus(dir, { all: true })).toMatch(/rejected/);
+    expect(runStatus(dir, { all: true }, { github })).toMatch(/rejected/);
   });
 
   it("cancels a run and keeps its worktree", async () => {
@@ -306,7 +316,45 @@ describe("approve / reject / cancel", () => {
     expect(existsSync(worktrees)).toBe(true);
     expect(git(dir, "worktree", "list")).toContain(".worktrees");
     expect(() => runCancel(dir, "#12", {})).toThrow(/already cancelled/);
-    expect(runStatus(dir)).toContain("No active runs");
+    expect(runStatus(dir, {}, { github })).toContain("No active runs");
+  });
+
+  it("finishes a run whose PR was merged on GitHub when you look at the status", async () => {
+    const { run, queue, dir } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
+    queue();
+    await run();
+    prStates.set(7, { number: 7, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) });
+
+    expect(runStatus(dir, {}, { github })).toMatch(/^run-12-\w+: PR #7 merged -> done\n\nNo active runs/);
+    expect(runStatus(dir, { all: true }, { github })).toMatch(/^RUN.*\n.*#12\s+done/);
+  });
+
+  it("warns but still shows the status when GitHub cannot be asked", async () => {
+    const { run, queue, dir } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
+    queue();
+    await run();
+    const offline: GithubPort = {
+      ...github,
+      pullRequestState: () => {
+        throw new Error("gh: not logged in");
+      },
+    };
+
+    const status = runStatus(dir, {}, { github: offline });
+    expect(status).toMatch(/^warning: could not check PR #7 of run-12-\w+: gh: not logged in\n\nRUN/);
+    expect(status).toMatch(/needs_human/);
+  });
+
+  it("finishes a run whose PR was closed before running its issue again", async () => {
+    const needsInfo = { output: TRIAGE.replace("APPROVE", "NEEDS_INFO") + "\n## Questions\n- Which format?\n" };
+    const { run, queue, printed } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass(), needsInfo]);
+    queue();
+    await run();
+    prStates.set(7, { number: 7, state: "closed", draft: true, head: "h" });
+
+    // The old run is cancelled first, so `factory run` starts a new one instead of continuing it.
+    expect(await run()).toMatch(/waiting for answers on issue #12/);
+    expect(printed.some((l) => /^run-12-\w+: PR #7 closed -> cancelled$/.test(l))).toBe(true);
   });
 
   it("resumes an escalated run to a stage it may go back to", async () => {
@@ -318,9 +366,9 @@ describe("approve / reject / cancel", () => {
     await expect(runApprove(dir, "#12", {})).rejects.toThrow(/not waiting at a gate/);
     await expect(runResume(dir, "#12", { to: "merge", message: "ship" })).rejects.toThrow(/can resume to: .*build/);
     expect(await runResume(dir, "#12", { to: "build", message: "use the flat price", resetLoops: true, run: false })).toBe(
-      "Resumed " + runStatus(dir).split("\n")[1]!.split(/\s+/)[0] + " to build with a fresh loop budget.\nContinue with `factory run 12`.",
+      "Resumed " + runStatus(dir, {}, { github }).split("\n")[1]!.split(/\s+/)[0] + " to build with a fresh loop budget.\nContinue with `factory run 12`.",
     );
-    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+    expect(runStatus(dir, {}, { github })).toMatch(/\bbuild\b/);
   });
 
   it("triages again when the issue was waiting for its author", async () => {
@@ -369,9 +417,9 @@ describe("colour", () => {
     );
 
     // status keeps its columns aligned: stripping the codes gives exactly the plain table.
-    const status = runStatus(dir, { all: true }, undefined, colour);
+    const status = runStatus(dir, { all: true }, { github, style: colour });
     expect(status).toContain(ESC);
-    expect(strip(status)).toBe(runStatus(dir, { all: true }));
+    expect(strip(status)).toBe(runStatus(dir, { all: true }, { github }));
 
     const logs = await runLogs(dir, "#12", {}, { style: colour });
     expect(logs).toContain(ESC);
@@ -387,7 +435,7 @@ describe("colour", () => {
     expect(followed.map(strip)).toEqual(await follow());
 
     for (const style of [styleFor({ isTTY: true }, { NO_COLOR: "1" }), styleFor({ isTTY: false }, {})]) {
-      expect(runStatus(dir, { all: true }, undefined, style)).not.toContain(ESC);
+      expect(runStatus(dir, { all: true }, { github, style })).not.toContain(ESC);
       expect(await runLogs(dir, "#12", {}, { style })).not.toContain(ESC);
       expect((await follow(style)).join("\n")).not.toContain(ESC);
     }

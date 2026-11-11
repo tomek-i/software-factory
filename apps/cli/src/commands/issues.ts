@@ -1,15 +1,18 @@
-import { fetchIssue, syncIssues, type CommandRunner, type Issue } from "@factory/core";
+import { fetchIssue, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
 import { isTrustedAuthor, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
+import { reconcileRuns } from "./reconcile.js";
 import { plain, type Style } from "../style.js";
 
-export function runSync(cwd: string, run?: CommandRunner): string {
+/** `factory sync`: pull issues from GitHub, and finish runs whose PR was merged or closed there. */
+export function runSync(cwd: string, run?: CommandRunner, github?: GithubPort): string {
   return withProject(
     cwd,
-    ({ store, project }) => {
+    ({ store, project, config }) => {
       const result = syncIssues(store, project, run);
       const queued = store.listIssues({ project_id: project.id, queued: true }).length;
-      return `Synced ${project.github_repo}: ${result.open} open, ${result.closed} closed since last sync, ${queued} queued.`;
+      const reconciled = reconcileRuns(store, project, config, { run, github });
+      return `${reconciled.map((l) => `${l}\n`).join("")}Synced ${project.github_repo}: ${result.open} open, ${result.closed} closed since last sync, ${queued} queued.`;
     },
     run,
   );

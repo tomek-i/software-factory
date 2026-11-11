@@ -99,6 +99,7 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
       return 7;
     },
     updatePullRequest: (number, body) => edits.push({ number, body }),
+    pullRequestState: (number) => ({ number, state: "open", draft: true, head: "" }),
   };
   const events = new FactoryEvents();
   const seen: FactoryEvent[] = [];

@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runCommand, type CommandRunner } from "@factory/core";
+import { runCommand, Store, type CommandRunner, type GithubPort } from "@factory/core";
 import { runInit } from "./init.js";
 import { createStyle, styleFor } from "../style.js";
 import { runIssues, runQueue, runSync } from "./issues.js";
@@ -89,6 +89,24 @@ describe("issue commands", () => {
     for (const style of [styleFor({ isTTY: true }, { NO_COLOR: "1" }), styleFor({ isTTY: false }, {})]) {
       expect(runIssues(dir, {}, run, style)).toBe(runIssues(dir, {}, run));
     }
+  });
+
+  it("finishes runs whose PR was merged on GitHub when syncing", () => {
+    const dir = repo();
+    const store = new Store(join(dir, ".factory", "factory.db"));
+    const created = store.createRun({ project_id: store.listProjects()[0]!.id, title: "t", issue_number: 1 });
+    store.writeState(created.id, "needs_human", { pr_number: 3, waiting_gate: "review" });
+    store.close();
+    const github: GithubPort = {
+      commentOnIssue: () => undefined,
+      findPullRequest: () => undefined,
+      createDraftPullRequest: () => 1,
+      updatePullRequest: () => undefined,
+      pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
+    };
+
+    expect(runSync(dir, run, github)).toBe(`${created.id}: PR #3 merged -> done\nSynced acme/shop: 2 open, 0 closed since last sync, 0 queued.`);
+    expect(runSync(dir, run, github)).toBe("Synced acme/shop: 2 open, 0 closed since last sync, 0 queued.");
   });
 
   it("rejects things that are not issue numbers", () => {

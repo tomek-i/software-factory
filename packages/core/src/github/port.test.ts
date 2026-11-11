@@ -38,6 +38,17 @@ describe("ghPort", () => {
     expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
   });
 
+  it("reads a PR's state, draft flag, head and merge commit", () => {
+    const merged = fakeGh(JSON.stringify({ number: 42, state: "MERGED", isDraft: false, headRefOid: "h1", mergeCommit: { oid: "m1" } }));
+    expect(ghPort(project, merged.run).pullRequestState(42)).toEqual({ number: 42, state: "merged", draft: false, head: "h1", mergeCommit: "m1" });
+    expect(merged.calls[0]).toEqual(["pr", "view", "42", "-R", "o/r", "--json", "number,state,isDraft,headRefOid,mergeCommit"]);
+    const open = fakeGh(JSON.stringify({ number: 42, state: "OPEN", isDraft: true, headRefOid: "h1", mergeCommit: null }));
+    expect(ghPort(project, open.run).pullRequestState(42)).toEqual({ number: 42, state: "open", draft: true, head: "h1" });
+    for (const out of ["nope", JSON.stringify({ number: 41, state: "OPEN", headRefOid: "h" }), JSON.stringify({ number: 42, state: "WEIRD", headRefOid: "h" })]) {
+      expect(() => ghPort(project, fakeGh(out).run).pullRequestState(42)).toThrow(/unexpected output/);
+    }
+  });
+
   it("finds an open PR for a branch", () => {
     expect(ghPort(project, fakeGh('[{"number":5}]').run).findPullRequest("b")).toBe(5);
     expect(ghPort(project, fakeGh("[]").run).findPullRequest("b")).toBeUndefined();

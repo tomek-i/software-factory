@@ -5,6 +5,17 @@ import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { GithubError } from "./issues.js";
 
+/** A pull request as GitHub sees it now. */
+export interface PullRequestState {
+  number: number;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** The commit at the head of the PR branch. */
+  head: string;
+  /** Set once the PR is merged. */
+  mergeCommit?: string;
+}
+
 /** What the pipeline needs from GitHub. Faked in tests. */
 export interface GithubPort {
   commentOnIssue(issueNumber: number, body: string): void;
@@ -14,6 +25,7 @@ export interface GithubPort {
   createDraftPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
   /** Replace a PR's description. */
   updatePullRequest(number: number, body: string): void;
+  pullRequestState(number: number): PullRequestState;
 }
 
 /** Hidden marker on every comment the factory posts, so later stages can find (and not duplicate) them. */
@@ -49,6 +61,21 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       const match = /\/pull\/(\d+)/.exec(out);
       if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       return Number(match[1]);
+    },
+    pullRequestState(number) {
+      const out = gh(["pr", "view", String(number), "-R", repo, "--json", "number,state,isDraft,headRefOid,mergeCommit"]);
+      let pr: { number?: unknown; state?: unknown; isDraft?: unknown; headRefOid?: unknown; mergeCommit?: { oid?: unknown } | null };
+      try {
+        pr = JSON.parse(out) as typeof pr;
+      } catch {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      const state = typeof pr.state === "string" ? pr.state.toLowerCase() : "";
+      if (pr.number !== number || (state !== "open" && state !== "merged" && state !== "closed") || typeof pr.headRefOid !== "string") {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200)}`);
+      }
+      const mergeCommit = typeof pr.mergeCommit?.oid === "string" ? pr.mergeCommit.oid : undefined;
+      return { number, state, draft: pr.isDraft === true, head: pr.headRefOid, ...(mergeCommit ? { mergeCommit } : {}) };
     },
     updatePullRequest(number, body) {
       // From a file: a long description can exceed the Windows command-line limit (~32k characters).

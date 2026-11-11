@@ -495,3 +495,50 @@ describe("RunMachine.cancel", () => {
     expect(() => machine.cancel(run.id, "x")).toThrow(/already done/);
   });
 });
+
+describe("RunMachine.closeByPullRequest", () => {
+  const MERGE = "c".repeat(40);
+
+  it("finishes a run parked at a gate whose PR was merged, recording a human merge decision", () => {
+    const { machine, store, run, at } = setup();
+    at("needs_human", { pr_number: 7, waiting_gate: "review", parked_from: "review" });
+
+    const done = machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE });
+
+    expect(done).toMatchObject({ state: "done", waiting_gate: null, parked_from: null });
+    expect(store.listDecisions(run.id)).toMatchObject([
+      { gate: "merge", outcome: "approve", actor: "human", comment: "merged PR #7 on GitHub", commit_sha: MERGE },
+    ]);
+    expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "needs_human", to_state: "done", data: { pr: 7, mergeCommit: MERGE } });
+  });
+
+  it("cancels a run whose PR was closed without merging", () => {
+    const { machine, store, run, at } = setup();
+    at("review", { pr_number: 7 });
+    expect(machine.closeByPullRequest(run.id, { number: 7, state: "closed" }).state).toBe("cancelled");
+    expect(store.listEvents(run.id).at(-1)!.reason).toBe("PR #7 was closed on GitHub without merging");
+    expect(store.listDecisions(run.id)).toMatchObject([{ outcome: "reject", commit_sha: null }]);
+  });
+
+  it("refuses without evidence that the run's own PR is finished", () => {
+    const { machine, store, run, at } = setup();
+    at("needs_human", { pr_number: 7, waiting_gate: "review" });
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "open" })).toThrow(/still open/);
+    expect(() => machine.closeByPullRequest(run.id, { number: 8, state: "merged", mergeCommit: MERGE })).toThrow(/not the run's PR/);
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged" })).toThrow(/no merge commit/);
+    expect(store.getRun(run.id)!.state).toBe("needs_human");
+
+    at("cancelled");
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE })).toThrow(/already cancelled/);
+  });
+
+  it("refuses a run without a PR, and a run another worker is driving", () => {
+    const { machine, store, run, at } = setup();
+    at("build");
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "closed" })).toThrow(/no pull request/);
+    at("merge", { pr_number: 7 });
+    store.acquireLease(run.id, "worker-1", 60_000);
+    expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE })).toThrow(/leased by worker-1/);
+    expect(machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE }, "worker-1").state).toBe("done");
+  });
+});
