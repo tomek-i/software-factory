@@ -27,7 +27,7 @@ function table(issues: Issue[], config: FactoryConfig): string {
     .join("\n");
 }
 
-const UNTRUSTED_NOTE =
+export const UNTRUSTED_NOTE =
   "  author is not in trust.authors: the issue text is treated as untrusted data and triage will wait for your approval";
 
 export function runIssues(cwd: string, options: { queued?: boolean; all?: boolean }, run?: CommandRunner): string {

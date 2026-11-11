@@ -5,6 +5,7 @@ import {
   createAgentRunner,
   emptySummary,
   FactoryEvents,
+  fetchIssue,
   ghPort,
   killTree,
   loadTrustedConfig,
@@ -16,12 +17,14 @@ import {
   type DriveOutcome,
   type FactoryEvent,
   type GithubPort,
+  type Issue,
   type Project,
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
+import { UNTRUSTED_NOTE } from "./issues.js";
 
 export interface RunDeps {
   run?: CommandRunner;
@@ -102,69 +105,102 @@ function describeOutcome(outcome: DriveOutcome, run: Run, issue: number): string
   }
 }
 
-/** `factory run <issue>`: start (or continue) the issue's run and drive it until it needs someone. */
+/**
+ * Make sure the issue is synced and queued. Typing `factory run <n>` is itself the local decision
+ * to work on it, so it queues the issue the same way `factory queue <n>` would; nobody on GitHub
+ * can trigger this.
+ */
+function ensureQueued(store: Store, project: Project, config: FactoryConfig, number: number, deps: RunDeps): Issue {
+  const print = deps.print ?? console.log;
+  if (!store.getIssue(project.id, number)) {
+    try {
+      fetchIssue(store, project, number, deps.run);
+    } catch (err) {
+      throw new CliError(`Could not fetch issue #${number}: ${(err as Error).message}`);
+    }
+  }
+  const issue = store.getIssue(project.id, number)!;
+  if (issue.queued_at) return issue;
+  if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
+  store.setQueued(project.id, number, true);
+  print(`Queued #${number} ${issue.title}`);
+  if (!isTrustedAuthor(config, issue.author)) print(UNTRUSTED_NOTE);
+  return store.getIssue(project.id, number)!;
+}
+
+/** `factory run <issue>`: sync and queue the issue if needed, then start (or continue) its run and drive it until it needs someone. */
 export async function runRun(cwd: string, value: string, options: { unsafe?: boolean }, deps: RunDeps = {}): Promise<string> {
   const number = parseIssueNumber(value);
-  const print = deps.print ?? console.log;
   return withProjectAsync(
     cwd,
-    async ({ store, project, config: workingConfig }) => {
-      const issue = store.getIssue(project.id, number);
-      if (!issue?.queued_at) {
-        throw new CliError(`Issue #${number} is not queued. Queue it first with \`factory queue ${number}\`.`);
-      }
-      const defaultBranch = workingConfig.project.default_branch;
-      const read = trustedReader(project.repo_path, defaultBranch, deps.run);
-      const config = loadTrustedConfig(read, defaultBranch);
-
-      const events = new FactoryEvents();
-      events.on((e) => {
-        const line = formatEvent(e);
-        if (line) print(line);
-      });
-      const owner = `cli-${process.pid}`;
-      const driver = new PipelineDriver({
-        store,
-        project,
-        config,
-        read,
-        runAgent: createAgentRunner({ store, events, env: deps.env }),
-        github: deps.github ?? ghPort(project, deps.run),
-        owner,
-        events,
-        run: deps.run,
-      });
-
-      if (config.checks.length === 0) {
-        print("Warning: no checks are configured in .factory/config.yaml on the default branch; the quality gate only scans for secrets.");
-      }
-      let run = driver.startRun(number, { unsafe: options.unsafe });
-      if (options.unsafe && !run.unsafe) print(`--unsafe ignored: run ${run.id} already exists without it.`);
-      // Running an issue that was waiting for its author means "they answered": triage it again.
-      if (run.state === "needs_info") run = driver.retriage(run.id);
-      print(`Run ${run.id} (${run.state}) for #${number} ${issue.title}`);
-
-      // Ctrl+C: stop this process's agent and give the lease back so the run can be continued
-      // right away. Only rows still running are ours: this process holds the run's lease.
-      const onInterrupt = () => {
-        for (const agent of store.listAgentRuns(run.id)) {
-          if (agent.status !== "running") continue;
-          if (agent.pid) killTree(agent.pid);
-          store.finishAgentRun(agent.id, { status: "cancelled" });
-        }
-        store.releaseLease(run.id, owner);
-        process.exit(130);
-      };
-      process.once("SIGINT", onInterrupt);
-      try {
-        const outcome = await driver.drive(run.id);
-        return describeOutcome(outcome, store.getRun(run.id)!, number);
-      } finally {
-        process.off("SIGINT", onInterrupt);
-      }
+    async ({ store, project, config }) => {
+      ensureQueued(store, project, config, number, deps);
+      return driveIssue(store, project, config, number, options, deps);
     },
     deps.run,
   );
+}
+
+/** Drive the issue's run (starting one if needed) until it needs someone, printing progress. */
+async function driveIssue(
+  store: Store,
+  project: Project,
+  workingConfig: FactoryConfig,
+  number: number,
+  options: { unsafe?: boolean },
+  deps: RunDeps,
+): Promise<string> {
+  const print = deps.print ?? console.log;
+  const issue = store.getIssue(project.id, number)!;
+  const defaultBranch = workingConfig.project.default_branch;
+  const read = trustedReader(project.repo_path, defaultBranch, deps.run);
+  const config = loadTrustedConfig(read, defaultBranch);
+
+  const events = new FactoryEvents();
+  events.on((e) => {
+    const line = formatEvent(e);
+    if (line) print(line);
+  });
+  const owner = `cli-${process.pid}`;
+  const driver = new PipelineDriver({
+    store,
+    project,
+    config,
+    read,
+    runAgent: createAgentRunner({ store, events, env: deps.env }),
+    github: deps.github ?? ghPort(project, deps.run),
+    owner,
+    events,
+    run: deps.run,
+  });
+
+  if (config.checks.length === 0) {
+    print("Warning: no checks are configured in .factory/config.yaml on the default branch; the quality gate only scans for secrets.");
+  }
+  let run = driver.startRun(number, { unsafe: options.unsafe });
+  if (options.unsafe && !run.unsafe) print(`--unsafe ignored: run ${run.id} already exists without it.`);
+  // Running an issue that was waiting for its author means "they answered": triage it again.
+  if (run.state === "needs_info") run = driver.retriage(run.id);
+  print(`Run ${run.id} (${run.state}) for #${number} ${issue.title}`);
+
+  // Ctrl+C: stop this process's agent and give the lease back so the run can be continued
+  // right away. Only rows still running are ours: this process holds the run's lease.
+  const onInterrupt = () => {
+    for (const agent of store.listAgentRuns(run.id)) {
+      if (agent.status !== "running") continue;
+      if (agent.pid) killTree(agent.pid);
+      store.finishAgentRun(agent.id, { status: "cancelled" });
+    }
+    store.releaseLease(run.id, owner);
+    process.exit(130);
+  };
+  process.once("SIGINT", onInterrupt);
+  try {
+    const outcome = await driver.drive(run.id);
+    return describeOutcome(outcome, store.getRun(run.id)!, number);
+  } finally {
+    process.off("SIGINT", onInterrupt);
+  }
 }
 
 function cost(store: Store, runId: string): number {
@@ -255,11 +291,39 @@ export async function runLogs(
   );
 }
 
-/** `factory approve <run>`: let a run waiting at a gate continue. */
-export function runApprove(cwd: string, ref: string, options: { message?: string }, run?: CommandRunner): string {
-  return withProject(
+/**
+ * After approve or resume, carry on driving the run in this terminal, like `factory run`, unless
+ * the caller said --no-run or the run went somewhere the driver cannot take further.
+ */
+async function continueRun(
+  store: Store,
+  project: Project,
+  config: FactoryConfig,
+  run: Run,
+  to: RunState,
+  done: string,
+  options: { run?: boolean },
+  deps: RunDeps,
+): Promise<string> {
+  if (isTerminal(to) || run.issue_number === null) return done;
+  if (to === "review") {
+    return `${done}\nReviews are not automated yet: review the draft PR, then mark it ready and merge it yourself.`;
+  }
+  if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
+  (deps.print ?? console.log)(done);
+  return driveIssue(store, project, config, run.issue_number, {}, deps);
+}
+
+/** `factory approve <run>`: let a run waiting at a gate continue, and keep driving it unless --no-run. */
+export async function runApprove(
+  cwd: string,
+  ref: string,
+  options: { message?: string; run?: boolean },
+  deps: RunDeps = {},
+): Promise<string> {
+  return withProjectAsync(
     cwd,
-    ({ store, project, config }) => {
+    async ({ store, project, config }) => {
       const target = findRun(store, project, ref);
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
@@ -268,29 +332,27 @@ export function runApprove(cwd: string, ref: string, options: { message?: string
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
       new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved" });
-      const next =
-        gate === "review"
-          ? "Reviews are not automated yet: review the draft PR, then mark it ready and merge it yourself."
-          : `Continue with \`factory run ${target.issue_number}\`.`;
-      return `Approved the ${gate} gate of ${target.id}; it moves to ${to}.\n${next}`;
+      const done = `Approved the ${gate} gate of ${target.id}; it moves to ${to}.`;
+      return continueRun(store, project, config, target, to, done, options, deps);
     },
-    run,
+    deps.run,
   );
 }
 
 /**
  * `factory resume <run> --to <stage> -m <why>`: send a run parked for a human (an escalation such
- * as a failed agent or the build cap) back to an earlier stage or one step onward.
+ * as a failed agent or the build cap) back to an earlier stage or one step onward, and keep
+ * driving it unless --no-run.
  */
-export function runResume(
+export async function runResume(
   cwd: string,
   ref: string,
-  options: { to: string; message: string; resetLoops?: boolean },
-  run?: CommandRunner,
-): string {
-  return withProject(
+  options: { to: string; message: string; resetLoops?: boolean; run?: boolean },
+  deps: RunDeps = {},
+): Promise<string> {
+  return withProjectAsync(
     cwd,
-    ({ store, project, config }) => {
+    async ({ store, project, config }) => {
       if (!options.message?.trim()) throw new CliError("Say why with -m.");
       const target = findRun(store, project, ref);
       if (target.state !== "needs_human") throw new CliError(`Run ${target.id} is not waiting for you (it is ${target.state}).`);
@@ -298,15 +360,12 @@ export function runResume(
       if (!allowed.includes(options.to as RunState)) {
         throw new CliError(`Run ${target.id} can resume to: ${allowed.join(", ")}.`);
       }
-      new RunMachine(store, config).resume(target.id, options.to as RunState, {
-        comment: options.message,
-        resetLoops: options.resetLoops,
-      });
+      const to = options.to as RunState;
+      new RunMachine(store, config).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
       const loops = options.resetLoops ? " with a fresh loop budget" : "";
-      const next = isTerminal(options.to as RunState) ? "" : `\nContinue with \`factory run ${target.issue_number}\`.`;
-      return `Resumed ${target.id} to ${options.to}${loops}.${next}`;
+      return continueRun(store, project, config, target, to, `Resumed ${target.id} to ${to}${loops}.`, options, deps);
     },
-    run,
+    deps.run,
   );
 }
 

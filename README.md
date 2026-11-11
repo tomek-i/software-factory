@@ -64,16 +64,18 @@ Issues closed on GitHub drop out of the queue on the next sync.
 ### Running an issue
 
 ```sh
-factory run 12             # run queued issue #12 until it needs you; --unsafe lifts hard rules for this run only
+factory run 12             # run issue #12 until it needs you (syncs and queues it first if needed); --unsafe lifts hard rules for this run only
 factory status             # active runs: state, round, cost, waiting gate; --all includes finished ones
 factory logs 12            # events and agent log excerpts; -f follows a running run
 factory show 12            # overview: state, gate, branch, PR, verdict summaries, files in the run folder
 factory show 12 triage     # one file in full: triage, build, checks (latest round) or a path like round-2/checks.md
-factory approve <run>      # let a run waiting at a gate continue; -m "why"
+factory approve <run>      # let a run waiting at a gate continue and keep running it; -m "why", --no-run to only record it
 factory reject <run> -m "why"   # end a run waiting at a gate
-factory resume <run> --to build -m "why"   # send an escalated run back to a stage; --reset-loops for a fresh budget
+factory resume <run> --to build -m "why"   # send an escalated run back to a stage and keep running it; --reset-loops, --no-run
 factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept
 ```
+
+`factory run <n>` is enough for a brand-new issue: running it is your decision to work on it, so it fetches the issue if it was never synced and queues it, the same as `factory queue <n>`. Closed issues are refused, and an issue by an author outside `trust.authors` still waits for you at triage. `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would; with `--no-run` they only record the decision.
 
 `<run>` is a run id, a unique prefix of one, or an issue number (`12`) for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
 
