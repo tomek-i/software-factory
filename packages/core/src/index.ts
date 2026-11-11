@@ -3,6 +3,7 @@ export * from "./store/store.js";
 export * from "./pipeline/gates.js";
 export * from "./pipeline/transitions.js";
 export * from "./pipeline/fingerprint.js";
+export * from "./pipeline/hard-rules.js";
 export * from "./init/detect.js";
 export * from "./init/init.js";
 export * from "./github/labels.js";

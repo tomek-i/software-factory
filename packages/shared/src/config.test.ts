@@ -42,6 +42,12 @@ describe("factoryConfigSchema", () => {
     expect(config.hard_rules.triggers).toEqual(["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"]);
   });
 
+  it("rejects protected-path globs that would silently match nothing", () => {
+    for (const glob of ["{a,b}/**", "src/[ab].ts", "/infra/**", "./infra/**", "infra\\**"]) {
+      expect(() => factoryConfigSchema.parse({ version: 1, hard_rules: { paths: [glob] } }), glob).toThrow(/repo-relative glob/);
+    }
+  });
+
   it("has no way to enable unsafe mode from config", () => {
     const config = factoryConfigSchema.parse({ version: 1, unsafe: true } as unknown);
     expect("unsafe" in config).toBe(false);

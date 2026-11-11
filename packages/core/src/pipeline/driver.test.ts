@@ -148,6 +148,29 @@ describe("PipelineDriver", () => {
     expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "Add the feature", body: "## What\n- done\n\nCloses #12\n" }]);
   });
 
+  it("names the hard rules the diff trips when it parks at review, and marks an --unsafe PR", async () => {
+    const touchInfra: FakeStep = {
+      files: { "feature.txt": "fixed\n", "infra/main.tf": "resource {}\n", ".env": "X=1\n" },
+      exec: [
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "feat: infra"],
+      ],
+      output: READY,
+    };
+    for (const unsafe of [false, true]) {
+      const { driver, store, prs } = setup([{ output: TRIAGE() }, touchInfra]);
+      const run = driver.startRun(12, { unsafe });
+
+      const outcome = await driver.drive(run.id);
+
+      expect(store.getRun(run.id)!.waiting_gate).toBe("review");
+      const hits = "secret or env file changed: .env; protected path (infra/**): infra/main.tf";
+      const lifted = unsafe ? "hard rules lifted by --unsafe" : "hard rules";
+      expect(outcome).toMatchObject({ kind: "parked", state: "needs_human", reason: `quality gate passed; reviews are not automated yet; ${lifted}: ${hits}` });
+      expect(prs[0]!.body.startsWith("> [!WARNING]\n> Built with `--unsafe`")).toBe(unsafe);
+    }
+  });
+
   it("runs each agent with its configured model and effort, upgraded when triage said HIGH", async () => {
     const config = [
       "version: 1",

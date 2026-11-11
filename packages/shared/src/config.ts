@@ -20,6 +20,17 @@ export const DEFAULT_PROTECTED_PATHS = [
   ".factory/**",
 ] as const;
 
+/**
+ * A protected-path glob: repo-relative, forward slashes, only `*`, `**` and `?`. Anything else
+ * would match nothing without a word, so a path the user meant to protect would not be.
+ */
+const protectedPath = z
+  .string()
+  .min(1)
+  .refine((p) => !/[{}[\]\\]/.test(p) &&!p.startsWith("/") && !p.startsWith("./"), {
+    message: "use a repo-relative glob with forward slashes and only *, ** and ? (no {a,b}, [abc], leading / or backslashes)",
+  });
+
 export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
 
@@ -88,7 +99,7 @@ export const factoryConfigSchema = z.object({
   hard_rules: z
     .object({
       paths: z
-        .array(z.string())
+        .array(protectedPath)
         .default([])
         .transform((paths) => [...new Set([...DEFAULT_PROTECTED_PATHS, ...paths])]),
       triggers: z
