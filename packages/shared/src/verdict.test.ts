@@ -120,6 +120,13 @@ describe("parseVerdict", () => {
     );
   });
 
+  it("parses the refine and spec critic headers", () => {
+    expect(parseVerdict("refine", "STATUS: refined\n\n## Scope\n- x\n").header.STATUS).toBe("REFINED");
+    expect(parseVerdict("critic", "VERDICT: revise\n\n## Problems\n- y\n").header.VERDICT).toBe("REVISE");
+    expect(() => parseVerdict("refine", "STATUS: DONE\n")).toThrow(/STATUS/);
+    expect(() => parseVerdict("critic", "VERDICT: MAYBE\n")).toThrow(/VERDICT/);
+  });
+
   it("rejects findings prose without a json block", () => {
     expect(() => parseVerdict("review", "VERDICT: CHANGES\n\n## Findings\n- bad stuff\n")).toThrow(/json array/);
   });
