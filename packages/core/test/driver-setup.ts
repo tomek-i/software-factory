@@ -75,7 +75,8 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
   });
   store.setQueued(project.id, 12, true);
 
-  const comments: { issue: number; body: string }[] = [];
+  // Every comment the factory posted, with its current body; `id` is what findComment/editComment use.
+  const comments: { issue: number; body: string; id: number; edits: number }[] = [];
   const prs: { head: string; base: string; title: string; body: string }[] = [];
   const edits: { number: number; body: string }[] = [];
   // The run's PR as the fake GitHub sees it; a test may merge or close it, or make merging fail.
@@ -86,7 +87,14 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
   let views = 0;
   const merges: { number: number; head: string }[] = [];
   const github: GithubPort = {
-    commentOnIssue: (issue, body) => comments.push({ issue, body }),
+    commentOnIssue: (issue, body) => comments.push({ issue, body, id: 100 + comments.length, edits: 0 }),
+    findComment: (issue, marker) => comments.findLast((c) => c.issue === issue && c.body.startsWith(marker))?.id,
+    editComment: (id, body) => {
+      const comment = comments.find((c) => c.id === id);
+      if (!comment) throw new Error(`no comment ${id}`);
+      comment.body = body;
+      comment.edits++;
+    },
     findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
     createDraftPullRequest: (pr) => {
       prs.push(pr);
