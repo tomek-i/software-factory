@@ -72,7 +72,7 @@ models:
     approver: "opus"
     capture: { model: "haiku", effort: "low" }
     learner: { model: "sonnet", effort: "medium" }
-  reviews:
+  reviews:                                        # used once the review stage is automated (phase 3)
     code: { model: "sonnet", effort: "medium" }
     security: { model: "opus", effort: "high" }
     docs: { model: "haiku", effort: "low" }
