@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,6 +18,11 @@ function gitRepo(remote?: string): string {
   runCommand("git", ["init", "-q"], { cwd: dir });
   if (remote) runCommand("git", ["remote", "add", "origin", remote], { cwd: dir });
   return dir;
+}
+
+function withStatusLabels(dir: string): void {
+  mkdirSync(join(dir, ".factory"), { recursive: true });
+  writeFileSync(join(dir, ".factory", "config.yaml"), "version: 1\ngithub:\n  status_labels: true\n");
 }
 
 /** Real git, recorded fake gh. */
@@ -98,20 +103,36 @@ describe("ensureGitignore", () => {
 
 describe("initRepo", () => {
   it("refuses to run outside a git repository", () => {
-    expect(() => initRepo({ cwd: tempDir(), createLabels: false })).toThrow(InitError);
+    expect(() => initRepo({ cwd: tempDir() })).toThrow(InitError);
   });
 
-  it("sets up config, lessons, gitignore, db and labels", () => {
+  it("sets up config, lessons, gitignore and db without touching GitHub by default", () => {
     const dir = gitRepo("https://github.com/acme/shop.git");
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "shop", scripts: { test: "vitest" } }));
     const gh = withFakeGh();
 
-    const result = initRepo({ cwd: dir, createLabels: true, run: gh.run });
+    const result = initRepo({ cwd: dir, run: gh.run });
 
     expect(result.githubRepo).toBe("acme/shop");
     expect(loadConfig(dir).checks).toEqual([{ name: "test", run: "npm run test", timeout_sec: 900 }]);
+    expect(loadConfig(dir).github.status_labels).toBe(false);
     expect(existsSync(join(dir, ".factory", "lessons.md"))).toBe(true);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain(".worktrees/");
+    expect(gh.calls).toEqual([]);
+    expect(result.steps.at(-1)).toMatchObject({ status: "skipped" });
+
+    const store = new Store(join(dir, ".factory", "factory.db"));
+    expect(store.listProjects()).toMatchObject([{ name: "shop", github_repo: "acme/shop" }]);
+    store.close();
+  });
+
+  it("creates status labels once they are enabled in config", () => {
+    const dir = gitRepo("https://github.com/acme/shop.git");
+    withStatusLabels(dir);
+    const gh = withFakeGh();
+
+    initRepo({ cwd: dir, run: gh.run });
+
     expect(gh.calls.map((c) => c[2])).toEqual([
       "factory",
       "factory:in-progress",
@@ -120,19 +141,15 @@ describe("initRepo", () => {
       "factory:unsafe",
     ]);
     expect(gh.calls[0]).toContain("acme/shop");
-
-    const store = new Store(join(dir, ".factory", "factory.db"));
-    expect(store.listProjects()).toMatchObject([{ name: "shop", github_repo: "acme/shop" }]);
-    store.close();
   });
 
   it("is safe to re-run and never overwrites an existing config", () => {
     const dir = gitRepo();
-    initRepo({ cwd: dir, createLabels: false });
+    initRepo({ cwd: dir });
     const configFile = join(dir, ".factory", "config.yaml");
     writeFileSync(configFile, "version: 1\nproject:\n  name: hand-edited\n");
 
-    const second = initRepo({ cwd: dir, createLabels: false });
+    const second = initRepo({ cwd: dir });
 
     expect(readFileSync(configFile, "utf8")).toContain("hand-edited");
     expect(second.steps.map((s) => s.status)).toContain("skipped");
@@ -143,22 +160,24 @@ describe("initRepo", () => {
 
   it("reports an invalid existing config instead of ignoring it", () => {
     const dir = gitRepo();
-    initRepo({ cwd: dir, createLabels: false });
+    initRepo({ cwd: dir });
     writeFileSync(join(dir, ".factory", "config.yaml"), "version: 1\ngates:\n  merge: maybe\n");
-    expect(() => initRepo({ cwd: dir, createLabels: false })).toThrow(/gates\.merge/);
+    expect(() => initRepo({ cwd: dir })).toThrow(/gates\.merge/);
   });
 
   it("warns rather than fails when labels cannot be created", () => {
     const dir = gitRepo("git@github.com:acme/shop.git");
-    const result = initRepo({ cwd: dir, createLabels: true, run: withFakeGh(1).run });
+    withStatusLabels(dir);
+    const result = initRepo({ cwd: dir, run: withFakeGh(1).run });
     expect(result.steps.at(-1)).toMatchObject({ status: "warning" });
     expect(result.steps.at(-1)!.message).toContain("HTTP 403");
   });
 
   it("skips labels when there is no GitHub remote", () => {
     const dir = gitRepo();
+    withStatusLabels(dir);
     const gh = withFakeGh();
-    const result = initRepo({ cwd: dir, createLabels: true, run: gh.run });
+    const result = initRepo({ cwd: dir, run: gh.run });
     expect(gh.calls).toEqual([]);
     expect(result.steps.at(-1)).toMatchObject({ status: "warning" });
   });

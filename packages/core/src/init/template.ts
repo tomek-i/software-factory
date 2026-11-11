@@ -67,8 +67,12 @@ models:
 concurrency:
   max_runs: 2
 
+# Issues are synced from GitHub into the local database and you choose which ones to queue.
+# Labels are optional and only mirror run status onto the issue; they never feed work in.
+# After enabling status_labels, run \`factory init\` again to create them.
 github:
-  label: "factory"
+  status_labels: false
+  label_prefix: "factory"
   poll_interval_sec: 120
   max_starts_per_day: 10
 `;

@@ -10,11 +10,11 @@ describe("runInit", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-cli-"));
     runCommand("git", ["init", "-q"], { cwd: dir });
 
-    const output = runInit(dir, { labels: false });
+    const output = runInit(dir);
 
     expect(output).toMatch(/^Initialised software factory in /);
     expect(output).toContain("+ Wrote .factory/config.yaml");
-    expect(output).toContain("- GitHub labels (--no-labels)");
+    expect(output).toContain("- GitHub status labels (off;");
     expect(output).toContain("Next: review .factory/config.yaml");
   });
 });

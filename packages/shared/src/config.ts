@@ -89,7 +89,10 @@ export const factoryConfigSchema = z.object({
     .default({}),
   github: z
     .object({
-      label: z.string().default("factory"),
+      // Labels only mirror run status onto GitHub issues. They are never read as input:
+      // what the factory works on is decided locally, so nobody can feed it work by labelling an issue.
+      status_labels: z.boolean().default(false),
+      label_prefix: z.string().default("factory"),
       poll_interval_sec: z.number().int().min(30).default(120),
       max_starts_per_day: z.number().int().min(0).default(10),
     })

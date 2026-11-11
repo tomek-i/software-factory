@@ -10,9 +10,8 @@ export function buildProgram(): Command {
   program
     .command("init")
     .description("set up the factory in the current git repository")
-    .option("--no-labels", "do not create the factory labels on GitHub")
-    .action((options: { labels: boolean }) => {
-      console.log(runInit(process.cwd(), options));
+    .action(() => {
+      console.log(runInit(process.cwd()));
     });
 
   return program;

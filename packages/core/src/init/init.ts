@@ -12,7 +12,6 @@ export const GITIGNORE_ENTRIES = [".factory/runs/", ".factory/factory.db*", ".wo
 
 export interface InitOptions {
   cwd: string;
-  createLabels: boolean;
   run?: CommandRunner;
 }
 
@@ -89,13 +88,13 @@ export function initRepo(options: InitOptions): InitResult {
   }
   steps.push({ status: "done", message: `Registered project in ${FACTORY_DIR}/factory.db` });
 
-  if (!options.createLabels) {
-    steps.push({ status: "skipped", message: "GitHub labels (--no-labels)" });
+  if (!config.github.status_labels) {
+    steps.push({ status: "skipped", message: "GitHub status labels (off; set github.status_labels to enable)" });
   } else if (!githubRepo) {
     steps.push({ status: "warning", message: "No GitHub origin remote found; skipped creating labels" });
   } else {
     const failed: string[] = [];
-    for (const label of factoryLabels(config.github.label)) {
+    for (const label of factoryLabels(config.github.label_prefix)) {
       const result = run(
         "gh",
         ["label", "create", label.name, "--color", label.color, "--description", label.description, "--force", "-R", githubRepo],
