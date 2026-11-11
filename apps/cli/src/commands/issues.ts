@@ -1,4 +1,5 @@
 import { fetchIssue, syncIssues, type CommandRunner, type Issue } from "@factory/core";
+import { isTrustedAuthor, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 
 export function runSync(cwd: string, run?: CommandRunner): string {
@@ -13,29 +14,33 @@ export function runSync(cwd: string, run?: CommandRunner): string {
   );
 }
 
-function table(issues: Issue[]): string {
+function table(issues: Issue[], config: FactoryConfig): string {
   if (issues.length === 0) return "No issues.";
   const width = Math.max(...issues.map((i) => String(i.number).length)) + 1;
   return issues
     .map((i) => {
       const mark = i.queued_at ? "Q" : " ";
       const closed = i.state === "closed" ? " (closed)" : "";
-      return `${mark} ${`#${i.number}`.padEnd(width)}  ${i.title}${closed}  @${i.author}`;
+      const trust = isTrustedAuthor(config, i.author) ? "" : " (untrusted)";
+      return `${mark} ${`#${i.number}`.padEnd(width)}  ${i.title}${closed}  @${i.author}${trust}`;
     })
     .join("\n");
 }
 
+const UNTRUSTED_NOTE =
+  "  author is not in trust.authors: the issue text is treated as untrusted data and triage will wait for your approval";
+
 export function runIssues(cwd: string, options: { queued?: boolean; all?: boolean }, run?: CommandRunner): string {
   return withProject(
     cwd,
-    ({ store, project }) => {
+    ({ store, project, config }) => {
       const issues = store.listIssues({
         project_id: project.id,
         state: options.all ? undefined : "open",
         queued: options.queued ? true : undefined,
       });
       const footer = options.queued ? "" : "\n\nQ = queued for the factory. Queue with `factory queue <number...>`.";
-      return table(issues) + (issues.length ? footer : "");
+      return table(issues, config) + (issues.length ? footer : "");
     },
     run,
   );
@@ -53,14 +58,15 @@ export function runQueue(cwd: string, values: string[], queued: boolean, run?: C
   const numbers = parseNumbers(values);
   return withProject(
     cwd,
-    ({ store, project }) =>
+    ({ store, project, config }) =>
       numbers
         .map((n) => {
           try {
             // Queueing an issue that was never synced fetches just that issue.
             if (queued && !store.getIssue(project.id, n)) fetchIssue(store, project, n, run);
             const issue = store.setQueued(project.id, n, queued);
-            return `${queued ? "Queued" : "Unqueued"} #${n} ${issue.title}`;
+            const line = `${queued ? "Queued" : "Unqueued"} #${n} ${issue.title}`;
+            return queued && !isTrustedAuthor(config, issue.author) ? `${line}\n${UNTRUSTED_NOTE}` : line;
           } catch (err) {
             return `Skipped #${n}: ${(err as Error).message}`;
           }

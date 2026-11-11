@@ -6,21 +6,25 @@ import { runCommand, type CommandRunner } from "@factory/core";
 import { runInit } from "./init.js";
 import { runIssues, runQueue, runSync } from "./issues.js";
 
-const issue = (number: number, state = "OPEN") => ({
+const issue = (number: number, state = "OPEN", author = "alice") => ({
   number,
   title: `Issue ${number}`,
   body: "",
   state,
-  author: { login: "alice" },
+  author: { login: author },
   labels: [],
   url: `https://github.com/acme/shop/issues/${number}`,
   updatedAt: "2026-11-01T00:00:00Z",
 });
 
-/** Real git, fake gh serving issues #1 and #2 open and #9 closed. */
+/**
+ * Real git, fake gh logged in as alice. Lists #1 (alice) and #2 (mallory, untrusted);
+ * view serves any number, with #9 closed and #404 missing.
+ */
 const run: CommandRunner = (cmd, args, opts) => {
   if (cmd !== "gh") return runCommand(cmd, args, opts);
-  if (args[1] === "list") return { code: 0, stdout: JSON.stringify([issue(1), issue(2)]), stderr: "" };
+  if (args[0] === "api") return { code: 0, stdout: "alice", stderr: "" };
+  if (args[1] === "list") return { code: 0, stdout: JSON.stringify([issue(1), issue(2, "OPEN", "mallory")]), stderr: "" };
   if (args[1] === "view") {
     const n = Number(args[2]);
     if (n === 404) return { code: 1, stdout: "", stderr: "Could not resolve to an issue" };
@@ -42,15 +46,23 @@ describe("issue commands", () => {
     const dir = repo();
 
     expect(runSync(dir, run)).toBe("Synced acme/shop: 2 open, 0 closed since last sync, 0 queued.");
-    expect(runQueue(dir, ["#2"], true, run)).toBe("Queued #2 Issue 2");
+    expect(runQueue(dir, ["#1"], true, run)).toBe("Queued #1 Issue 1");
 
     const all = runIssues(dir, {}, run);
-    expect(all).toContain("Q #2  Issue 2  @alice");
-    expect(all).toContain("  #1  Issue 1  @alice");
+    expect(all).toContain("Q #1  Issue 1  @alice");
+    expect(all).toContain("  #2  Issue 2  @mallory (untrusted)");
 
-    expect(runIssues(dir, { queued: true }, run)).toBe("Q #2  Issue 2  @alice");
-    expect(runQueue(dir, ["2"], false, run)).toBe("Unqueued #2 Issue 2");
+    expect(runIssues(dir, { queued: true }, run)).toBe("Q #1  Issue 1  @alice");
+    expect(runQueue(dir, ["1"], false, run)).toBe("Unqueued #1 Issue 1");
     expect(runIssues(dir, { queued: true }, run)).toBe("No issues.");
+  });
+
+  it("lets you queue an untrusted issue but says what that means", () => {
+    const dir = repo();
+    runSync(dir, run);
+    const output = runQueue(dir, ["2"], true, run);
+    expect(output).toMatch(/^Queued #2 Issue 2\n/);
+    expect(output).toContain("triage will wait for your approval");
   });
 
   it("fetches an unsynced issue when queueing it, and skips closed ones", () => {
