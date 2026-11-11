@@ -51,7 +51,7 @@ export function buildProgram(): Command {
 
   program
     .command("run")
-    .description("run a queued issue through the pipeline until it needs you")
+    .description("run an issue through the pipeline until it needs you (syncs and queues it first if needed)")
     .argument("<issue>", "issue number, e.g. 12")
     .option("--unsafe", "lift hard rules for this run only (untrusted authors still wait for you)")
     .action(async (issue: string, options: { unsafe?: boolean }) => {
@@ -87,11 +87,12 @@ export function buildProgram(): Command {
 
   program
     .command("approve")
-    .description("let a run waiting at a gate continue")
+    .description("let a run waiting at a gate continue, and keep running it")
     .argument("<run>", "run id, id prefix, or issue number")
     .option("-m, --message <text>", "why (stored with the decision)")
-    .action((ref: string, options: { message?: string }) => {
-      console.log(runApprove(process.cwd(), ref, options));
+    .option("--no-run", "only record the approval; continue later with `factory run`")
+    .action(async (ref: string, options: { message?: string; run: boolean }) => {
+      console.log(await runApprove(process.cwd(), ref, options));
     });
 
   program
@@ -110,8 +111,9 @@ export function buildProgram(): Command {
     .requiredOption("--to <stage>", "stage to continue from, e.g. build")
     .requiredOption("-m, --message <text>", "why (required, stored with the decision)")
     .option("--reset-loops", "give the build and review loops a fresh budget")
-    .action((ref: string, options: { to: string; message: string; resetLoops?: boolean }) => {
-      console.log(runResume(process.cwd(), ref, options));
+    .option("--no-run", "only record the decision; continue later with `factory run`")
+    .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
+      console.log(await runResume(process.cwd(), ref, options));
     });
 
   program
