@@ -65,6 +65,7 @@ Issues closed on GitHub drop out of the queue on the next sync.
 
 ```sh
 factory run 12             # run issue #12 until it needs you (syncs and queues it first if needed); --unsafe lifts hard rules for this run only
+factory run 12 15          # run several issues at once, up to concurrency.max_runs; each line is prefixed [#12], [#15]
 factory status             # active runs: state, round, cost, waiting gate; --all includes finished ones
 factory logs 12            # events and agent log excerpts; -f follows a running run
 factory show 12            # overview: state, gate, branch, PR, verdict summaries, files in the run folder
@@ -75,7 +76,7 @@ factory resume <run> --to build -m "why"   # send an escalated run back to a sta
 factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept
 ```
 
-`factory run <n>` is enough for a brand-new issue: running it is your decision to work on it, so if the issue isn't queued yet it fetches it fresh from GitHub and queues it, the same as `factory queue <n>`. Closed issues are refused, and an issue by an author outside `trust.authors` still waits for you at triage. `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would; with `--no-run` they only record the decision.
+`factory run <n>` is enough for a brand-new issue: running it is your decision to work on it, so if the issue isn't queued yet it fetches it fresh from GitHub and queues it, the same as `factory queue <n>`. Closed issues are refused, and an issue by an author outside `trust.authors` still waits for you at triage. Give several numbers to run them side by side in one terminal: at most `concurrency.max_runs` (default 2) run at once and the rest wait their turn. An issue that can't start (closed, not on GitHub) is skipped, the others still run, and the command exits non-zero. Ctrl+C stops all of them. `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would; with `--no-run` they only record the decision.
 
 `<run>` is a run id, a unique prefix of one, or an issue number (`12`) for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
 

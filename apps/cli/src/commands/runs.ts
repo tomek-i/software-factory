@@ -137,17 +137,95 @@ function ensureQueued(store: Store, project: Project, config: FactoryConfig, num
   return store.getIssue(project.id, number)!;
 }
 
-/** `factory run <issue>`: sync and queue the issue if needed, then start (or continue) its run and drive it until it needs someone. */
-export async function runRun(cwd: string, value: string, options: { unsafe?: boolean }, deps: RunDeps = {}): Promise<string> {
-  const number = parseIssueNumber(value);
+/**
+ * `factory run <issue...>`: sync and queue each issue if needed, then start (or continue) its run
+ * and drive it until it needs someone. Several issues run at once, up to `concurrency.max_runs`.
+ */
+export async function runRun(cwd: string, values: string[], options: { unsafe?: boolean }, deps: RunDeps = {}): Promise<string> {
+  // Validate every argument before anything is queued or started.
+  const numbers = [...new Set(values.map(parseIssueNumber))];
   return withProjectAsync(
     cwd,
     async ({ store, project, config }) => {
-      ensureQueued(store, project, config, number, deps);
-      return driveIssue(store, project, config, number, options, deps);
+      if (numbers.length === 1) {
+        ensureQueued(store, project, config, numbers[0]!, deps);
+        return driveIssue(store, project, config, numbers[0]!, options, deps);
+      }
+      return runMany(store, project, config, numbers, options, deps);
     },
     deps.run,
   );
+}
+
+/** Drive several issues concurrently; every line, live or final, is prefixed with its issue. */
+async function runMany(
+  store: Store,
+  project: Project,
+  workingConfig: FactoryConfig,
+  numbers: number[],
+  options: { unsafe?: boolean },
+  deps: RunDeps,
+): Promise<string> {
+  const print = deps.print ?? console.log;
+  const style = deps.style ?? plain;
+  const prefix = (n: number) => (text: string) =>
+    text
+      .split("\n")
+      .map((line) => `${style.detail(`[#${n}]`)} ${line}`)
+      .join("\n");
+  const depsFor = (n: number): RunDeps => ({ ...deps, print: (line) => print(prefix(n)(line)) });
+
+  const ready: number[] = [];
+  const results = new Map<number, string>();
+  let failed = false;
+  for (const n of numbers) {
+    try {
+      ensureQueued(store, project, workingConfig, n, depsFor(n));
+      ready.push(n);
+    } catch (err) {
+      results.set(n, prefix(n)(`Skipped: ${(err as Error).message}`));
+      failed = true;
+    }
+  }
+
+  // The cap comes from the trusted config, like everything else that steers a run.
+  const defaultBranch = workingConfig.project.default_branch;
+  const limit = loadTrustedConfig(trustedReader(project.repo_path, defaultBranch, deps.run), defaultBranch).concurrency.max_runs;
+  const pending = [...ready];
+  const worker = async () => {
+    for (let n = pending.shift(); n !== undefined; n = pending.shift()) {
+      try {
+        results.set(n, prefix(n)(await driveIssue(store, project, workingConfig, n, options, depsFor(n))));
+      } catch (err) {
+        results.set(n, prefix(n)(`Failed: ${(err as Error).message}`));
+        failed = true;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, ready.length) }, worker));
+
+  const summary = numbers.map((n) => results.get(n)!).join("\n");
+  // A non-zero exit when an issue could not run, with every issue's outcome still reported.
+  if (failed) throw new CliError(`not every issue ran:\n${summary}`);
+  return summary;
+}
+
+/**
+ * Ctrl+C cleanups for the runs this process is driving. One SIGINT handler stops all of them
+ * before exiting, so a second run's lease is not left behind when several run at once.
+ */
+const interrupts = new Set<() => void>();
+
+/** Stop every run this process is driving: kill its agents and give its lease back. */
+export function stopActiveRuns(): number {
+  const count = interrupts.size;
+  for (const stop of interrupts) stop();
+  return count;
+}
+
+function onSigint() {
+  stopActiveRuns();
+  process.exit(130);
 }
 
 /** Drive the issue's run (starting one if needed) until it needs someone, printing progress. */
@@ -195,21 +273,22 @@ async function driveIssue(
 
   // Ctrl+C: stop this process's agent and give the lease back so the run can be continued
   // right away. Only rows still running are ours: this process holds the run's lease.
-  const onInterrupt = () => {
+  const stop = () => {
     for (const agent of store.listAgentRuns(run.id)) {
       if (agent.status !== "running") continue;
       if (agent.pid) killTree(agent.pid);
       store.finishAgentRun(agent.id, { status: "cancelled" });
     }
     store.releaseLease(run.id, owner);
-    process.exit(130);
   };
-  process.once("SIGINT", onInterrupt);
+  if (interrupts.size === 0) process.once("SIGINT", onSigint);
+  interrupts.add(stop);
   try {
     const outcome = await driver.drive(run.id);
     return describeOutcome(outcome, store.getRun(run.id)!, number, style);
   } finally {
-    process.off("SIGINT", onInterrupt);
+    interrupts.delete(stop);
+    if (interrupts.size === 0) process.off("SIGINT", onSigint);
   }
 }
 
