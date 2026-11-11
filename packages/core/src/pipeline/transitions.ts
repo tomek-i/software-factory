@@ -165,13 +165,13 @@ const LOOPS: Partial<Record<Edge, LoopSpec>> = {
   "gate->build": {
     describe: (rounds) => `quality gate failed the same way in rounds ${rounds}`,
     file: (round) => `round-${round}/checks.md`,
-    round: (run) => run.build_iterations + 1,
+    round: (run) => run.round,
     fingerprint: (evidence) => evidence.gateFingerprint?.(),
   },
   "review->build": {
     describe: (rounds) => `the verifier confirmed the same findings in review rounds ${rounds}`,
     file: (round) => `round-${round}/verify.md`,
-    round: (run) => run.review_rounds + 1,
+    round: (run) => run.round,
     fingerprint: (evidence) => findingsFingerprint(evidence.verdict("verify").findings),
   },
 };
@@ -248,6 +248,7 @@ function triageApproved(evidence: Evidence): string[] {
 
 /** Counters bumped when a loop goes round again. Always applied after any caller patch. */
 function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
+  if (to === "gate") return { round: run.round + 1 };
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
   if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
@@ -356,6 +357,8 @@ export class RunMachine {
       parked_from: null,
       ...releaseIfTerminal(to),
       ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0 } : {}),
+      // A human sending the run (back) to the gate starts a new round, like the builder handing over.
+      ...(to === "gate" ? { round: run.round + 1 } : {}),
     };
     return this.commit(run, to, patch, () => {
       const gate = run.waiting_gate ?? "escalation";

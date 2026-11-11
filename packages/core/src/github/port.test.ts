@@ -23,6 +23,12 @@ describe("ghPort", () => {
     expect(calls[0]).toEqual(["pr", "create", "-R", "o/r", "--draft", "--head", "factory/1-x", "--base", "main", "--title", "T", "--body", "B"]);
   });
 
+  it("replaces a PR's description", () => {
+    const { calls, run } = fakeGh("");
+    ghPort(project, run).updatePullRequest(42, "new body");
+    expect(calls[0]).toEqual(["pr", "edit", "42", "-R", "o/r", "--body", "new body"]);
+  });
+
   it("finds an open PR for a branch", () => {
     expect(ghPort(project, fakeGh('[{"number":5}]').run).findPullRequest("b")).toBe(5);
     expect(ghPort(project, fakeGh("[]").run).findPullRequest("b")).toBeUndefined();

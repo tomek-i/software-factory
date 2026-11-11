@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { factoryConfigSchema, parseVerdict } from "@factory/shared";
+import { factoryConfigSchema, parseVerdict, type Finding, type ParsedVerdict } from "@factory/shared";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, reviewsPass, type FakeStep } from "../../test/helpers.js";
 import { absoluteRule } from "../agents/prompts.js";
 import { createAgentRunner } from "../agents/runner.js";
@@ -9,7 +9,18 @@ import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
 import type { GithubPort } from "../github/port.js";
 import { Store } from "../store/store.js";
-import { approveTarget, PipelineDriver, prBody, runDirOf } from "./driver.js";
+import {
+  approveTarget,
+  blockingFindings,
+  PipelineDriver,
+  prBody,
+  refutedFindings,
+  reviewNotes,
+  runDirOf,
+  verifyProblems,
+  type BlockingFinding,
+  type LensReview,
+} from "./driver.js";
 import { RunMachine } from "./transitions.js";
 
 const TRIAGE = (decision = "APPROVE", extra = "") =>
@@ -79,6 +90,7 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
 
   const comments: { issue: number; body: string }[] = [];
   const prs: { head: string; base: string; title: string; body: string }[] = [];
+  const edits: { number: number; body: string }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body }),
     findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
@@ -86,6 +98,7 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
       prs.push(pr);
       return 7;
     },
+    updatePullRequest: (number, body) => edits.push({ number, body }),
   };
   const events = new FactoryEvents();
   const seen: FactoryEvent[] = [];
@@ -103,7 +116,7 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
     events,
     watchMs: 50,
   });
-  return { root, store, project, driver, fake, comments, prs, seen };
+  return { root, store, project, driver, fake, comments, prs, edits, seen };
 }
 
 describe("PipelineDriver", () => {
@@ -227,18 +240,169 @@ describe("PipelineDriver", () => {
       expect(lastStart).toBeLessThan(firstEnd);
     });
 
-    it("waits for a human on a blocking finding, but minor ones never hold the run", async () => {
+    it("never holds the run for minor findings, and lists them in the PR description", async () => {
       const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
-      const blocking = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("CHANGES", "major") }], { config });
-      const run = blocking.driver.startRun(12);
-      expect(await blocking.driver.drive(run.id)).toMatchObject({
-        reason: "waiting at review gate: reviews: code CHANGES (1 blocking); verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is",
-      });
-      expect(blocking.store.listEvents(run.id).some((e) => e.to_state === "build" && e.from_state === "review")).toBe(false);
+      const { driver, fake, edits } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
+      const run = driver.startRun(12);
+      expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; capture and merge are not automated yet" });
+      expect(fake.calls().some((c) => c.role === "verifier")).toBe(false);
+      expect(edits).toHaveLength(1);
+      expect(edits[0]!.number).toBe(7);
+      expect(edits[0]!.body).toBe(
+        "## What\n- done\n\n## Review notes\nNot blocking: left for you to judge.\n\n**code**\n- minor: it says fixed (feature.txt:1)\n\nCloses #12\n",
+      );
+    });
 
-      const minor = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
-      const other = minor.driver.startRun(12);
-      expect(await minor.driver.drive(other.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; capture and merge are not automated yet" });
+    describe("verifier", () => {
+      const codeOnly = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
+      const confirmed = (id = "code-1") =>
+        `VERDICT: CONFIRMED\n\n## Summary\n- real\n\n## Findings\n\`\`\`json\n[{ "id": "${id}", "severity": "major", "file": "feature.txt", "line": 1, "claim": "it says fixed", "evidence": "read line 1" }]\n\`\`\`\n`;
+      const refuted = "VERDICT: NONE_CONFIRMED\n\n## Summary\n- not real\n\n## Findings\n```json\n[]\n```\n\n## Refuted\n- code-1: the check accepts exactly that\n";
+      /** A builder round after review that changes something, so it has a commit to hand over. */
+      const rework = (n: number): FakeStep => ({ ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "rework.txt": `${n}\n` } });
+
+      it("sends confirmed findings back to the builder, who gets them, and reviews the next round", async () => {
+        const { driver, store, fake, root } = setup(
+          [
+            { output: TRIAGE() },
+            buildStep("fixed"),
+            { role: "reviewer-code", output: review("CHANGES", "major") },
+            { role: "verifier", output: confirmed() },
+            rework(1),
+            { role: "reviewer-code", output: REVIEW_PASS },
+          ],
+          { config: codeOnly },
+        );
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; capture and merge are not automated yet" });
+        const moves = store.listEvents(run.id).map((e) => `${e.from_state ?? "-"}>${e.to_state}`);
+        expect(moves.slice(3)).toEqual(["build>gate", "gate>review", "review>build", "build>gate", "gate>review", "review>needs_human"]);
+        expect(store.getRun(run.id)).toMatchObject({ round: 2, review_rounds: 1, build_iterations: 0 });
+
+        const dir = runDirOf(root, run.id);
+        expect(parseVerdict("verify", readFileSync(join(dir, "round-1", "verify.md"), "utf8")).header.VERDICT).toBe("CONFIRMED");
+        expect(existsSync(join(dir, "round-2", "review-code.md"))).toBe(true);
+        const calls = fake.calls();
+        const verifier = calls.find((c) => c.role === "verifier")!;
+        expect(verifier.stdin).toContain("## Findings to verify");
+        expect(verifier.stdin).toContain('"id": "code-1"');
+        expect(verifier.stdin).toContain(join(dir, "round-1", "change.diff"));
+        const rebuilt = calls.filter((c) => c.role === "builder")[1]!;
+        expect(rebuilt.stdin).toContain("The reviewers of round 1 found problems, and a verifier confirmed these");
+        expect(rebuilt.stdin).toContain('"claim": "it says fixed"');
+        expect(rebuilt.stdin).not.toContain("quality gate failed");
+        // The second round's reviewer is asked about its earlier findings first.
+        expect(calls.filter((c) => c.role === "reviewer-code")[1]!.stdin).toContain("Your findings from round 1");
+      });
+
+      it("treats the review as clear when every blocking finding is refuted, and notes them in the PR", async () => {
+        const { driver, store, edits } = setup(
+          [{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("CHANGES", "major") }, { role: "verifier", output: refuted }],
+          { config: codeOnly },
+        );
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({
+          reason:
+            "waiting at review gate: reviews: code CHANGES (1 blocking); the verifier refuted all 1 blocking findings; capture and merge are not automated yet",
+        });
+        expect(store.listEvents(run.id).some((e) => e.from_state === "review" && e.to_state === "build")).toBe(false);
+        expect(edits.at(-1)!.body).toContain(
+          "**Refuted by the verifier**\n- code major: it says fixed (feature.txt:1)\n  Refuted: the check accepts exactly that",
+        );
+        expect(approveTarget(store.getRun(run.id)!)).toBe("capture");
+      });
+
+      it("gives the verifier no shell and only verify.md to write", async () => {
+        const { driver, root } = setup(
+          [{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("CHANGES", "major") }, { role: "verifier", output: refuted }],
+          { config: codeOnly },
+        );
+        const run = driver.startRun(12);
+        await driver.drive(run.id);
+
+        const dir = runDirOf(root, run.id);
+        const settings = JSON.parse(readFileSync(join(dir, "agent", "verifier.settings.json"), "utf8"));
+        expect(settings.permissions.deny).toContain("Bash");
+        expect(settings.permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(join(dir, "round-1", "verify.md"))})`]);
+      });
+
+      it("rejects a judgement that skips a finding, and escalates when the retry does too", async () => {
+        const skips = "VERDICT: NONE_CONFIRMED\n\n## Summary\n- fine\n\n## Findings\n```json\n[]\n```\n";
+        const { driver, fake } = setup(
+          [
+            { output: TRIAGE() },
+            buildStep("fixed"),
+            { role: "reviewer-code", output: review("CHANGES", "major") },
+            { role: "verifier", output: skips },
+            { role: "verifier", output: skips },
+          ],
+          { config: codeOnly },
+        );
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({
+          kind: "parked",
+          reason: "verifier output was rejected twice: not judged (confirm or refute each): code-1",
+        });
+        expect(fake.calls().at(-1)!.stdin).toContain("- not judged (confirm or refute each): code-1");
+      });
+
+      it("after a usage limit, verifies again without rerunning the reviewers", async () => {
+        const { driver, fake } = setup(
+          [
+            { output: TRIAGE() },
+            buildStep("fixed"),
+            { role: "reviewer-code", output: review("CHANGES", "major") },
+            { role: "verifier", stream: "rate_limited" },
+            { role: "verifier", output: refuted },
+          ],
+          { config: codeOnly },
+        );
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({ kind: "rate_limited" });
+        expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringContaining("the verifier refuted all 1 blocking findings") });
+        expect(fake.calls().filter((c) => c.role === "reviewer-code")).toHaveLength(1);
+      });
+
+      it("escalates when the verifier confirms the same findings two rounds in a row", async () => {
+        const { driver, store } = setup(
+          [
+            { output: TRIAGE() },
+            buildStep("fixed"),
+            { role: "reviewer-code", output: review("CHANGES", "major") },
+            { role: "verifier", output: confirmed() },
+            rework(1),
+            { role: "reviewer-code", output: review("CHANGES", "major") },
+            { role: "verifier", output: confirmed() },
+          ],
+          { config: codeOnly },
+        );
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({
+          kind: "parked",
+          reason: "stalled: the verifier confirmed the same findings in review rounds 1 and 2 (see round-1/verify.md and round-2/verify.md)",
+        });
+        expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "review", review_rounds: 1 });
+      });
+
+      it("escalates at the review round cap, naming the hard rules the change trips", async () => {
+        const config = `${codeOnly}loops:\n  max_review_rounds: 1\n`;
+        const touchInfra: FakeStep = { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "infra/main.tf": "x\n" } };
+        const { driver } = setup(
+          [{ output: TRIAGE() }, touchInfra, { role: "reviewer-code", output: review("CHANGES", "major") }, { role: "verifier", output: confirmed() }],
+          { config },
+        );
+        const run = driver.startRun(12);
+
+        expect(await driver.drive(run.id)).toMatchObject({
+          kind: "parked",
+          reason: "reviews still have confirmed findings after round 1: review round cap reached (1); hard rule: protected path (infra/**): infra/main.tf",
+        });
+      });
     });
 
     it("after a usage limit, only runs the lenses that have no review yet", async () => {
@@ -322,13 +486,6 @@ describe("PipelineDriver", () => {
       expect(fake.calls().filter((c) => c.role === "reviewer-code")).toHaveLength(1);
     });
 
-    it("shows hard-rule hits when a review asks for changes", async () => {
-      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
-      const touchInfra: FakeStep = { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "infra/main.tf": "x\n" } };
-      const { driver } = setup([{ output: TRIAGE() }, touchInfra, { role: "reviewer-code", output: review("CHANGES", "major") }], { config });
-      const run = driver.startRun(12);
-      expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringMatching(/approve it as is; hard rule: protected path \(infra\/\*\*\): infra\/main\.tf$/) });
-    });
   });
 
   it("runs each agent with its configured model and effort, upgraded when triage said HIGH", async () => {
@@ -494,10 +651,11 @@ describe("PipelineDriver", () => {
     });
 
     // A human grants another attempt: the next identical failure loops, the one after stalls again.
+    // Rounds keep counting, so the earlier rounds' reports stay as they were.
     new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "build", { comment: "look at check.js" });
     const again = await driver.drive(run.id);
 
-    expect(again.kind === "parked" && again.reason).toMatch(/^stalled: quality gate failed the same way in rounds 2 and 3 /);
+    expect(again.kind === "parked" && again.reason).toMatch(/^stalled: quality gate failed the same way in rounds 3 and 4 /);
     expect(fake.calls()).toHaveLength(5);
     expect(store.getRun(run.id)!.build_iterations).toBe(2);
   });
@@ -630,5 +788,80 @@ describe("prBody", () => {
   it("leaves out sections the builder did not write", () => {
     expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3)).toBe("## What\n- done\n\nCloses #3\n");
     expect(prBody("STATUS: READY\n", 3)).toBe("Closes #3\n");
+  });
+  it("adds the review notes before the closing line", () => {
+    expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3, false, "## Review notes\n- x\n")).toBe("## What\n- done\n\n## Review notes\n- x\n\nCloses #3\n");
+  });
+});
+
+describe("verifier helpers", () => {
+  const f = (id: string, severity: string, extra: object = {}) => ({ id, severity, claim: `claim ${id}`, evidence: "e", ...extra }) as Finding;
+  const review = (findings: Finding[]) => ({
+    header: { VERDICT: findings.some((x) => x.severity === "critical" || x.severity === "major") ? "CHANGES" : "PASS" },
+    body: "",
+    findings,
+  }) as ParsedVerdict<"review">;
+  const verify = (verdict: string, confirmed: Finding[], refuted: string[] = []) =>
+    ({
+      header: { VERDICT: verdict },
+      body: `## Summary\n- x\n\n## Findings\n\n## Refuted\n${refuted.map((r) => `- ${r}`).join("\n")}\n`,
+      findings: confirmed,
+    }) as ParsedVerdict<"verify">;
+
+  it("collects blocking findings, naming the lens when two lenses share an id", () => {
+    const reviews: LensReview[] = [
+      { lens: "code", verdict: review([f("x-1", "major"), f("code-2", "minor")]) },
+      { lens: "security", verdict: review([f("x-1", "critical"), f("security-1", "major")]) },
+    ];
+    expect(blockingFindings(reviews).map((b) => `${b.lens}:${b.finding.id}`)).toEqual(["code:code/x-1", "security:security/x-1", "security:security-1"]);
+  });
+
+  it("reads refuted lines with or without backticks", () => {
+    const body = "## Refuted\n- code-1: handled in a.ts:3\n* `security-2`: not reachable\nnot a line\n\n## Other\n- x: y\n";
+    expect(refutedFindings(body)).toEqual([
+      { id: "code-1", reason: "handled in a.ts:3" },
+      { id: "security-2", reason: "not reachable" },
+    ]);
+    expect(refutedFindings("## Summary\n- x\n")).toEqual([]);
+  });
+
+  it("wants every blocking finding judged exactly once, and only known ones", () => {
+    const blocking: BlockingFinding[] = [
+      { lens: "code", finding: f("code-1", "major") },
+      { lens: "code", finding: f("code-2", "critical") },
+    ];
+    expect(verifyProblems(verify("CONFIRMED", [f("code-1", "major")], ["code-2: fine"]), blocking)).toEqual([]);
+    // A finding of its own about an injection attempt is allowed.
+    expect(verifyProblems(verify("CONFIRMED", [f("verifier-1", "critical")], ["code-1: no", "code-2: no"]), blocking)).toEqual([]);
+    expect(verifyProblems(verify("CONFIRMED", [f("code-1", "major"), f("code-9", "major")], ["code-1: no"]), blocking)).toEqual([
+      "confirmed finding code-9 is not one of the findings to verify",
+      "judged more than once: code-1",
+      "not judged (confirm or refute each): code-2",
+    ]);
+    expect(verifyProblems(verify("NONE_CONFIRMED", [f("code-1", "minor")], ["code-2: no", "code-7: no"]), blocking)).toEqual([
+      "confirmed finding code-1 must be critical or major; refute it if it is only minor",
+      "refuted finding code-7 is not one of the findings to verify",
+    ]);
+  });
+
+  it("notes minor findings per lens and refuted findings with why, or nothing", () => {
+    const reviews: LensReview[] = [
+      { lens: "code", verdict: review([f("code-1", "major", { file: "a.ts", line: 3 }), f("code-2", "nit", { file: "b.ts" })]) },
+      { lens: "docs", verdict: review([]) },
+    ];
+    expect(reviewNotes(reviews, verify("NONE_CONFIRMED", [], ["code-1: a.ts:2 guards it"]))).toBe(
+      [
+        "## Review notes",
+        "Not blocking: left for you to judge.",
+        "",
+        "**code**",
+        "- nit: claim code-2 (b.ts)",
+        "",
+        "**Refuted by the verifier**",
+        "- code major: claim code-1 (a.ts:3)",
+        "  Refuted: a.ts:2 guards it",
+      ].join("\n"),
+    );
+    expect(reviewNotes([{ lens: "docs", verdict: review([]) }])).toBeUndefined();
   });
 });

@@ -1,7 +1,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { MIGRATIONS } from "./migrations.js";
 import { Store } from "./store.js";
 
 function setup() {
@@ -20,6 +22,35 @@ describe("Store", () => {
     const second = new Store(path);
     expect(second.listProjects().map((p) => p.name)).toEqual(["a"]);
     second.close();
+  });
+
+  it("numbers the round of existing runs after the folders they already have", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "factory-db-")), "factory.db");
+    const store = new Store(path);
+    const project = store.upsertProject({ name: "a", repo_path: "/a" });
+    const make = (state: Parameters<Store["writeState"]>[1], build_iterations: number, parked_from: string | null = null) => {
+      const run = store.createRun({ project_id: project.id, title: "t", issue_number: null });
+      store.writeState(run.id, state, { build_iterations, parked_from: parked_from as never });
+      return run.id;
+    };
+    const building = make("build", 2);
+    const gated = make("gate", 2);
+    const reviewing = make("review", 1);
+    const parkedInReview = make("needs_human", 1, "review");
+    const parkedInTriage = make("needs_human", 0, "triage");
+    store.close();
+    // Undo the round migration, as if this database was made before it.
+    const roundMigration = MIGRATIONS.findIndex((sql) => sql.includes("ADD COLUMN round")) + 1;
+    const db = new Database(path);
+    db.exec("ALTER TABLE runs DROP COLUMN round");
+    db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(roundMigration);
+    db.close();
+
+    const reopened = new Store(path);
+    const round = (id: string) => reopened.getRun(id)!.round;
+    // A run in build last gated in round build_iterations; one at or past the gate is in round build_iterations + 1.
+    expect([building, gated, reviewing, parkedInReview, parkedInTriage].map(round)).toEqual([2, 3, 2, 2, 0]);
+    reopened.close();
   });
 
   it("upserts projects by repo path", () => {

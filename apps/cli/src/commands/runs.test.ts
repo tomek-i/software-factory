@@ -45,7 +45,7 @@ function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
   store.close();
 
   const fake = fakeClaude(steps);
-  const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => undefined, createDraftPullRequest: () => 7 };
+  const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => undefined, createDraftPullRequest: () => 7, updatePullRequest: () => undefined };
   const printed: string[] = [];
   const queue = (...numbers: number[]) => {
     const s = new Store(join(root, ".factory", "factory.db"));

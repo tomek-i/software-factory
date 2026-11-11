@@ -50,7 +50,9 @@ function setup(configOverrides: object = {}) {
   const project = store.upsertProject({ name: "demo", repo_path: "/repo" });
   const run = store.createRun({ project_id: project.id, title: "t", issue_number: 1 });
   const machine = new RunMachine(store, config);
-  const at = (state: RunState, patch: StatePatch = {}) => store.writeState(run.id, state, patch);
+  // Like the machine, putting the run in the gate starts a new round.
+  const at = (state: RunState, patch: StatePatch = {}) =>
+    store.writeState(run.id, state, state === "gate" ? { round: store.getRun(run.id)!.round + 1, ...patch } : patch);
   const move = (to: RunState, evidence: Evidence = fakeEvidence()) =>
     machine.transition(run.id, to, { reason: "test", evidence });
   return { store, machine, run, at, move };
@@ -203,6 +205,22 @@ describe("RunMachine.transition", () => {
     expect(move("refine", revise).critic_rounds).toBe(1);
     at("critic");
     expect(() => move("refine", revise)).toThrow(/critic round cap/);
+  });
+
+  it("starts a new round each time the run enters the gate, and never resets it", () => {
+    const { store, machine, run, move } = setup({ loops: { max_build_iterations: 5 } });
+    const failed = fakeEvidence({ files: { checks: `GATE: FAIL
+COMMIT: ${HEAD}
+` } });
+    store.writeState(run.id, "build");
+    expect(move("gate").round).toBe(1);
+    expect(move("build", failed).round).toBe(1);
+    expect(move("gate").round).toBe(2);
+    move("needs_human");
+    // A human sending the run back to the gate starts a round too; a loop reset leaves rounds alone.
+    expect(machine.resume(run.id, "gate", { comment: "check again", resetLoops: true })).toMatchObject({ round: 3, build_iterations: 0 });
+    move("needs_human");
+    expect(machine.resume(run.id, "build", { comment: "fix it" }).round).toBe(3);
   });
 
   it("does not let callers reset loop counters through the patch", () => {
@@ -376,8 +394,10 @@ describe("stall detection", () => {
       { id: "R2-2", severity: "major", file: "src/a.ts", line: 9, claim: "off by one", evidence: "moved" },
       { id: "R2-3", severity: "nit", file: "src/c.ts", claim: "naming", evidence: "x" },
     ];
+    at("gate");
     at("review");
     move("build", confirmed(round1));
+    at("gate");
     at("review");
     const err = stallOf(() => move("build", confirmed(round2)));
 

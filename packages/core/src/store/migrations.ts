@@ -109,4 +109,14 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE agent_runs ADD COLUMN effort TEXT;
   `,
+  // round: how many times the run has entered the quality gate. It names the round-N folder of
+  // checks, reviews and verification, so a run sent back to build never overwrites an earlier round.
+  // Existing runs keep their folders: round N was build_iterations + 1 once the gate was reached.
+  `
+  ALTER TABLE runs ADD COLUMN round INTEGER NOT NULL DEFAULT 0;
+  UPDATE runs SET round = build_iterations + 1
+    WHERE state IN ('gate', 'review', 'capture', 'pr', 'merge', 'learn')
+       OR (state = 'needs_human' AND parked_from IN ('gate', 'review', 'capture', 'pr', 'merge', 'learn'));
+  UPDATE runs SET round = build_iterations WHERE round = 0;
+  `,
 ];

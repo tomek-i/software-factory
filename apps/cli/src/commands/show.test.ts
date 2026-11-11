@@ -73,7 +73,7 @@ describe("factory show <run>", () => {
     );
   });
 
-  it("shows the latest round's reviews with their blocking findings", () => {
+  it("shows the latest round's reviews with their blocking findings, and the verifier's judgement", () => {
     const findings = (severity: string) =>
       `## Findings\n\`\`\`json\n[{ "id": "x-1", "severity": "${severity}", "file": "src/a.ts", "line": 3, "claim": "breaks on empty input", "evidence": "a(\\"\\")" }]\n\`\`\`\n`;
     const { dir } = setup({
@@ -81,6 +81,7 @@ describe("factory show <run>", () => {
       "round-1/review-code.md": `VERDICT: CHANGES\n\n## Summary\n- one real bug\n\n${findings("major")}`,
       "round-1/review-docs.md": `VERDICT: PASS\n\n## Summary\n- docs fine\n\n${findings("nit")}`,
       "round-1/review-security.md": "VERDICT: MAYBE\n",
+      "round-1/verify.md": `VERDICT: CONFIRMED\n\n## Summary\n- the bug is real\n\n${findings("major")}\n## Refuted\n- y-1: not reachable\n`,
     });
 
     const text = runShow(dir, "16");
@@ -88,6 +89,7 @@ describe("factory show <run>", () => {
     expect(text).toContain("round-1/review-code.md (VERDICT: CHANGES)\n  - one real bug\n  major: breaks on empty input (src/a.ts:3)");
     expect(text).toContain("round-1/review-docs.md (VERDICT: PASS)\n  - docs fine\n\n");
     expect(text).toMatch(/round-1\/review-security\.md \(could not be parsed: .+\)/);
+    expect(text).toContain("round-1/verify.md (VERDICT: CONFIRMED)\n  - the bug is real\n  major: breaks on empty input (src/a.ts:3)\n  refuted: 1\n");
   });
 
   it("resolves the run like the other commands", () => {

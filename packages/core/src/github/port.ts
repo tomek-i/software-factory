@@ -9,6 +9,8 @@ export interface GithubPort {
   findPullRequest(branch: string): number | undefined;
   /** Open a draft PR and return its number. */
   createDraftPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
+  /** Replace a PR's description. */
+  updatePullRequest(number: number, body: string): void;
 }
 
 /** Hidden marker on every comment the factory posts, so later stages can find (and not duplicate) them. */
@@ -44,6 +46,9 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       const match = /\/pull\/(\d+)/.exec(out);
       if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       return Number(match[1]);
+    },
+    updatePullRequest(number, body) {
+      gh(["pr", "edit", String(number), "-R", repo, "--body", body]);
     },
   };
 }

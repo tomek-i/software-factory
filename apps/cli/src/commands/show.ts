@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
-import { runDirOf, type CommandRunner, type Run } from "@factory/core";
+import { refutedFindings, runDirOf, type CommandRunner, type Run } from "@factory/core";
 import { isBlocking, parseVerdict, VerdictParseError, type VerdictKind } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 import { findRun } from "./runs.js";
@@ -95,17 +95,22 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
     }
   }
 
-  // The reviews of the latest gated round, each lens with its verdict and the findings that block.
+  // The reviews of the latest gated round, each lens with its verdict and the findings that block,
+  // then the verifier's judgement of those: the findings it confirmed and how many it refuted.
   const round = checks?.split("/")[0];
-  for (const path of files.filter((f) => round && f.startsWith(`${round}/review-`) && f.endsWith(".md"))) {
+  const judged = files.filter((f) => round && ((f.startsWith(`${round}/review-`) && f.endsWith(".md")) || f === `${round}/verify.md`));
+  for (const path of judged) {
     lines.push("");
     try {
-      const review = parseVerdict("review", readFileSync(join(runDir, path), "utf8"));
-      lines.push(`${path} (VERDICT: ${review.header.VERDICT})`);
-      lines.push(...(review.summary.length ? review.summary.map((s) => `  - ${s}`) : ["  (no summary)"]));
-      for (const f of review.findings.filter(isBlocking)) {
+      const kind = path.endsWith("/verify.md") ? "verify" : "review";
+      const verdict = parseVerdict(kind, readFileSync(join(runDir, path), "utf8"));
+      lines.push(`${path} (VERDICT: ${verdict.header.VERDICT})`);
+      lines.push(...(verdict.summary.length ? verdict.summary.map((s) => `  - ${s}`) : ["  (no summary)"]));
+      for (const f of verdict.findings.filter(isBlocking)) {
         lines.push(`  ${f.severity}: ${f.claim}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`);
       }
+      const refuted = kind === "verify" ? refutedFindings(verdict.body).length : 0;
+      if (refuted) lines.push(`  refuted: ${refuted}`);
     } catch (err) {
       if (!(err instanceof VerdictParseError)) throw err;
       lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);

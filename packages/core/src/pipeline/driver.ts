@@ -8,6 +8,7 @@ import {
   REVIEW_LENSES,
   resolveModel,
   type AgentRole,
+  type Finding,
   type FactoryConfig,
   type ParsedVerdict,
   type ReviewLens,
@@ -64,6 +65,96 @@ function readReview(roundDir: string, lens: ReviewLens): ParsedVerdict<"review">
   } catch {
     return undefined;
   }
+}
+
+/** A verdict file, if it exists, parses, and passes `validate`. */
+function readValid<K extends VerdictKind>(kind: K, path: string, validate: (verdict: ParsedVerdict<K>) => string[]): ParsedVerdict<K> | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const verdict = parseVerdict(kind, readFileSync(path, "utf8"));
+    return validate(verdict).length === 0 ? verdict : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface LensReview {
+  lens: ReviewLens;
+  verdict: ParsedVerdict<"review">;
+}
+
+/** A critical or major finding as the verifier sees it, with an id unique across all lenses. */
+export interface BlockingFinding {
+  lens: ReviewLens;
+  finding: Finding;
+}
+
+/**
+ * Every lens's blocking findings. Reviewers are told to start ids with their lens, but if two lenses
+ * still use the same id, both get the lens in front so the verifier can name each one.
+ */
+export function blockingFindings(reviews: LensReview[]): BlockingFinding[] {
+  const all = reviews.flatMap(({ lens, verdict }) => verdict.findings.filter(isBlocking).map((finding) => ({ lens, finding })));
+  const count = new Map<string, number>();
+  for (const { finding } of all) count.set(finding.id, (count.get(finding.id) ?? 0) + 1);
+  return all.map(({ lens, finding }) => (count.get(finding.id)! > 1 ? { lens, finding: { ...finding, id: `${lens}/${finding.id}` } } : { lens, finding }));
+}
+
+/** The verifier's `## Refuted` lines: `- <id>: <why>`. */
+export function refutedFindings(body: string): { id: string; reason: string }[] {
+  const text = section(body, "refuted") ?? "";
+  return text.split(/\r?\n/).flatMap((line) => {
+    const match = /^\s*[-*]\s+`?([^`:\s]+)`?\s*:\s*(.+)$/.exec(line);
+    return match ? [{ id: match[1]!, reason: match[2]!.trim() }] : [];
+  });
+}
+
+/**
+ * The verifier must judge every blocking finding exactly once: confirmed (in its findings) or
+ * refuted. It may confirm one finding of its own, `verifier-*`, when something tried to steer it.
+ */
+export function verifyProblems(verdict: ParsedVerdict<"verify">, blocking: BlockingFinding[]): string[] {
+  const known = new Set(blocking.map((b) => b.finding.id));
+  const confirmed = verdict.findings.map((f) => f.id);
+  const refuted = refutedFindings(verdict.body).map((r) => r.id);
+  const problems: string[] = [];
+  for (const f of verdict.findings) {
+    if (!isBlocking(f)) problems.push(`confirmed finding ${f.id} must be critical or major; refute it if it is only minor`);
+  }
+  for (const id of confirmed) if (!known.has(id) && !id.startsWith("verifier-")) problems.push(`confirmed finding ${id} is not one of the findings to verify`);
+  for (const id of refuted) if (!known.has(id)) problems.push(`refuted finding ${id} is not one of the findings to verify`);
+  const judged = [...confirmed, ...refuted];
+  const twice = [...new Set(judged.filter((id, i) => judged.indexOf(id) !== i))];
+  if (twice.length) problems.push(`judged more than once: ${twice.join(", ")}`);
+  const missing = [...known].filter((id) => !judged.includes(id));
+  if (missing.length) problems.push(`not judged (confirm or refute each): ${missing.join(", ")}`);
+  return problems;
+}
+
+/** Where a finding points, e.g. ` (src/a.ts:3)`. */
+function findingPlace(f: Finding): string {
+  return f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : "";
+}
+
+/**
+ * The PR description's review notes: minor findings and nits per lens, and the blocking findings
+ * the verifier refuted, with why. Undefined when there is nothing to note.
+ */
+export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"verify">): string | undefined {
+  const parts: string[] = [];
+  for (const { lens, verdict } of reviews) {
+    const minor = verdict.findings.filter((f) => !isBlocking(f));
+    if (minor.length) parts.push(`**${lens}**\n${minor.map((f) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`).join("\n")}`);
+  }
+  if (verified) {
+    const byId = new Map(blockingFindings(reviews).map((b) => [b.finding.id, b]));
+    const refuted = refutedFindings(verified.body).map(({ id, reason }) => {
+      const b = byId.get(id);
+      return b ? `- ${b.lens} ${b.finding.severity}: ${b.finding.claim}${findingPlace(b.finding)}\n  Refuted: ${reason}` : `- ${id}: ${reason}`;
+    });
+    if (refuted.length) parts.push(`**Refuted by the verifier**\n${refuted.join("\n")}`);
+  }
+  return parts.length ? `## Review notes\nNot blocking: left for you to judge.\n\n${parts.join("\n\n")}` : undefined;
 }
 
 export function runDirOf(root: string, runId: string): string {
@@ -155,7 +246,7 @@ function section(body: string, name: string): string | undefined {
  * The draft PR description from the builder's hand-over: a short brief for the human reviewer first,
  * with the implementation notes (useful to reviewing agents, noisy for people) collapsed below it.
  */
-export function prBody(buildBody: string, issueNumber: number, unsafe = false): string {
+export function prBody(buildBody: string, issueNumber: number, unsafe = false, notes?: string): string {
   const parts: string[] = [];
   if (unsafe) {
     parts.push("> [!WARNING]\n> Built with `--unsafe`: hard rules (protected paths, new dependencies, secret files, deletions) were lifted for this run.");
@@ -167,6 +258,7 @@ export function prBody(buildBody: string, issueNumber: number, unsafe = false): 
   if (testing) parts.push(`## How it was tested\n${testing}`);
   // Blank lines around the content so GitHub renders the markdown inside <details>.
   if (details) parts.push(`<details><summary>Implementation details</summary>\n\n${details}\n\n</details>`);
+  if (notes) parts.push(notes.trim());
   parts.push(`Closes #${issueNumber}`);
   return `${parts.join("\n\n")}\n`;
 }
@@ -416,7 +508,7 @@ export class PipelineDriver {
         prompt,
       },
       validate: (verdict) =>
-        verdict.header.STATUS === "READY" ? this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.build_iterations + 1}`)) : [],
+        verdict.header.STATUS === "READY" ? this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)) : [],
     });
     if (turn.status !== "ok") return this.agentTrouble(run, "builder", turn);
 
@@ -425,7 +517,7 @@ export class PipelineDriver {
       return this.escalate(run, `builder is blocked: ${blocker}`);
     }
     const pr = this.publish(worktree, issue, turn.verdict.body, run.unsafe);
-    this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.build_iterations + 1, git), {
+    this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.round + 1, git), {
       pr_number: pr,
     });
     return undefined;
@@ -451,10 +543,12 @@ export class PipelineDriver {
   private async gate(run: Run): Promise<StepResult> {
     const dir = this.runDir(run);
     const worktree = this.worktreeOf(run);
-    const round = run.build_iterations + 1;
-    // Reviews in this round folder were for an earlier commit (a human sent the run back to build):
-    // they must not be reused for whatever this gate passes.
+    const round = run.round;
+    // Every entry into the gate starts a new round, so this folder should have no reviews yet. Should
+    // one be left over anyway (runs from before the round counter), it is for another commit and must
+    // not be reused for whatever this gate passes.
     for (const lens of REVIEW_LENSES) rmSync(reviewPath(join(dir, `round-${round}`), lens), { force: true });
+    rmSync(join(dir, `round-${round}`, "verify.md"), { force: true });
     const result = await runQualityGate({
       runId: run.id,
       worktreePath: worktree.path,
@@ -480,17 +574,25 @@ export class PipelineDriver {
       this.move(run, "review", `quality gate passed (round ${round})`, { round, commit: result.head }, evidence);
       return undefined;
     }
+    return this.loopBack(run, `quality gate failed (round ${round})`, { round }, evidence, "quality gate", `quality gate still failing after round ${round}`);
+  }
+
+  /**
+   * Send the run back to the builder along a loop edge. A stall or the loop's cap stops it there
+   * instead and asks a human; `notes` are added to that escalation.
+   */
+  private loopBack(run: Run, reason: string, data: unknown, evidence: Evidence, loop: string, capReason: string, notes: string[] = []): StepResult {
     try {
-      this.move(run, "build", `quality gate failed (round ${round})`, { round }, evidence);
+      this.move(run, "build", reason, data, evidence);
     } catch (err) {
       // Only a stall or the loop cap is an expected stop here; anything else is reported as the error it is.
-      if (!(err instanceof TransitionError) || this.load(run.id).state !== "gate") throw err;
+      if (!(err instanceof TransitionError) || this.load(run.id).state !== run.state) throw err;
       if (err.stall) {
         const { fingerprint, rounds, files } = err.stall;
-        return this.escalate(run, err.stall.reason, { stalled: "quality gate", fingerprint, rounds, files });
+        return this.escalate(run, [err.stall.reason, ...notes].join("; "), { stalled: loop, fingerprint, rounds, files });
       }
       if (!err.problems.some((p) => p.includes("cap reached"))) throw err;
-      return this.escalate(run, `quality gate still failing after round ${round}: ${err.problems.join("; ")}`);
+      return this.escalate(run, [`${capReason}: ${err.problems.join("; ")}`, ...notes].join("; "));
     }
     return undefined;
   }
@@ -505,7 +607,7 @@ export class PipelineDriver {
     const dir = this.runDir(run);
     const issue = this.issueOf(run);
     const worktree = this.worktreeOf(run);
-    const round = run.build_iterations + 1;
+    const round = run.round;
     const roundDir = join(dir, `round-${round}`);
     const git = gitEvidence(worktree, this.defaultBranch, this.run);
     const commit = parseVerdict("checks", readFileSync(join(roundDir, "checks.md"), "utf8")).header.COMMIT;
@@ -521,15 +623,13 @@ export class PipelineDriver {
 
     const lenses = this.reviewLenses(run);
     const pending = lenses.filter((lens) => !readReview(roundDir, lens));
-    // The engine writes the change for the reviewers, who get no shell (see permissionProfile).
+    // The engine writes the change for the reviewers and the verifier, who get no shell (see permissionProfile).
     const changeFile = join(roundDir, "change.diff");
-    if (pending.length) {
-      try {
-        mkdirSync(roundDir, { recursive: true });
-        writeFileSync(changeFile, changeReport(worktree.path, base, commit, this.run));
-      } catch (err) {
-        return this.escalate(run, `could not prepare the change for the reviewers: ${(err as Error).message}`);
-      }
+    try {
+      mkdirSync(roundDir, { recursive: true });
+      writeFileSync(changeFile, changeReport(worktree.path, base, commit, this.run));
+    } catch (err) {
+      return this.escalate(run, `could not prepare the change for the reviewers: ${(err as Error).message}`);
     }
     const turns = await Promise.all(pending.map((lens) => this.reviewTurn(run, issue, worktree, lens, round, base, commit, changeFile)));
     // A usage limit stops the run where it is; the reviews already written are kept for next time.
@@ -562,19 +662,103 @@ export class PipelineDriver {
     const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
     const held = run.unsafe ? [] : hits.map((h) => `hard rule: ${h}`);
 
+    let verified: ParsedVerdict<"verify"> | undefined;
+    const outcome = [summary];
     if (reviews.some(({ verdict }) => verdict.header.VERDICT === "CHANGES")) {
-      // Whoever decides here may approve as is, so they must see the hard rules too.
-      return this.waitForHuman(run, "review", [
-        summary,
-        "verifying findings is not automated yet: send it back with `factory resume --to build`, or approve it as is",
-        ...held,
-        ...lifted,
-      ]);
+      const blocking = blockingFindings(reviews);
+      const verifyFile = join(roundDir, "verify.md");
+      const validate = (verdict: ParsedVerdict<"verify">) => verifyProblems(verdict, blocking);
+      // A valid judgement from an earlier attempt at this round (e.g. before a usage limit) stands.
+      verified = readValid("verify", verifyFile, validate);
+      if (!verified) {
+        const turn = await this.verifyTurn(run, issue, worktree, blocking, { outputFile: verifyFile, validate, base, commit, changeFile });
+        if (turn.status !== "ok") return this.agentTrouble(run, "verifier", turn);
+        verified = turn.verdict;
+      }
+      if (verified.header.VERDICT === "CONFIRMED") {
+        const confirmed = `the verifier confirmed ${verified.findings.length} of ${blocking.length} blocking findings`;
+        this.info(run, confirmed);
+        // Whoever is asked to decide (a stall or the cap) may approve as is, so they must see the hard rules too.
+        return this.loopBack(
+          run,
+          `${confirmed} (round ${round})`,
+          { round },
+          runEvidence(dir, round, git),
+          "reviews",
+          `reviews still have confirmed findings after round ${round}`,
+          [...held, ...lifted],
+        );
+      }
+      outcome.push(`the verifier refuted all ${blocking.length} blocking findings`);
+      this.info(run, outcome.at(-1)!);
     }
+    this.publishReviewNotes(run, reviews, verified);
     const gate = resolveGate({ mode: this.deps.config.gates.review, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
     // Capture and merge are not automated yet, so even a passing review gate hands over to a human.
     const reasons = gate.outcome === "wait_human" ? gate.reasons : ["capture and merge are not automated yet"];
-    return this.waitForHuman(run, "review", [summary, ...reasons, ...lifted]);
+    return this.waitForHuman(run, "review", [...outcome, ...reasons, ...lifted]);
+  }
+
+  /** The verifier checks this round's blocking findings against the code. */
+  private verifyTurn(
+    run: Run,
+    issue: Issue,
+    worktree: Worktree,
+    blocking: BlockingFinding[],
+    turn: { outputFile: string; validate: (verdict: ParsedVerdict<"verify">) => string[]; base: string; commit: string; changeFile: string },
+  ): Promise<TurnResult<"verify">> {
+    const dir = this.runDir(run);
+    const { outputFile, validate, base, commit, changeFile } = turn;
+    const files = writeRoleFiles(dir, "verifier", rolePrompt("verifier", this.deps.read), permissionProfile("verifier", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
+    const findings = blocking.map(({ lens, finding }) => ({ lens, ...finding }));
+    return runTurn({
+      run: this.deps.runAgent,
+      kind: "verify",
+      outputFile,
+      validate,
+      agent: {
+        ...this.agentBase(run, "verifier", worktree.path),
+        ...files,
+        addDirs: [dir],
+        prompt: renderTask({
+          role: "verifier",
+          runId: run.id,
+          runDir: dir,
+          workDir: worktree.path,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          lessons: this.lessons(),
+          branch: worktree.branch,
+          defaultBranch: this.defaultBranch,
+          sections: [
+            ...this.triageScope(dir),
+            { title: "Findings to verify", body: ["```json", JSON.stringify(findings, null, 2), "```"].join("\n") },
+          ],
+          instructions: [
+            `Verify each of the ${blocking.length} findings above against the change on branch \`${worktree.branch}\`.`,
+            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit under review: \`${commit}\`.`,
+            `The commits and the full diff are in \`${changeFile}\`. Read it, then the code each finding points at, then write the output file.`,
+          ].join("\n"),
+        }),
+      },
+    });
+  }
+
+  /**
+   * Rewrite the PR description with what the reviews leave for the human: minor findings and nits,
+   * and the blocking findings the verifier refuted. Built from build.md each time, so it never stacks.
+   */
+  private publishReviewNotes(run: Run, reviews: LensReview[], verified: ParsedVerdict<"verify"> | undefined): void {
+    if (run.pr_number === null) return;
+    try {
+      const build = parseVerdict("build", readFileSync(join(this.runDir(run), "build.md"), "utf8"));
+      const notes = reviewNotes(reviews, verified);
+      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, notes));
+    } catch (err) {
+      // The notes are a convenience; the review files hold the same and `factory show` lists them.
+      this.info(run, `could not add the review notes to PR #${run.pr_number}: ${(err as Error).message}`);
+    }
   }
 
   /** `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. */
@@ -723,13 +907,30 @@ export class PipelineDriver {
     };
   }
 
-  /** What the builder's resumed session is told: the failed gate report and/or the human's instruction. */
+  /**
+   * What the builder's resumed session is told: why the run came back (the failed gate's report or
+   * the findings the verifier confirmed) and/or the human's instruction.
+   */
   private builderFollowUp(run: Run, outputFile: string): string {
     const parts: string[] = [];
-    const checks = join(this.runDir(run), `round-${run.build_iterations}`, "checks.md");
-    if (run.build_iterations > 0 && existsSync(checks)) {
-      parts.push(`The quality gate failed in round ${run.build_iterations}. Its report:`, "", readFileSync(checks, "utf8").trim(), "");
+    const roundDir = join(this.runDir(run), `round-${run.round}`);
+    const back = this.deps.store.listEvents(run.id).filter((e) => e.to_state === "build").at(-1)?.from_state;
+    const checks = join(roundDir, "checks.md");
+    const verify = join(roundDir, "verify.md");
+    if (back === "gate" && existsSync(checks)) {
+      parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(checks, "utf8").trim(), "");
       parts.push("Fix the cause, run the checks yourself, commit and push, then write the output file again.");
+    } else if (back === "review" && existsSync(verify)) {
+      const { findings } = parseVerdict("verify", readFileSync(verify, "utf8"));
+      parts.push(
+        `The reviewers of round ${run.round} found problems, and a verifier confirmed these against the code:`,
+        "",
+        "```json",
+        JSON.stringify(findings, null, 2),
+        "```",
+        "",
+        "Fix each one (with a test where it fits), run the checks yourself, commit and push, then write the output file again.",
+      );
     }
     // Only decisions made since the builder last ran were meant for it (not, say, the triage approval).
     const lastBuild = this.deps.store.listAgentRuns(run.id).filter((a) => a.role === "builder").at(-1)?.started_at ?? "";
