@@ -124,6 +124,23 @@ function section(body: string, name: string): string | undefined {
 }
 
 /**
+ * The draft PR description from the builder's hand-over: a short brief for the human reviewer first,
+ * with the implementation notes (useful to reviewing agents, noisy for people) collapsed below it.
+ */
+export function prBody(buildBody: string, issueNumber: number): string {
+  const parts: string[] = [];
+  const summary = section(buildBody, "summary");
+  const testing = section(buildBody, "testing");
+  const details = section(buildBody, "details");
+  if (summary) parts.push(`## What\n${summary}`);
+  if (testing) parts.push(`## How it was tested\n${testing}`);
+  // Blank lines around the content so GitHub renders the markdown inside <details>.
+  if (details) parts.push(`<details><summary>Implementation details</summary>\n\n${details}\n\n</details>`);
+  parts.push(`Closes #${issueNumber}`);
+  return `${parts.join("\n\n")}\n`;
+}
+
+/**
  * Moves runs through triage -> build -> quality gate, one stage at a time, until a run is parked,
  * finished, rate limited, or reaches a stage that is not automated yet. Every state change goes
  * through RunMachine; the driver only gathers evidence and decides which edge to try.
@@ -390,12 +407,11 @@ export class PipelineDriver {
     if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
     const existing = this.deps.github.findPullRequest(worktree.branch);
     if (existing !== undefined) return existing;
-    const summary = section(buildBody, "summary") ?? "";
     return this.deps.github.createDraftPullRequest({
       head: worktree.branch,
       base: this.defaultBranch,
       title: issue.title,
-      body: `${summary}\n\nCloses #${issue.number}\n`.trimStart(),
+      body: prBody(buildBody, issue.number),
     });
   }
 
