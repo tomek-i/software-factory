@@ -13,3 +13,6 @@ export * from "./agents/stream.js";
 export * from "./agents/runner.js";
 export * from "./util/process.js";
 export * from "./git/worktrees.js";
+export * from "./config/trusted.js";
+export * from "./agents/prompts.js";
+export * from "./agents/turn.js";
