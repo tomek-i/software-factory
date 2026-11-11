@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { findRepoRoot, Store, type GithubPort } from "@factory/core";
 import { fakeClaude, git, repoWithRemote, type FakeStep } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
-import { runApprove, runCancel, runLogs, runReject, runRun, runStatus } from "./runs.js";
+import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./runs.js";
 
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- fine\n";
 const BUILD: FakeStep = {
@@ -12,7 +12,6 @@ const BUILD: FakeStep = {
   exec: [
     ["git", "add", "-A"],
     ["git", "commit", "-qm", "feat: add feature"],
-    ["git", "push", "-q", "-u", "origin", "HEAD"],
   ],
   output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n",
 };
@@ -36,7 +35,7 @@ function setup(steps: FakeStep[], gates = "triage: auto") {
   store.close();
 
   const fake = fakeClaude(steps);
-  const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => 7 };
+  const github: GithubPort = { commentOnIssue: () => undefined, findPullRequest: () => undefined, createDraftPullRequest: () => 7 };
   const printed: string[] = [];
   const queue = () => {
     const s = new Store(join(root, ".factory", "factory.db"));
@@ -113,6 +112,30 @@ describe("approve / reject / cancel", () => {
     expect(git(dir, "worktree", "list")).toContain(".worktrees");
     expect(() => runCancel(dir, "#12", {})).toThrow(/already cancelled/);
     expect(runStatus(dir)).toContain("No active runs");
+  });
+
+  it("resumes an escalated run to a stage it may go back to", async () => {
+    const blocked = { output: "STATUS: BLOCKED\nCOMMIT: {{HEAD}}\n\n## Blocker\nPricing decision needed.\n" };
+    const { run, queue, dir } = setup([{ output: TRIAGE }, blocked]);
+    queue();
+    expect(await run()).toMatch(/needs you: builder is blocked[\s\S]*factory resume/);
+
+    expect(() => runApprove(dir, "#12", {})).toThrow(/not waiting at a gate/);
+    expect(() => runResume(dir, "#12", { to: "merge", message: "ship" })).toThrow(/can resume to: .*build/);
+    expect(runResume(dir, "#12", { to: "build", message: "use the flat price", resetLoops: true })).toBe(
+      "Resumed " + runStatus(dir).split("\n")[1]!.split(/\s+/)[0] + " to build with a fresh loop budget.\nContinue with `factory run 12`.",
+    );
+    expect(runStatus(dir)).toMatch(/\bbuild\b/);
+  });
+
+  it("triages again when the issue was waiting for its author", async () => {
+    const needsInfo = { output: TRIAGE.replace("APPROVE", "NEEDS_INFO") + "\n## Questions\n- Which format?\n" };
+    const { run, queue, printed } = setup([needsInfo, { output: TRIAGE }], "triage: human");
+    queue();
+    expect(await run()).toMatch(/waiting for answers on issue #12/);
+
+    expect(await run()).toMatch(/waiting at the triage gate/);
+    expect(printed).toContain("-> triage: triage again with the current issue text");
   });
 
   it("explains unknown run references", () => {

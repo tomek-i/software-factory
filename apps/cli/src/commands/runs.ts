@@ -10,6 +10,7 @@ import {
   loadTrustedConfig,
   PipelineDriver,
   RunMachine,
+  resumeTargets,
   trustedReader,
   type CommandRunner,
   type DriveOutcome,
@@ -19,7 +20,7 @@ import {
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal } from "@factory/shared";
+import { isTerminal, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 
 export interface RunDeps {
@@ -78,7 +79,10 @@ function describeOutcome(outcome: DriveOutcome, run: Run, issue: number): string
             `Run ${run.id} is waiting at the ${run.waiting_gate} gate: ${outcome.reason}`,
             `Approve with \`factory approve ${run.id}\`, or reject with \`factory reject ${run.id} -m "<why>"\`.`,
           ].join("\n")
-        : `Run ${run.id} needs you: ${outcome.reason}\nSee \`factory logs ${run.id}\`; stop it with \`factory cancel ${run.id}\`.`;
+        : [
+            `Run ${run.id} needs you: ${outcome.reason}`,
+            `See \`factory logs ${run.id}\`. Send it on with \`factory resume ${run.id} --to <stage> -m "<why>"\`, or stop it with \`factory cancel ${run.id}\`.`,
+          ].join("\n");
     case "finished":
       return `Run ${run.id} finished: ${outcome.state}.`;
     case "rate_limited":
@@ -121,13 +125,23 @@ export async function runRun(cwd: string, value: string, options: { unsafe?: boo
         run: deps.run,
       });
 
-      const run = driver.startRun(number, { unsafe: options.unsafe });
+      if (config.checks.length === 0) {
+        print("Warning: no checks are configured in .factory/config.yaml on the default branch; the quality gate only scans for secrets.");
+      }
+      let run = driver.startRun(number, { unsafe: options.unsafe });
       if (options.unsafe && !run.unsafe) print(`--unsafe ignored: run ${run.id} already exists without it.`);
+      // Running an issue that was waiting for its author means "they answered": triage it again.
+      if (run.state === "needs_info") run = driver.retriage(run.id);
       print(`Run ${run.id} (${run.state}) for #${number} ${issue.title}`);
 
-      // Ctrl+C: stop the agent and give the lease back so the run can be continued right away.
+      // Ctrl+C: stop this process's agent and give the lease back so the run can be continued
+      // right away. Only rows still running are ours: this process holds the run's lease.
       const onInterrupt = () => {
-        for (const agent of store.listAgentRuns(run.id)) if (agent.pid) killTree(agent.pid);
+        for (const agent of store.listAgentRuns(run.id)) {
+          if (agent.status !== "running") continue;
+          if (agent.pid) killTree(agent.pid);
+          store.finishAgentRun(agent.id, { status: "cancelled" });
+        }
         store.releaseLease(run.id, owner);
         process.exit(130);
       };
@@ -219,7 +233,8 @@ export async function runLogs(
           offsets.set(agent.id, end);
         }
         const current = store.getRun(run.id)!;
-        const busy = current.lease_owner !== null || agents.some((a) => a.status === "running");
+        // A live lease means a worker is on it; a stale agent row from a crashed worker does not.
+        const busy = current.lease_expires_at !== null && current.lease_expires_at > new Date().toISOString();
         if (!busy && (isTerminal(current.state) || current.state === "needs_human" || current.state === "needs_info")) {
           return `Run ${run.id} is ${current.state}.`;
         }
@@ -248,6 +263,38 @@ export function runApprove(cwd: string, ref: string, options: { message?: string
           ? "Reviews are not automated yet: review the draft PR, then mark it ready and merge it yourself."
           : `Continue with \`factory run ${target.issue_number}\`.`;
       return `Approved the ${gate} gate of ${target.id}; it moves to ${to}.\n${next}`;
+    },
+    run,
+  );
+}
+
+/**
+ * `factory resume <run> --to <stage> -m <why>`: send a run parked for a human (an escalation such
+ * as a failed agent or the build cap) back to an earlier stage or one step onward.
+ */
+export function runResume(
+  cwd: string,
+  ref: string,
+  options: { to: string; message: string; resetLoops?: boolean },
+  run?: CommandRunner,
+): string {
+  return withProject(
+    cwd,
+    ({ store, project, config }) => {
+      if (!options.message?.trim()) throw new CliError("Say why with -m.");
+      const target = findRun(store, project, ref);
+      if (target.state !== "needs_human") throw new CliError(`Run ${target.id} is not waiting for you (it is ${target.state}).`);
+      const allowed = resumeTargets(target);
+      if (!allowed.includes(options.to as RunState)) {
+        throw new CliError(`Run ${target.id} can resume to: ${allowed.join(", ")}.`);
+      }
+      new RunMachine(store, config).resume(target.id, options.to as RunState, {
+        comment: options.message,
+        resetLoops: options.resetLoops,
+      });
+      const loops = options.resetLoops ? " with a fresh loop budget" : "";
+      const next = isTerminal(options.to as RunState) ? "" : `\nContinue with \`factory run ${target.issue_number}\`.`;
+      return `Resumed ${target.id} to ${options.to}${loops}.${next}`;
     },
     run,
   );

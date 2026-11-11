@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
-import { runApprove, runCancel, runLogs, runReject, runRun, runStatus } from "./commands/runs.js";
+import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 
 export function buildProgram(): Command {
   const program = new Command()
@@ -90,6 +90,17 @@ export function buildProgram(): Command {
     .requiredOption("-m, --message <text>", "why (required, stored with the decision)")
     .action((ref: string, options: { message: string }) => {
       console.log(runReject(process.cwd(), ref, options));
+    });
+
+  program
+    .command("resume")
+    .description("send a run that needs you back to a stage (e.g. after an escalation)")
+    .argument("<run>", "run id, id prefix, or #issue")
+    .requiredOption("--to <stage>", "stage to continue from, e.g. build")
+    .requiredOption("-m, --message <text>", "why (required, stored with the decision)")
+    .option("--reset-loops", "give the build and review loops a fresh budget")
+    .action((ref: string, options: { to: string; message: string; resetLoops?: boolean }) => {
+      console.log(runResume(process.cwd(), ref, options));
     });
 
   program
