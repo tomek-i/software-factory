@@ -20,7 +20,7 @@ import {
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal, type RunState } from "@factory/shared";
+import { isTerminal, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 
 export interface RunDeps {
@@ -70,6 +70,15 @@ function formatEvent(event: FactoryEvent): string | undefined {
   }
 }
 
+/** The verdict file a gate is about, as a `factory show` short name. */
+const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage", review: "build" };
+
+/** "See it with: `factory show ...`" for a run waiting at a gate, naming the file the gate is about. */
+export function showHint(run: Pick<Run, "id" | "waiting_gate">): string {
+  const file = run.waiting_gate ? GATE_FILE[run.waiting_gate] : undefined;
+  return `See it with: \`factory show ${run.id}${file ? ` ${file}` : ""}\`.`;
+}
+
 function describeOutcome(outcome: DriveOutcome, run: Run, issue: number): string {
   switch (outcome.kind) {
     case "parked":
@@ -77,6 +86,7 @@ function describeOutcome(outcome: DriveOutcome, run: Run, issue: number): string
       return run.waiting_gate
         ? [
             `Run ${run.id} is waiting at the ${run.waiting_gate} gate: ${outcome.reason}`,
+            showHint(run),
             `Approve with \`factory approve ${run.id}\`, or reject with \`factory reject ${run.id} -m "<why>"\`.`,
           ].join("\n")
         : [
