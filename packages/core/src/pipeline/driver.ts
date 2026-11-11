@@ -793,6 +793,8 @@ export class PipelineDriver {
     const pr = github.pullRequestState(number);
     // Merged or closed by a human meanwhile: that settles the run.
     if (pr.state !== "open") return this.closedOnGithub(run, pr);
+    // Ready before anyone is asked to approve the merge (approving the PR gate comes straight here).
+    if (pr.draft) github.markReady(number);
 
     const dir = this.runDir(run);
     const worktree = this.worktreeOf(run);
@@ -820,8 +822,10 @@ export class PipelineDriver {
       if (!result.passed) return backToBuild(`quality gate failed after merging ${this.defaultBranch} (round ${round})`, { resync: true });
       head = git.head();
       if (head !== result.head || !git.isClean()) return this.escalate(run, "the worktree changed while the quality gate ran after merging the default branch");
-      this.push(worktree);
     }
+    // Whatever a human approves, or GitHub merges, must be what the PR shows; this also catches up
+    // on a push that failed in an earlier attempt.
+    if (!git.isPushed()) this.push(worktree);
 
     if (!this.approvalCovers(run, worktree, head)) {
       let hits: string[];
@@ -856,6 +860,9 @@ export class PipelineDriver {
     if (problems.length) return this.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
     try {
       if (github.pullRequestState(number).draft) github.markReady(number);
+      // The last moment to notice a cancel (or a lost lease) before something that cannot be undone.
+      if (this.load(run.id).state !== run.state) return undefined;
+      if (this.signal?.aborted) return { kind: "stopped", state: run.state, reason: "this worker lost the run before merging" };
       // --match-head-commit: GitHub refuses if the PR's head is anything but the commit that passed.
       github.mergePullRequest(number, head);
     } catch (err) {
@@ -890,14 +897,19 @@ export class PipelineDriver {
     const git = (args: string[]) => this.run("git", args, { cwd: worktree.path });
     const conflictsFile = join(resyncDir, "conflicts.md");
     rmSync(conflictsFile, { force: true });
+    // A failed re-gate from an earlier attempt would tell the builder about the wrong problem. A pass
+    // is kept: it still proves its commit passed.
+    const checksFile = join(resyncDir, "checks.md");
+    if (readValid("checks", checksFile, (v) => (v.header.GATE === "FAIL" ? [] : ["passed"]))) rmSync(checksFile);
     const fetched = git(["fetch", "--quiet", "origin", this.defaultBranch]);
     if (fetched.code !== 0) throw new Error(`git fetch failed: ${fetched.stderr || fetched.stdout}`);
     const merged = git(["merge", "--no-edit", `origin/${this.defaultBranch}`]);
     if (merged.code === 0) return undefined;
     const conflicts = git(["diff", "--name-only", "--diff-filter=U"]).stdout.split(/\r?\n/).filter(Boolean);
+    // Without conflicts the merge never started (dirty worktree, no committer identity, ...): its own error says why.
+    if (conflicts.length === 0) throw new Error(`git merge origin/${this.defaultBranch} failed: ${merged.stderr || merged.stdout}`);
     const aborted = git(["merge", "--abort"]);
     if (aborted.code !== 0) throw new Error(`git merge --abort failed: ${aborted.stderr || aborted.stdout}`);
-    if (conflicts.length === 0) throw new Error(`git merge origin/${this.defaultBranch} failed: ${merged.stderr || merged.stdout}`);
     mkdirSync(resyncDir, { recursive: true });
     writeFileSync(conflictsFile, `Merging origin/${this.defaultBranch} conflicts in:\n\n${conflicts.map((f) => `- ${f}`).join("\n")}\n`);
     return conflicts;

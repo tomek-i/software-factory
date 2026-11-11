@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict, type Finding, type ParsedVerdict } from "@factory/shared";
@@ -93,7 +93,11 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
   const prs: { head: string; base: string; title: string; body: string }[] = [];
   const edits: { number: number; body: string }[] = [];
   // The run's PR as the fake GitHub sees it; a test may merge or close it, or make merging fail.
-  const pr: { state: "open" | "merged" | "closed"; draft: boolean; mergeCommit?: string; mergeError?: string } = { state: "open", draft: true };
+  const pr: { state: "open" | "merged" | "closed"; draft: boolean; mergeCommit?: string; mergeError?: string; onView?: (count: number) => void } = {
+    state: "open",
+    draft: true,
+  };
+  let views = 0;
   const merges: { number: number; head: string }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body }),
@@ -103,7 +107,10 @@ function setup(steps: FakeStep[], options: { author?: string; config?: string } 
       return 7;
     },
     updatePullRequest: (number, body) => edits.push({ number, body }),
-    pullRequestState: (number) => ({ number, state: pr.state, draft: pr.draft, head: "", ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) }),
+    pullRequestState: (number) => {
+      pr.onView?.(++views);
+      return { number, state: pr.state, draft: pr.draft, head: "", ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
+    },
     markReady: () => {
       pr.draft = false;
     },
@@ -940,7 +947,7 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
   });
 
   it("stops at the review round cap when main still conflicts", async () => {
-    const { driver, store, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], {
+    const { driver, store, root, pr } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], {
       config: mergeConfig("pr: human\nmerge: always", "loops:\n  max_review_rounds: 1\n"),
     });
     const run = driver.startRun(12);
@@ -953,6 +960,8 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
       reason: "still cannot merge after round 1: review round cap reached (1)",
     });
     expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "merge", waiting_gate: null });
+    // Approving the PR gate skips the PR stage, so the merge stage takes the PR out of draft.
+    expect(pr.draft).toBe(false);
   });
 
   it("sends a quality gate that fails after the re-sync back to the builder with its report", async () => {
@@ -991,6 +1000,52 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
     expect(merges).toEqual([]);
     expect(store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "merge", actor: "human", comment: "merged PR #7 on GitHub", commit_sha: "f".repeat(40) });
+  });
+
+  it("pushes a re-synced commit whose push failed before, and an approval survives the escalation in between", async () => {
+    const { driver, store, merges, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: human") });
+    const run = driver.startRun(12);
+    await driver.drive(run.id);
+    const approved = waitingCommit(store.listEvents(run.id))!;
+    landOnMain(root, { "other.txt": "meanwhile\n" });
+    // The remote refuses every push for now.
+    const hook = join(git(root, "remote", "get-url", "origin"), "hooks", "pre-receive");
+    writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+    chmodSync(hook, 0o755);
+    approve(store, run.id);
+
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringMatching(/^error in merge: git push failed/) });
+    const head = git(store.getRun(run.id)!.worktree_path!, "rev-parse", "HEAD");
+    expect(head).not.toBe(approved);
+
+    rmSync(hook);
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "merge", { comment: "the remote is back" });
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(merges).toEqual([{ number: 7, head }]);
+    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(head);
+  });
+
+  it("does not merge a run that was cancelled while the merge stage ran", async () => {
+    const { driver, store, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
+    const run = driver.startRun(12);
+    // The third look at the PR is the one just before merging: cancel then.
+    pr.onView = (count) => {
+      if (count === 3) new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).cancel(run.id, "stop");
+    };
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "cancelled" });
+    expect(merges).toEqual([]);
+  });
+
+  it("reports git's own error when merging main fails without conflicts", async () => {
+    const { driver, store, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("pr: human\nmerge: always") });
+    const run = driver.startRun(12);
+    await driver.drive(run.id);
+    landOnMain(root, { "README.md": "# demo, changed on main\n" });
+    writeFileSync(join(store.getRun(run.id)!.worktree_path!, "README.md"), "# demo, changed locally\n");
+    approve(store, run.id);
+
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringMatching(/^error in merge: git merge origin\/main failed: .*local changes/s) });
   });
 
   it("hands over to a human when GitHub refuses the merge", async () => {
