@@ -27,7 +27,7 @@ export interface SecretScan {
   note?: string;
 }
 
-export interface GateResult {
+export interface QualityGateResult {
   passed: boolean;
   head: string;
   checks: CheckResult[];
@@ -36,7 +36,7 @@ export interface GateResult {
   logFile: string;
 }
 
-export interface GateOptions {
+export interface QualityGateOptions {
   runId: string;
   worktreePath: string;
   defaultBranch: string;
@@ -93,7 +93,7 @@ function hasGitleaks(run: CommandRunner, cwd: string): boolean {
   return run("gitleaks", ["version"], { cwd }).code === 0;
 }
 
-function scanSecrets(options: GateOptions, run: CommandRunner): SecretScan {
+function scanSecrets(options: QualityGateOptions, run: CommandRunner): SecretScan {
   const cwd = options.worktreePath;
   const range = `origin/${options.defaultBranch}..HEAD`;
   let note: string | undefined;
@@ -117,7 +117,7 @@ function scanSecrets(options: GateOptions, run: CommandRunner): SecretScan {
 }
 
 /** checks.md: the verdict file the state machine reads (GATE + COMMIT), plus what the builder needs to fix. */
-export function renderChecks(result: Omit<GateResult, "checksFile" | "logFile">): string {
+export function renderChecks(result: Omit<QualityGateResult, "checksFile" | "logFile">): string {
   const lines = [`GATE: ${result.passed ? "PASS" : "FAIL"}`, `COMMIT: ${result.head}`, "", "## Summary"];
   if (result.checks.length === 0) lines.push("- no checks are configured in .factory/config.yaml");
   for (const c of result.checks) {
@@ -145,7 +145,7 @@ export function renderChecks(result: Omit<GateResult, "checksFile" | "logFile">)
 }
 
 /** Run the configured checks and a secret scan against the worktree's HEAD and write round-N/checks.md. */
-export async function runQualityGate(options: GateOptions): Promise<GateResult> {
+export async function runQualityGate(options: QualityGateOptions): Promise<QualityGateResult> {
   const run = options.run ?? runCommand;
   mkdirSync(options.roundDir, { recursive: true });
   const logFile = join(options.roundDir, "checks.log");
