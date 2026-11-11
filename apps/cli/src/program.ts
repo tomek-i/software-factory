@@ -52,11 +52,11 @@ export function buildProgram(): Command {
 
   program
     .command("run")
-    .description("run an issue through the pipeline until it needs you (syncs and queues it first if needed)")
-    .argument("<issue>", "issue number, e.g. 12")
-    .option("--unsafe", "lift hard rules for this run only (untrusted authors still wait for you)")
-    .action(async (issue: string, options: { unsafe?: boolean }) => {
-      console.log(await runRun(process.cwd(), issue, options, { style: styleFor(process.stdout) }));
+    .description("run issues through the pipeline until they need you, several at once (syncs and queues them first if needed)")
+    .argument("<issues...>", "issue numbers, e.g. 12 15")
+    .option("--unsafe", "lift hard rules for these runs only (untrusted authors still wait for you)")
+    .action(async (issues: string[], options: { unsafe?: boolean }) => {
+      console.log(await runRun(process.cwd(), issues, options, { style: styleFor(process.stdout) }));
     });
 
   program
