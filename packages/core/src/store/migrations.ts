@@ -99,4 +99,10 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE runs ADD COLUMN parked_from TEXT;
   ALTER TABLE issues ADD COLUMN queue_seq INTEGER;
   `,
+  // port_base: first port of the run's block for dev servers and browsers. pid lets another
+  // process (e.g. `factory cancel`) stop a running agent.
+  `
+  ALTER TABLE runs ADD COLUMN port_base INTEGER;
+  ALTER TABLE agent_runs ADD COLUMN pid INTEGER;
+  `,
 ];

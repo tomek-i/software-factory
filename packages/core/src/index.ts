@@ -8,3 +8,7 @@ export * from "./github/labels.js";
 export * from "./github/issues.js";
 export * from "./util/exec.js";
 export * from "./util/git.js";
+export * from "./events.js";
+export * from "./agents/stream.js";
+export * from "./agents/runner.js";
+export * from "./util/process.js";

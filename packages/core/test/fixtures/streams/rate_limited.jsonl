@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/repo","session_id":"{{SESSION_ID}}","tools":["Read"],"model":"claude-opus-5-5","permissionMode":"dontAsk","apiKeySource":"none"}
+{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":1000,"error_status":429,"error":"rate_limit","session_id":"{{SESSION_ID}}"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1893456000,"rateLimitType":"five_hour"},"session_id":"{{SESSION_ID}}"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":1500,"num_turns":0,"result":"Claude usage limit reached.","session_id":"{{SESSION_ID}}","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}

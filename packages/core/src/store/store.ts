@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import type { Gate, GateMode, RunState } from "@factory/shared";
 import { MIGRATIONS } from "./migrations.js";
@@ -29,6 +29,8 @@ export interface Run {
   waiting_gate: Gate | null;
   /** The stage a run was in when it was parked for a human; bounds where it may resume. */
   parked_from: RunState | null;
+  /** First port of the run's block (see PORT_BLOCK_SIZE). */
+  port_base: number | null;
   lease_owner: string | null;
   lease_expires_at: string | null;
   created_at: string;
@@ -69,6 +71,32 @@ export type StatePatch = RunPatch &
   Partial<
     Pick<Run, "build_iterations" | "review_rounds" | "critic_rounds" | "parked_from" | "lease_owner" | "lease_expires_at">
   >;
+
+export type AgentRunStatus = "running" | "ok" | "error" | "rate_limited" | "cancelled";
+
+export interface AgentRun {
+  id: string;
+  run_id: string;
+  role: string;
+  model: string | null;
+  session_id: string | null;
+  status: AgentRunStatus;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  log_path: string | null;
+  excerpt: string | null;
+  pid: number | null;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export type AgentRunResultPatch = Partial<
+  Pick<AgentRun, "session_id" | "cost_usd" | "input_tokens" | "output_tokens" | "excerpt">
+> & { status: Exclude<AgentRunStatus, "running"> };
+
+/** Ports per run: app, +1 UX reviewer, +2 UI reviewer, +3 "before" app, the rest spare. */
+export const PORT_BLOCK_SIZE = 10;
 
 export interface Issue {
   project_id: string;
@@ -306,6 +334,82 @@ export class Store {
       .prepare(`UPDATE runs SET ${sets.join(", ")} WHERE ${where}`)
       .run({ ...defined, id, state, expected: expected ?? null, updated_at: now() });
     return result.changes === 1;
+  }
+
+  /** Change bookkeeping fields that are not state (branch, worktree, PR). State goes through RunMachine. */
+  updateRunFields(id: string, patch: RunPatch): void {
+    const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    if (Object.keys(defined).length === 0) return;
+    const sets = ["updated_at = @updated_at", ...Object.keys(defined).map((f) => `${f} = @${f}`)];
+    this.db.prepare(`UPDATE runs SET ${sets.join(", ")} WHERE id = @id`).run({ ...defined, id, updated_at: now() });
+  }
+
+  /**
+   * Give a run the lowest free port block at or above `base`, or return the one it already has.
+   * Blocks held by finished runs are reused.
+   */
+  allocatePorts(runId: string, base: number): number {
+    return this.transaction(() => {
+      const run = this.getRun(runId);
+      if (!run) throw new Error(`run ${runId} not found`);
+      if (run.port_base !== null) return run.port_base;
+      const terminal = ["done", "rejected", "failed", "cancelled"];
+      const used = new Set(
+        (
+          this.db
+            .prepare(
+              `SELECT port_base FROM runs WHERE port_base IS NOT NULL AND state NOT IN (${terminal.map(() => "?").join(", ")})`,
+            )
+            .all(...terminal) as { port_base: number }[]
+        ).map((r) => r.port_base),
+      );
+      let port = base;
+      while (used.has(port)) port += PORT_BLOCK_SIZE;
+      this.db.prepare("UPDATE runs SET port_base = ? WHERE id = ?").run(port, runId);
+      return port;
+    });
+  }
+
+  // ---- agent runs ---------------------------------------------------------
+
+  /** Record an agent starting. Its full log goes to <log_dir>/<agent-run-id>.jsonl. */
+  startAgentRun(input: { run_id: string; role: string; model: string | null; session_id: string | null; log_dir: string }): AgentRun {
+    const id = `agent-${randomUUID().slice(0, 8)}`;
+    this.db
+      .prepare(
+        `INSERT INTO agent_runs (id, run_id, role, model, session_id, status, log_path, started_at)
+         VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
+      )
+      .run(id, input.run_id, input.role, input.model, input.session_id, join(input.log_dir, `${id}.jsonl`), now());
+    return this.getAgentRun(id)!;
+  }
+
+  setAgentPid(id: string, pid: number | null): void {
+    this.db.prepare("UPDATE agent_runs SET pid = ? WHERE id = ?").run(pid, id);
+  }
+
+  finishAgentRun(id: string, result: AgentRunResultPatch): void {
+    const defined = Object.fromEntries(Object.entries(result).filter(([, v]) => v !== undefined));
+    const sets = ["ended_at = @ended_at", "pid = NULL", ...Object.keys(defined).map((f) => `${f} = @${f}`)];
+    this.db.prepare(`UPDATE agent_runs SET ${sets.join(", ")} WHERE id = @id`).run({ ...defined, id, ended_at: now() });
+  }
+
+  getAgentRun(id: string): AgentRun | undefined {
+    return this.db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(id) as AgentRun | undefined;
+  }
+
+  listAgentRuns(runId: string): AgentRun[] {
+    return this.db.prepare("SELECT * FROM agent_runs WHERE run_id = ? ORDER BY started_at, rowid").all(runId) as AgentRun[];
+  }
+
+  /** The most recent session of a role in a run, so a later round can resume it. */
+  latestSession(runId: string, role: string): string | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT session_id FROM agent_runs WHERE run_id = ? AND role = ? AND session_id IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
+      )
+      .get(runId, role) as { session_id: string } | undefined;
+    return row?.session_id;
   }
 
   // ---- leases -------------------------------------------------------------
