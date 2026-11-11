@@ -79,6 +79,7 @@ export interface AgentRun {
   run_id: string;
   role: string;
   model: string | null;
+  effort: string | null;
   session_id: string | null;
   status: AgentRunStatus;
   cost_usd: number | null;
@@ -373,14 +374,21 @@ export class Store {
   // ---- agent runs ---------------------------------------------------------
 
   /** Record an agent starting. Its full log goes to <log_dir>/<agent-run-id>.jsonl. */
-  startAgentRun(input: { run_id: string; role: string; model: string | null; session_id: string | null; log_dir: string }): AgentRun {
+  startAgentRun(input: {
+    run_id: string;
+    role: string;
+    model: string | null;
+    effort?: string | null;
+    session_id: string | null;
+    log_dir: string;
+  }): AgentRun {
     const id = `agent-${randomUUID().slice(0, 8)}`;
     this.db
       .prepare(
-        `INSERT INTO agent_runs (id, run_id, role, model, session_id, status, log_path, started_at)
-         VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
+        `INSERT INTO agent_runs (id, run_id, role, model, effort, session_id, status, log_path, started_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
       )
-      .run(id, input.run_id, input.role, input.model, input.session_id, join(input.log_dir, `${id}.jsonl`), now());
+      .run(id, input.run_id, input.role, input.model, input.effort ?? null, input.session_id, join(input.log_dir, `${id}.jsonl`), now());
     return this.getAgentRun(id)!;
   }
 

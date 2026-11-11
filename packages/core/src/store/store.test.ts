@@ -93,9 +93,9 @@ describe("Store ports and agent runs", () => {
   it("tracks agent runs and finds the latest session of a role", () => {
     const { store, project } = setup();
     const run = store.createRun({ project_id: project.id, title: "a" });
-    const first = store.startAgentRun({ run_id: run.id, role: "builder", model: "opus", session_id: "s1", log_dir: "/logs" });
+    const first = store.startAgentRun({ run_id: run.id, role: "builder", model: "opus", effort: "high", session_id: "s1", log_dir: "/logs" });
     store.setAgentPid(first.id, 1234);
-    expect(store.getAgentRun(first.id)).toMatchObject({ status: "running", pid: 1234 });
+    expect(store.getAgentRun(first.id)).toMatchObject({ status: "running", pid: 1234, model: "opus", effort: "high" });
     expect(first.log_path!.endsWith(`${first.id}.jsonl`)).toBe(true);
 
     store.finishAgentRun(first.id, { status: "ok", cost_usd: 0.5 });

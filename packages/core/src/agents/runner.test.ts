@@ -73,6 +73,13 @@ describe("claudeArgs", () => {
     expect(JSON.parse(args[args.indexOf("--mcp-config") + 1]!)).toEqual({ mcpServers: {} });
   });
 
+  it("passes --effort only when one is configured", () => {
+    expect(claudeArgs(base, "sess-1")).not.toContain("--effort");
+    const args = claudeArgs({ ...base, effort: "low" }, "sess-1");
+    expect(args.join(" ")).toContain("--model sonnet");
+    expect(args.join(" ")).toContain("--effort low");
+  });
+
   it("resumes an existing session", () => {
     const args = claudeArgs({ ...base, resumeSessionId: "sess-1" }, "sess-1");
     expect(args.join(" ")).toContain("--resume sess-1");
