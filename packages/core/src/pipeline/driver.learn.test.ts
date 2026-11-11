@@ -85,6 +85,32 @@ describe("PipelineDriver learn stage", () => {
     expect(git(root, "rev-parse", "origin/main")).toBe(mainBefore);
   });
 
+  it("shows the learner where a human sent the run back, with their comment", async () => {
+    const reviewHuman = config().replace("  merge: always\n", "  merge: always\n  review: human\n");
+    const rework: FakeStep = {
+      files: { "feature.txt": "fixed\n", "notes.txt": "constant\n" },
+      exec: [
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "refactor: use a constant"],
+      ],
+      output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- reworked\n",
+    };
+    const steps = [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, rework, CODE_PASS, { role: "learner", output: learned([]) }];
+    const { driver, store, fake } = setup(steps, { config: reviewHuman });
+    const run = driver.startRun(12);
+    const machine = new RunMachine(store, factoryConfigSchema.parse({ version: 1 }));
+
+    await driver.drive(run.id);
+    machine.resume(run.id, "build", { comment: "use a named constant" });
+    await driver.drive(run.id);
+    machine.resume(run.id, approveTarget(store.getRun(run.id)!)!, { comment: "fine now" });
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    const learner = fake.calls().find((c) => c.role === "learner")!;
+    expect(learner.stdin).toContain("- a human sent the run to build: use a named constant");
+    expect(learner.stdin).toContain("Human decisions:\n- at the review gate, sent the run to build: use a named constant\n- at the review gate, sent the run to capture: fine now");
+  });
+
   it("finishes the run when the learner proposes nothing", async () => {
     const { driver, store, root } = setup(bumpy({ output: learned([]) }), { config: config() });
     const run = driver.startRun(12);

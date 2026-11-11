@@ -890,7 +890,12 @@ export class PipelineDriver {
    * the usage limit or writes something malformed only means no lessons from this run, with a note.
    */
   private async learn(run: Run): Promise<StepResult> {
-    const worth = this.learnReasons(run);
+    let worth: string[];
+    try {
+      worth = this.learnReasons(run);
+    } catch (err) {
+      return this.skipLessons(run, `could not read the run's history: ${(err as Error).message}`);
+    }
     // Saves usage: a run that went through cleanly has nothing to teach.
     if (worth.length === 0) {
       this.move(run, "done", "nothing to learn: one round, no failed checks or blocking findings, no human stepped in");
@@ -959,7 +964,7 @@ export class PipelineDriver {
       const gate = (event.data as { gate?: unknown } | null)?.gate;
       const parkedFrom = events.slice(0, i).findLast((e) => e.to_state === "needs_human")?.from_state ?? null;
       const approval = typeof gate === "string" && gate !== "escalation" && approveTarget({ waiting_gate: gate as Gate, parked_from: parkedFrom }) === event.to_state;
-      if (!approval) reasons.push(`a human sent the run to ${event.to_state}: ${clip(event.reason)}`);
+      if (!approval) reasons.push(`a human sent the run to ${event.to_state}: ${clip(event.reason.replace(/^human: /, ""))}`);
     }
     return reasons;
   }
@@ -984,11 +989,16 @@ export class PipelineDriver {
       join(dir, "approval.md"),
     ].filter((path) => existsSync(path));
     const { store } = this.deps;
-    const events = store.listEvents(run.id).map((e) => `- ${e.from_state ?? "-"} -> ${e.to_state}: ${clip(e.reason)}`);
-    const human = store
-      .listDecisions(run.id)
-      .filter((d) => d.actor === "human")
-      .map((d) => `- ${d.gate}, ${d.outcome}: ${clip(d.comment)}`);
+    const history = store.listEvents(run.id);
+    const events = history.map((e) => `- ${e.from_state ?? "-"} -> ${e.to_state}: ${clip(e.reason)}`);
+    // Where a human sent the run, and their comment: approving a gate and sending work back read alike in the decisions.
+    const human = history
+      .filter((e) => e.from_state === "needs_human")
+      .map((e) => {
+        const gate = (e.data as { gate?: unknown } | null)?.gate;
+        const where = typeof gate === "string" && gate !== "escalation" ? `at the ${gate} gate` : "after an escalation";
+        return `- ${where}, sent the run to ${e.to_state}: ${clip(e.reason.replace(/^human: /, ""))}`;
+      });
     const files = writeRoleFiles(dir, "learner", rolePrompt("learner", this.deps.read), permissionProfile("learner", { runDirFromCwd: relative(cwd, dir), outputFile }));
     return runTurn({
       run: this.deps.runAgent,
