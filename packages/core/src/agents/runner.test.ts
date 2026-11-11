@@ -37,7 +37,12 @@ function setup(steps: FakeStep[], extraEnv: NodeJS.ProcessEnv = {}) {
 describe("agentEnv", () => {
   it("removes ANTHROPIC_API_KEY in any casing so runs use the subscription", () => {
     const env = agentEnv({ ANTHROPIC_API_KEY: "sk-ant-x", anthropic_api_key: "y", PATH: "/bin" });
-    expect(env).toEqual({ PATH: "/bin" });
+    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" });
+  });
+
+  it("switches auto-memory off even if the caller's env tried to enable it", () => {
+    const env = agentEnv({ claude_code_disable_auto_memory: "0", PATH: "/bin" });
+    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" });
   });
 });
 
