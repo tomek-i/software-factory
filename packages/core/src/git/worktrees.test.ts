@@ -1,8 +1,11 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { git, repoWithRemote, tempDir } from "../../test/helpers.js";
+import { describe, expect, it, vi } from "vitest";
+import { git, GIT_TEST_TIMEOUT, repoWithRemote, tempDir } from "../../test/helpers.js";
 import { branchName, createWorktree, gitEvidence, GitError, removeWorktree, slugify } from "./worktrees.js";
+
+// Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("slugify / branchName", () => {
   it("produces safe branch names", () => {
