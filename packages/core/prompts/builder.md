@@ -35,10 +35,19 @@ Then:
 
 ```
 ## Summary
-- 3 to 5 bullets: what you changed and how you tested it. This becomes the PR description.
+- 2 to 4 short bullets for a human reviewer: what changed and why, in plain words.
+
+## Testing
+- 1 to 3 bullets: which tests you added and which checks pass.
+
+## Details
+- Implementation notes for reviewers and agents: files, functions, edge cases, decisions.
 
 ## Blocker          (only for BLOCKED: what stops you and what a human must decide)
 ```
+
+The pull request shows Summary and Testing first and Details collapsed, so keep Summary readable at
+a glance: no file paths, function names or long explanations there; those belong in Details.
 
 Use BLOCKED when you cannot finish without a human decision (missing information, a product
 decision, a required change to a protected area). Do not guess on product decisions.
