@@ -65,11 +65,13 @@ export function claudeCommand(env: NodeJS.ProcessEnv = process.env): { file: str
  * `claude -p`, so it is removed: runs must use the user's own Claude subscription.
  */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const copy = { ...env };
-  for (const key of Object.keys(copy)) {
-    if (key.toUpperCase() === "ANTHROPIC_API_KEY") delete copy[key];
-  }
-  return copy;
+  return withoutVars(env, ["ANTHROPIC_API_KEY"]);
+}
+
+/** Copy of env without the given variables, matched case-insensitively (Windows env is case-insensitive). */
+export function withoutVars(env: NodeJS.ProcessEnv, names: string[]): NodeJS.ProcessEnv {
+  const drop = new Set(names.map((n) => n.toUpperCase()));
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !drop.has(key.toUpperCase())));
 }
 
 export function claudeArgs(options: AgentRunOptions, sessionId: string): string[] {
@@ -88,6 +90,14 @@ export function claudeArgs(options: AgentRunOptions, sessionId: string): string[
     // Anything the role's profile does not allow is denied instead of waiting for a prompt nobody answers.
     "--permission-mode",
     "dontAsk",
+    // --settings only adds a layer: without these, allow rules, hooks and MCP servers from the
+    // user's and the repo's own settings would apply to agents that read untrusted issue text.
+    // The subscription login is not a setting, so it still applies.
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--mcp-config",
+    '{"mcpServers":{}}',
   ];
   if (options.maxTurns) args.push("--max-turns", String(options.maxTurns));
   for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);

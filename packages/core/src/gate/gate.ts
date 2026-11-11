@@ -5,6 +5,7 @@ import type { FactoryConfig } from "@factory/shared";
 import type { FactoryEvents } from "../events.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { killTree } from "../util/process.js";
+import { withoutVars } from "../agents/runner.js";
 import { scanDiffForSecrets, type SecretHit } from "./secrets.js";
 
 export type Check = FactoryConfig["checks"][number];
@@ -48,13 +49,24 @@ export interface QualityGateOptions {
   events?: FactoryEvents;
   /** Whether gitleaks is available; detected from PATH by default. */
   gitleaks?: boolean;
+  /** Aborting kills the running check's process tree and throws GateCancelledError. */
+  signal?: AbortSignal;
 }
 
 const TAIL_LINES = 60;
 
 const tailOf = (text: string) => text.trimEnd().split(/\r?\n/).slice(-TAIL_LINES).join("\n");
 
-async function runCheck(check: Check, cwd: string, logFile: string): Promise<CheckResult> {
+/**
+ * Credentials the checks never need. Checks run code the builder wrote from issue text, so they
+ * must not be able to read the tokens of the person running the factory.
+ */
+export const CHECK_ENV_DENYLIST = ["ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+
+export class GateCancelledError extends Error {}
+
+async function runCheck(check: Check, cwd: string, logFile: string, signal?: AbortSignal): Promise<CheckResult> {
+  if (signal?.aborted) throw new GateCancelledError("quality gate was cancelled");
   const started = Date.now();
   appendFileSync(logFile, `\n===== ${check.name}: ${check.run}\n`);
   const child = execa(check.run, {
@@ -64,16 +76,25 @@ async function runCheck(check: Check, cwd: string, logFile: string): Promise<Che
     reject: false,
     windowsHide: true,
     stdin: "ignore",
+    extendEnv: false,
     // Test runners stay out of watch mode and interactive prompts under CI.
-    env: { CI: "1" },
+    env: { ...withoutVars(process.env, CHECK_ENV_DENYLIST), CI: "1" },
   });
   let timedOut = false;
+  let cancelled = false;
   const timer = setTimeout(() => {
     timedOut = true;
     if (child.pid !== undefined) killTree(child.pid);
   }, check.timeout_sec * 1000);
+  const onAbort = () => {
+    cancelled = true;
+    if (child.pid !== undefined) killTree(child.pid);
+  };
+  signal?.addEventListener("abort", onAbort);
   const result = await child;
   clearTimeout(timer);
+  signal?.removeEventListener("abort", onAbort);
+  if (cancelled) throw new GateCancelledError("quality gate was cancelled");
 
   const output = typeof result.all === "string" ? result.all : "";
   appendFileSync(logFile, output + `\n===== ${check.name}: ${timedOut ? "TIMED OUT" : `exit ${result.exitCode}`}\n`);
@@ -93,12 +114,20 @@ function hasGitleaks(run: CommandRunner, cwd: string): boolean {
   return run("gitleaks", ["version"], { cwd }).code === 0;
 }
 
-function scanSecrets(options: QualityGateOptions, run: CommandRunner): SecretScan {
+/**
+ * Scan every commit the branch adds over the default branch, not just the net diff: a key added
+ * in one commit and deleted in the next is still published by a push.
+ */
+export function scanSecrets(
+  options: { worktreePath: string; defaultBranch: string; reportDir: string; gitleaks?: boolean },
+  run: CommandRunner = runCommand,
+): SecretScan {
   const cwd = options.worktreePath;
   const range = `origin/${options.defaultBranch}..HEAD`;
   let note: string | undefined;
   if (options.gitleaks ?? hasGitleaks(run, cwd)) {
-    const report = join(options.roundDir, "gitleaks.json");
+    mkdirSync(options.reportDir, { recursive: true });
+    const report = join(options.reportDir, "gitleaks.json");
     const result = run(
       "gitleaks",
       ["detect", "--source", cwd, "--log-opts", range, "--no-banner", "--redact", "--report-format", "json", "--report-path", report, "--exit-code", "1"],
@@ -111,9 +140,12 @@ function scanSecrets(options: QualityGateOptions, run: CommandRunner): SecretSca
     }
     note = `gitleaks failed (exit ${result.code}), used the built-in patterns instead`;
   }
-  const diff = run("git", ["diff", "--unified=0", "--no-color", `origin/${options.defaultBranch}...HEAD`], { cwd });
-  if (diff.code !== 0) throw new Error(`git diff failed: ${diff.stderr}`);
-  return { tool: "regex", hits: scanDiffForSecrets(diff.stdout), note };
+  const patches = run("git", ["log", "-p", "--unified=0", "--no-color", "--format=", range], { cwd });
+  if (patches.code !== 0) throw new Error(`git log failed: ${patches.stderr}`);
+  const hits = scanDiffForSecrets(patches.stdout);
+  // The same line can be reported by several commits; list it once.
+  const unique = [...new Map(hits.map((h) => [`${h.file}:${h.line}:${h.rule}`, h])).values()];
+  return { tool: "regex", hits: unique, note };
 }
 
 /** checks.md: the verdict file the state machine reads (GATE + COMMIT), plus what the builder needs to fix. */
@@ -157,11 +189,11 @@ export async function runQualityGate(options: QualityGateOptions): Promise<Quali
 
   const checks: CheckResult[] = [];
   for (const check of options.checks) {
-    const result = await runCheck(check, options.worktreePath, logFile);
+    const result = await runCheck(check, options.worktreePath, logFile, options.signal);
     checks.push(result);
     options.events?.emit({ type: "gate:check", runId: options.runId, name: check.name, passed: result.passed, durationMs: result.durationMs });
   }
-  const secrets = scanSecrets(options, run);
+  const secrets = scanSecrets({ ...options, reportDir: options.roundDir }, run);
 
   // The checks must have run on the commit we report: if HEAD moved meanwhile (an agent still
   // running, a manual commit), the result proves nothing about the new commit.

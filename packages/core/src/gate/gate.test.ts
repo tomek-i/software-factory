@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseVerdict } from "@factory/shared";
 import { git, repoWithRemote } from "../../test/helpers.js";
 import { createWorktree } from "../git/worktrees.js";
-import { runQualityGate, type Check } from "./gate.js";
+import { GateCancelledError, runQualityGate, type Check } from "./gate.js";
 import { scanDiffForSecrets } from "./secrets.js";
 
 // Built by concatenation so this file itself contains no secret-shaped strings.
@@ -96,6 +96,52 @@ describe("runQualityGate", () => {
     const result = await gate([check("real", node("process.exit(1)"))]);
     expect(result.checks.map((c) => c.name)).toEqual(["real"]);
     expect(result.passed).toBe(false);
+  });
+});
+
+describe("runQualityGate safety", () => {
+  it("does not pass the operator's tokens to check commands", async () => {
+    const { commit, gate } = setup();
+    commit("feature.txt", "x\n");
+    process.env.GH_TOKEN = "gho_should_not_leak";
+    try {
+      const result = await gate([
+        check("env", node("process.exit(process.env.GH_TOKEN || process.env.ANTHROPIC_API_KEY ? 1 : process.env.CI ? 0 : 2)")),
+      ]);
+      expect(result.checks[0]).toMatchObject({ passed: true });
+    } finally {
+      delete process.env.GH_TOKEN;
+    }
+  });
+
+  it("finds a secret that a later commit deleted, since a push would still publish it", async () => {
+    const { commit, gate, wt } = setup();
+    commit("config.js", `export const key = "${FAKE_AWS_KEY}";\n`);
+    git(wt.path, "rm", "-q", "config.js");
+    git(wt.path, "-c", "user.email=f@example.invalid", "-c", "user.name=f", "commit", "-qm", "remove key");
+    const result = await gate([]);
+    expect(result.secrets.hits).toEqual([{ file: "config.js", line: 1, rule: "aws-access-key-id" }]);
+    expect(result.passed).toBe(false);
+  });
+
+  it("stops a running check when cancelled", async () => {
+    const { root, wt, commit } = setup();
+    commit("feature.txt", "x\n");
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 500);
+    const started = Date.now();
+    await expect(
+      runQualityGate({
+        runId: "run-1-a",
+        worktreePath: wt.path,
+        defaultBranch: "main",
+        checks: [check("slow", node("setTimeout(() => {}, 60000)"))],
+        roundDir: join(root, ".factory", "runs", "run-1-a", "round-1"),
+        gitleaks: false,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(GateCancelledError);
+    expect(Date.now() - started).toBeLessThan(15_000);
   });
 });
 

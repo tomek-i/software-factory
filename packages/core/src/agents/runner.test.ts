@@ -66,6 +66,13 @@ describe("claudeArgs", () => {
     expect(args).not.toContain("--bare");
   });
 
+  it("ignores the user's and the repo's own settings and MCP servers", () => {
+    const args = claudeArgs(base, "sess-1");
+    expect(args[args.indexOf("--setting-sources") + 1]).toBe("");
+    expect(args).toContain("--strict-mcp-config");
+    expect(JSON.parse(args[args.indexOf("--mcp-config") + 1]!)).toEqual({ mcpServers: {} });
+  });
+
   it("resumes an existing session", () => {
     const args = claudeArgs({ ...base, resumeSessionId: "sess-1" }, "sess-1");
     expect(args.join(" ")).toContain("--resume sess-1");
