@@ -59,6 +59,7 @@ describe("factory run", () => {
     const message = await run();
 
     expect(message).toMatch(/waiting at the review gate/);
+    expect(message).toMatch(/See it with: `factory show run-12-\w+ build`/);
     expect(message).toContain("factory approve");
     expect(printed).toEqual(expect.arrayContaining(["-> triage: issue loaded", "-> build: triage approved"]));
     expect(printed.some((l) => l.startsWith("[gate] ok: passed"))).toBe(true);
@@ -134,7 +135,7 @@ describe("approve / reject / cancel", () => {
     queue();
     expect(await run()).toMatch(/waiting for answers on issue #12/);
 
-    expect(await run()).toMatch(/waiting at the triage gate/);
+    expect(await run()).toMatch(/waiting at the triage gate[\s\S]*See it with: `factory show run-12-\w+ triage`/);
     expect(printed).toContain("-> triage: triage again with the current issue text");
   });
 

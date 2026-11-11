@@ -55,7 +55,7 @@ Work is picked **locally**, never from GitHub labels, so nobody on GitHub can fe
 ```sh
 factory sync               # pull open issues from GitHub into .factory/factory.db
 factory issues             # list them (Q marks queued issues); --queued, --all
-factory queue 12 15 #18    # queue issues for the factory (fetches unsynced ones)
+factory queue 12 15 18     # queue issues for the factory (fetches unsynced ones)
 factory unqueue 15         # take one back out
 ```
 
@@ -66,14 +66,16 @@ Issues closed on GitHub drop out of the queue on the next sync.
 ```sh
 factory run 12             # run queued issue #12 until it needs you; --unsafe lifts hard rules for this run only
 factory status             # active runs: state, round, cost, waiting gate; --all includes finished ones
-factory logs #12           # events and agent log excerpts; -f follows a running run
+factory logs 12            # events and agent log excerpts; -f follows a running run
+factory show 12            # overview: state, gate, branch, PR, verdict summaries, files in the run folder
+factory show 12 triage     # one file in full: triage, build, checks (latest round) or a path like round-2/checks.md
 factory approve <run>      # let a run waiting at a gate continue; -m "why"
 factory reject <run> -m "why"   # end a run waiting at a gate
 factory resume <run> --to build -m "why"   # send an escalated run back to a stage; --reset-loops for a fresh budget
 factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept
 ```
 
-`<run>` is a run id, a unique prefix of one, or `#<issue>` for that issue's latest run.
+`<run>` is a run id, a unique prefix of one, or an issue number (`12`) for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
 
 What `factory run` does today:
 
@@ -84,7 +86,7 @@ What `factory run` does today:
 
 When a run escalates (agent failed, builder blocked, loop cap reached, loop stalled), `factory run` tells you why; a stall names both rounds, for example `stalled: quality gate failed the same way in rounds 2 and 3 (see round-2/checks.md and round-3/checks.md)`. Send it on with `factory resume` or stop it with `factory cancel`. After a resume, stall detection starts afresh (with or without `--reset-loops`): only two more identical failures in a row stop the run again. If your Claude usage limit is hit, the run stops where it is; run `factory run` again after the reset and it continues the same agent session. A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
 
-Run artifacts (issue, triage, build report, `round-N/checks.md` and `checks.log`, agent prompts, permission profiles and full stream logs) are in `.factory/runs/<run>/`.
+Run artifacts (issue, triage, build report, `round-N/checks.md` and `checks.log`, agent prompts, permission profiles and full stream logs) are in `.factory/runs/<run>/`. `factory show <run>` summarises them and `factory show <run> <file>` prints one; when a run waits at a gate, `factory run` names the file to read, for example `factory show <run> build` at the `review` gate.
 
 **What steers the agents is read from the default branch.** `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`, not from your working copy, so a checked-out branch cannot change its own checks, trust list, gates or prompts. Commit and push config changes before they take effect.
 
