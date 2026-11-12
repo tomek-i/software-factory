@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a change. Clear issues can be picked up by the factory itself.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Write it so another developer, or the factory's agents, can implement it without asking you anything.
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The problem or motivation.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: What needs to be done, with the relevant files, commands, config or constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
