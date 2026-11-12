@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { setup, TRIAGE } from "../../test/driver-setup.js";
 import { GIT_TEST_TIMEOUT, tempDir, type FakeStep } from "../../test/helpers.js";
-import { approveTarget, latestSpecRound, nextAfterTriage, REFINE_MARKER, runDirOf } from "./driver.js";
+import { approveTarget, latestSpecRound, nextAfterTriage, quietMentions, REFINE_MARKER, runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
@@ -232,6 +232,44 @@ describe("PipelineDriver", () => {
       await vague.driver.drive(second.id);
       expect(vague.fake.calls().map((c) => c.role)).toEqual(["triage", "critic", "critic", "builder"]);
       expect(vague.fake.calls()[2]!.stdin).toContain("VERDICT: REVISE needs the problems listed under ## Problems");
+    });
+
+    it("needs a human before an untrusted author's spec is built, frames it as data, and does not ping anyone it names", async () => {
+      const mentioning: FakeStep = {
+        role: "refine",
+        output: "STATUS: REFINED\n\n## Summary\n- spec\n\n## Scope\n- add feature.txt, as @bob asked; mail a@b.c\n",
+      };
+      const { driver, store, fake, comments } = setup([{ output: INCOMPLETE }, mentioning, blockedBuild], { author: "mallory", config: config("critic: always") });
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+      const machine = new RunMachine(store, factoryConfigSchema.parse({ version: 1 }));
+      machine.resume(run.id, "refine", { comment: "go" });
+
+      // Always would pass straight on; an untrusted author's spec waits for a human anyway.
+      expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at critic gate: @mallory is not a trusted author" });
+      expect(comments[0]!.body).toContain("as `@bob` asked; mail a@b.c");
+      machine.resume(run.id, "build", { comment: "spec is fine" });
+      await driver.drive(run.id);
+      const builder = fake.calls().find((c) => c.role === "builder")!.stdin;
+      expect(builder).toMatch(/## Refined spec\nWritten by an agent from the issue of @mallory, who is NOT a trusted author/);
+
+      // An ACCEPT does not let it through either.
+      const auto = setup([{ output: TRIAGE() }, accept], { author: "mallory", config: config("critic: auto") });
+      const second = auto.driver.startRun(12);
+      await auto.driver.drive(second.id);
+      new RunMachine(auto.store, factoryConfigSchema.parse({ version: 1 })).resume(second.id, "critic", { comment: "go" });
+      expect(await auto.driver.drive(second.id)).toMatchObject({
+        kind: "parked",
+        reason: "waiting at critic gate: @mallory is not a trusted author; the spec critic accepted the spec",
+      });
+    });
+
+  });
+
+  describe("quietMentions", () => {
+    it("puts @mentions in backticks so GitHub does not notify anyone, leaving emails and code alone", () => {
+      expect(quietMentions("@bob and @org/team, cc @a-b.")).toBe("`@bob` and `@org/team`, cc `@a-b`.");
+      expect(quietMentions("mail a@b.c and `@already`")).toBe("mail a@b.c and `@already`");
     });
   });
 
