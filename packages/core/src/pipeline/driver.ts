@@ -28,6 +28,7 @@ import type { TrustedReader } from "../config/trusted.js";
 import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
+import { MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { factoryComment, type GithubPort, type PullRequestState } from "../github/port.js";
 import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunEvent, type RunPatch, type Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -796,8 +797,12 @@ export class PipelineDriver {
     const outcome: CaptureOutcome = {};
     const planned = await this.capturePlan(run, worktree, roundDir);
     if ("stop" in planned) return planned.stop;
+    // Undoing what the app writes is only safe on a tree that was clean: a run resumed into capture
+    // may hold a human's uncommitted edits, which must never be wiped.
+    const dirty = planned.plan ? this.uncommitted(worktree) : [];
     if (planned.problem) outcome.problem = planned.problem;
     else if (!planned.plan) outcome.skipped = planned.skip;
+    else if (dirty.length) outcome.skipped = `the worktree has uncommitted changes (${dirty.slice(0, 5).join(", ")}), so the app was not started`;
     else {
       const ports = run.port_base === null ? [] : Array.from({ length: PORT_BLOCK_SIZE }, (_, i) => run.port_base! + i);
       try {
@@ -821,13 +826,12 @@ export class PipelineDriver {
     }
 
     writeFileSync(join(roundDir, "capture-report.md"), renderCaptureReport(outcome));
-    const section = screenshotsSection(outcome, run.id);
-    if (section) writeFileSync(join(captureDir, "screenshots.md"), `${section}\n`);
+    writeFileSync(join(captureDir, "screenshots.md"), `${screenshotsSection(outcome, run.id)}\n`);
     this.updatePrDescription(run);
     const summary = outcome.skipped
       ? `no screenshots: ${outcome.skipped}`
       : outcome.problem || outcome.result?.status !== "captured"
-        ? `screenshots could not be taken: ${outcome.problem ?? outcome.result?.problem}`
+        ? `screenshots could not be taken: ${(outcome.problem ?? outcome.result?.problem ?? "").split("\n")[0]}`
         : `captured ${outcome.result.pages.length} page(s)${outcome.uploadProblem ? "; the upload failed" : ""}`;
     this.info(run, `capture: ${summary} (round-${run.round}/capture-report.md)`);
     this.move(run, "pr", `capture: ${summary}`.slice(0, 500));
@@ -907,13 +911,19 @@ export class PipelineDriver {
    * Ignored files (node_modules, caches) stay. Returns the paths that were undone.
    */
   private restoreWorktree(worktree: Worktree): string[] {
-    const git = (args: string[]) => this.run("git", args, { cwd: worktree.path });
-    const status = git(["status", "--porcelain"]);
-    const changed = status.stdout.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3));
+    const changed = this.uncommitted(worktree);
     if (changed.length === 0) return [];
+    const git = (args: string[]) => this.run("git", args, { cwd: worktree.path });
     git(["checkout", "--", "."]);
     git(["clean", "-fdq"]);
     return changed;
+  }
+
+  /** Paths `git status` reports as changed or untracked (not ignored) in the worktree. */
+  private uncommitted(worktree: Worktree): string[] {
+    const status = this.run("git", ["status", "--porcelain"], { cwd: worktree.path });
+    if (status.code !== 0) throw new Error(`git status failed: ${status.stderr}`);
+    return status.stdout.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3));
   }
 
   /** Upload the screenshots and the video. A failure is noted in the outcome; it never stops the run. */
@@ -928,6 +938,8 @@ export class PipelineDriver {
     if (files.length === 0) return;
     try {
       outcome.urls = this.capturer.publish(run.id, files);
+      // So ending the run without merging can delete the media again (see deleteMedia).
+      writeFileSync(join(this.runDir(run), MEDIA_MARKER), `${mediaTag(run.id)}\n`);
     } catch (err) {
       outcome.uploadProblem = (err as Error).message.split("\n")[0];
     }

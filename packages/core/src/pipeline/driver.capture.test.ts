@@ -1,10 +1,13 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { factoryConfigSchema } from "@factory/shared";
 import { buildStep, review, setup, TRIAGE } from "../../test/driver-setup.js";
 import { git, GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
 import type { CapturePort, CaptureRequest, CaptureResult } from "../capture/capture.js";
+import { MEDIA_MARKER } from "../github/media.js";
 import { runDirOf } from "./driver.js";
+import { RunMachine } from "./transitions.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -146,6 +149,8 @@ describe("PipelineDriver > capture", () => {
     expect(body).toContain("- minor: it says fixed (feature.txt:1)");
     expect(body.indexOf("## Screenshots")).toBeLessThan(body.indexOf("## Review notes"));
     expect(infos(seen).some((m) => m.startsWith("capture: captured 2 page(s)"))).toBe(true);
+    // Remembers the release, so rejecting or cancelling the run can delete it.
+    expect(readFileSync(join(dir, MEDIA_MARKER), "utf8")).toBe(`factory-media-${run.id}\n`);
 
     // Nothing media-related is committed: the media is in the (ignored) run folder, not the branch.
     expect(existsSync(join(dir, "round-1", "capture", "walkthrough.webm"))).toBe(true);
@@ -158,18 +163,35 @@ describe("PipelineDriver > capture", () => {
 
   it("goes on to the PR when the app does not start, the capture throws or the upload fails, and says so", async () => {
     const cases = [
-      { capture: fakeCapture({ result: { status: "failed", problem: "the app did not start (after): exited (code 1)", pages: [] } }), pr: "Screenshots could not be taken: the app did not start (after): exited (code 1)" },
-      { capture: fakeCapture({ throws: "browser crashed" }), pr: "Screenshots could not be taken: capture failed: browser crashed" },
-      { capture: fakeCapture({ uploadError: "gh release create failed: HTTP 403" }), pr: "Screenshots were taken but could not be uploaded: gh release create failed: HTTP 403" },
+      { capture: fakeCapture({ result: { status: "failed", problem: "the app did not start (after): exited (code 1)", pages: [] } }), pr: "Screenshots could not be taken: `the app did not start (after): exited (code 1)`." },
+      { capture: fakeCapture({ throws: "browser crashed" }), pr: "Screenshots could not be taken: `capture failed: browser crashed`." },
+      { capture: fakeCapture({ uploadError: "gh release create failed: HTTP 403" }), pr: "Screenshots were taken but could not be uploaded: `gh release create failed: HTTP 403`." },
     ];
     for (const { capture, pr } of cases) {
       const { driver, root, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
       const run = driver.startRun(12);
       expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
-      expect(edits.at(-1)!.body).toContain(`## Screenshots\n${pr}`);
+      expect(edits.at(-1)!.body).toContain(`## Screenshots\n${pr} Details: \`factory show ${run.id} capture\`.`);
       const report = readFileSync(join(runDirOf(root, run.id), "round-1", "capture-report.md"), "utf8");
       expect(report).toMatch(/could not be (taken|uploaded)/);
+      // Nothing reached GitHub, so there is no release to delete when the run ends unmerged.
+      expect(existsSync(join(runDirOf(root, run.id), MEDIA_MARKER))).toBe(false);
     }
+  });
+
+  it("keeps the app's log out of the PR: only the first line goes there, the rest stays in the report", async () => {
+    const problem = "the app did not start (after): exited (code 1)\n--- log tail ---\nError: DATABASE_URL=postgres://admin:hunter2@db/app\n    at C:\\src\\server.js:3";
+    const capture = fakeCapture({ result: { status: "failed", problem, pages: [] } });
+    const { driver, store, root, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
+    const run = driver.startRun(12);
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
+
+    const body = edits.at(-1)!.body;
+    expect(body).toContain("Screenshots could not be taken: `the app did not start (after): exited (code 1)`.");
+    expect(body).not.toContain("hunter2");
+    expect(body).not.toContain("log tail");
+    expect(store.listEvents(run.id).find((e) => e.from_state === "capture")!.reason).not.toContain("hunter2");
+    expect(readFileSync(join(runDirOf(root, run.id), "round-1", "capture-report.md"), "utf8")).toContain("postgres://admin:hunter2@db/app");
   });
 
   it("goes on without screenshots when the capture agent skips, or its plan is invalid twice", async () => {
@@ -177,8 +199,8 @@ describe("PipelineDriver > capture", () => {
     const external = PLAN.replace('"path":"/feature"', '"path":"https://evil.example/"');
     const invalid: FakeStep = { role: "capture", output: external };
     for (const [capture, pr] of [
-      [skip, "No screenshots: the capture agent found nothing to show (only a tooltip text changed)"],
-      [[invalid, invalid], "Screenshots could not be taken: capture agent output was rejected twice: plan.pages.1.path: must be a path on the app's own origin"],
+      [skip, "No screenshots: `the capture agent found nothing to show (only a tooltip text changed)`"],
+      [[invalid, invalid], "Screenshots could not be taken: `capture agent output was rejected twice: plan.pages.1.path: must be a path on the app's own origin"],
     ] as const) {
       const port = fakeCapture();
       const { driver, edits } = setup(steps(capture as FakeStep | FakeStep[]), { config: captureConfig(), capture: port.port });
@@ -198,6 +220,55 @@ describe("PipelineDriver > capture", () => {
     expect(existsSync(join(worktree, "server.pid"))).toBe(false);
     expect(git(worktree, "status", "--porcelain")).toBe("");
     expect(readFileSync(join(runDirOf(root, run.id), "round-1", "capture-report.md"), "utf8")).toContain("the app left changes in the worktree, which were undone: server.pid");
+  });
+
+  it("does not start the app on a worktree with uncommitted changes, and never wipes them", async () => {
+    // Someone's edit in the worktree, made before the app would start (here: while the capture agent ran).
+    const capture = fakeCapture();
+    const { driver, store, root, edits } = setup(steps({ role: "capture", output: PLAN, files: { "human.txt": "mine\n" } }), { config: captureConfig(), capture: capture.port });
+    const run = driver.startRun(12);
+    await driver.drive(run.id);
+
+    const worktree = store.getRun(run.id)!.worktree_path!;
+    expect(capture.requests).toEqual([]);
+    expect(readFileSync(join(worktree, "human.txt"), "utf8")).toBe("mine\n");
+    const why = "the worktree has uncommitted changes (human.txt), so the app was not started";
+    expect(readFileSync(join(runDirOf(root, run.id), "round-1", "capture-report.md"), "utf8")).toContain(why);
+    expect(edits.at(-1)!.body).toContain(`## Screenshots\nNo screenshots: \`${why}\``);
+  });
+
+  it("stops promptly when the run is cancelled while the app runs, without touching the PR", async () => {
+    let published = false;
+    const { driver, store, edits } = setup(steps(), {
+      config: captureConfig(),
+      capture: {
+        capture: async (request) => {
+          new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).cancel(request.runId, "changed my mind");
+          // The real engine stops the app and the browser when the signal fires.
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("the capture was not told to stop")), 20_000);
+            request.signal!.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return { status: "failed", problem: "cancelled", pages: [], notes: [] };
+        },
+        publish: () => {
+          published = true;
+          return {};
+        },
+      },
+    });
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "cancelled" });
+    expect(published).toBe(false);
+    expect(edits.some((e) => e.body.includes("## Screenshots"))).toBe(false);
   });
 
   it("stops at capture when the usage limit is hit, and captures on the next run", async () => {
