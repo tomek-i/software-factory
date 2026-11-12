@@ -9,7 +9,9 @@ import { isAlive } from "../util/process.js";
 import { chromiumInstalled } from "./browser.js";
 import { playwrightCapture } from "./capture.js";
 
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
+// Each test starts real apps (up to two at a time, each allowed 60s to answer) and a real Chromium:
+// about 15s alone, but over 120s while the rest of the suite loads the machine. Slow, not failing.
+vi.setConfig({ testTimeout: 2.5 * GIT_TEST_TIMEOUT });
 
 // Only where Playwright and its Chromium are installed; the driver tests cover the rest with a fake.
 // FACTORY_REQUIRE_BROWSER=1 turns a missing browser into a failure instead of a silent skip.
