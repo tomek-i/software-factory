@@ -73,8 +73,12 @@ describe("factory new", () => {
     expect(readFileSync(join(root, ".gitignore"), "utf8")).toContain(".factory/drafts/");
     expect(await runNew(dir, [], { list: true }, deps)).toBe(`${id}  Add CSV export`);
 
+    printed.length = 0;
     const approved = await runNew(dir, [], { approve: id }, deps);
 
+    // What becomes a trusted issue is shown in full before it is created.
+    expect(printed).toEqual([`${SINGLE.trim()}
+`]);
     expect(approved).toBe("Created #20 Add CSV export.\nQueued #20.\nRun it with `factory run 20`.");
     expect(issues()).toMatchObject([{ number: 20, author: "factory-operator", created_by_factory: true }]);
     expect(issues()[0]!.queued_at).not.toBeNull();
@@ -96,7 +100,7 @@ describe("factory new", () => {
 
   it("creates a parent with linked sub-issues and queues only the sub-issues when the gate is always", async () => {
     const big = draft(block("Exports") + block("CSV export", true) + block("Excel export", true, "DEPENDS_ON: 1\n"));
-    const { dir, deps, created, links, issues } = setup([{ output: big }], "always");
+    const { dir, deps, created, links, issues, printed } = setup([{ output: big }], "always");
 
     const output = await runNew(dir, ["exports in every format"], {}, deps);
 
@@ -104,6 +108,8 @@ describe("factory new", () => {
       "Created #20 Exports, with sub-issues:\n  #21 CSV export\n  #22 Excel export\nQueued #21, #22.\nRun them with `factory run 21 22`.",
     );
     expect(created[2]!.body).toContain("**Depends on:** #21");
+    expect(printed).toContain(`${big.trim()}
+`);
     expect(links).toEqual([
       [20, 21],
       [20, 22],
@@ -138,6 +144,21 @@ describe("factory new", () => {
     expect(await runNew(dir, [], { discard: id }, deps)).toBe(`Discarded ${id}.`);
     expect(await runNew(dir, [], { list: true }, deps)).toMatch(/^No pending drafts/);
     await expect(runNew(dir, [], { discard: id }, deps)).rejects.toThrow(/No pending draft/);
+  });
+
+  it("says when the agent wrote no draft at all, rather than asking to fix a missing file", async () => {
+    const { dir, deps } = setup([{}, {}], "always");
+    await expect(runNew(dir, ["an idea"], {}, deps)).rejects.toThrow(/was not written\nThe last attempt wrote no draft file\. Drop it with `factory new --discard draft-/);
+  });
+
+  it("refuses to create a draft that git tracks, as it may come from someone else's branch", async () => {
+    const { dir, root, deps, created, draftId } = setup([{ output: SINGLE }]);
+    const id = draftId(await runNew(dir, ["an idea"], {}, deps));
+    runCommand("git", ["add", "-f", join(".factory", "drafts", id, "draft.md")], { cwd: root });
+
+    await expect(runNew(dir, [], { approve: id }, deps)).rejects.toThrow(/cannot be created: .*draft\.md is tracked by git/);
+    expect(created).toEqual([]);
+    expect(await runNew(dir, [], { list: true }, deps)).toBe(`${id}  (refused) an idea  tracked by git`);
   });
 
   it("needs exactly one of an idea, --approve, --discard or --list", async () => {

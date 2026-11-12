@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
 import {
+  approvableDraft,
   createAgentRunner,
   discardDraft,
   DraftError,
@@ -48,8 +49,8 @@ export async function runNew(cwd: string, idea: string[], options: NewOptions, d
   const text = idea.join(" ").trim();
   const modes = [text !== "", options.approve !== undefined, options.discard !== undefined, options.list === true].filter(Boolean);
   if (modes.length !== 1) throw new CliError('Give an idea (`factory new "<idea>"`), or one of --approve <draft>, --discard <draft>, --list.');
-  if (options.list) return withProject(cwd, (ctx) => listPending(ctx, deps.style ?? plain), deps.run);
-  if (options.discard !== undefined) return withProject(cwd, (ctx) => discard(ctx, options.discard!), deps.run);
+  if (options.list) return withProject(cwd, (ctx) => listPending(ctx, deps.style ?? plain, deps.run), deps.run);
+  if (options.discard !== undefined) return withProject(cwd, (ctx) => discard(ctx, options.discard!, deps.run), deps.run);
   if (options.approve !== undefined) return withProject(cwd, (ctx) => approve(ctx, options.approve!, deps), deps.run);
   return withProjectAsync(cwd, (ctx) => draftIdea(ctx, text, deps), deps.run);
 }
@@ -99,7 +100,9 @@ async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Prom
       [
         "The issue writer's draft was rejected twice:",
         ...turn.problems.map((p) => `- ${p}`),
-        `Fix ${fileRef} and create it with \`factory new --approve ${id}\`, or drop it with ${drop}.`,
+        existsSync(file)
+          ? `Fix ${fileRef} and create it with \`factory new --approve ${id}\`, or drop it with ${drop}.`
+          : `The last attempt wrote no draft file. Drop it with ${drop} and try again.`,
       ].join("\n"),
     );
   }
@@ -107,7 +110,7 @@ async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Prom
   const draft = parseDraft(readFileSync(file, "utf8"));
   const mode = config.gates.issue_writer;
   const gate = resolveGate({ mode, agentDecision: { decision: draft.decision, reasons: draft.reasons }, hardRuleHits: [], unsafe: false });
-  if (gate.outcome === "proceed") return describePublished(publish(ctx, id, deps), style);
+  if (gate.outcome === "proceed") return create(ctx, id, deps);
 
   return [
     readFileSync(file, "utf8").trim(),
@@ -117,17 +120,24 @@ async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Prom
   ].join("\n");
 }
 
-function publish(ctx: ProjectContext, ref: string, deps: NewDeps): PublishedDraft {
-  const { root, store, project } = ctx;
+/**
+ * Create a draft on GitHub. The draft is printed in full first, whatever the gate: it becomes a
+ * trusted issue, so what is about to be created is always on screen.
+ */
+function create(ctx: ProjectContext, ref: string, deps: NewDeps): string {
+  const draftCtx = { ...ctx, run: deps.run };
   try {
-    return publishDraft({ root, store, project, github: deps.github ?? ghPort(project, deps.run), run: deps.run, ref });
+    const entry = approvableDraft(draftCtx, ref);
+    (deps.print ?? console.log)(`${readFileSync(entry.file, "utf8").trim()}\n`);
+    const published = publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id });
+    return describePublished(published, deps.style ?? plain);
   } catch (err) {
     if (err instanceof VerdictParseError) {
       throw new CliError([`Draft ${ref} is not valid:`, ...err.problems.map((p) => `- ${p}`), "Fix it and approve it again, or discard it."].join("\n"));
     }
     if (err instanceof DraftError) throw new CliError(err.message);
-    // Whatever was created is recorded in the draft folder, so approving again only does the rest.
-    throw new CliError(`${(err as Error).message}\nApprove it again to finish; issues already created are not created twice.`);
+    // What was created is recorded in the store, so approving again only does the rest.
+    throw new CliError(`${(err as Error).message}\nApprove it again to finish; issues recorded as created are not created again.`);
   }
 }
 
@@ -143,13 +153,13 @@ function describePublished(published: PublishedDraft, style: Style): string {
 }
 
 function approve(ctx: ProjectContext, ref: string, deps: NewDeps): string {
-  return describePublished(publish(ctx, ref, deps), deps.style ?? plain);
+  return create(ctx, ref, deps);
 }
 
-function discard(ctx: ProjectContext, ref: string): string {
+function discard(ctx: ProjectContext, ref: string, run?: CommandRunner): string {
   let entry: DraftEntry;
   try {
-    entry = discardDraft(ctx.root, ref);
+    entry = discardDraft({ ...ctx, run }, ref);
   } catch (err) {
     if (err instanceof DraftError) throw new CliError(err.message);
     throw err;
@@ -158,13 +168,14 @@ function discard(ctx: ProjectContext, ref: string): string {
   return `Discarded ${entry.id}.${kept}`;
 }
 
-function listPending(ctx: ProjectContext, style: Style): string {
-  const drafts = listDrafts(ctx.root);
+function listPending(ctx: ProjectContext, style: Style, run?: CommandRunner): string {
+  const drafts = listDrafts({ ...ctx, run });
   if (drafts.length === 0) return 'No pending drafts. Start one with `factory new "<idea>"`.';
   const width = Math.max(...drafts.map((d) => d.id.length));
   return drafts
     .map((d) => {
       const id = style.detail(d.id) + " ".repeat(width - d.id.length);
+      if (d.refusal) return `${id}  ${style.attention("(refused)")} ${d.idea}  ${style.detail("tracked by git")}`;
       if (!d.draft) return `${id}  ${style.attention("(invalid)")} ${d.idea}  ${style.detail(d.problems[0] ?? "")}`;
       const subs = d.draft.subIssues.length ? ` (+${d.draft.subIssues.length} sub-issues)` : "";
       const escalated = d.draft.decision === "ESCALATE" ? ` ${style.attention("(escalated)")}` : "";

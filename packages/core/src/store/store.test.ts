@@ -161,6 +161,28 @@ describe("Store issues created by the factory", () => {
   });
 });
 
+describe("Store issue drafts", () => {
+  it("records what was created from a draft, what was linked, and when it is finished", () => {
+    const { store, project } = setup();
+    expect(store.listDraftIssues(project.id, "draft-1")).toEqual([]);
+
+    store.recordDraftIssue(project.id, "draft-1", { position: 1, number: 21, fingerprint: "b" });
+    store.recordDraftIssue(project.id, "draft-1", { position: 0, number: 20, fingerprint: "a" });
+    store.markDraftIssueLinked(project.id, "draft-1", 1);
+    expect(() => store.recordDraftIssue(project.id, "draft-1", { position: 0, number: 99, fingerprint: "c" })).toThrow(/UNIQUE/);
+
+    expect(store.listDraftIssues(project.id, "draft-1")).toEqual([
+      { position: 0, number: 20, fingerprint: "a", linked: false },
+      { position: 1, number: 21, fingerprint: "b", linked: true },
+    ]);
+    expect(store.listDraftIssues(project.id, "draft-2")).toEqual([]);
+    expect(store.isDraftFinished(project.id, "draft-1")).toBe(false);
+    store.finishDraft(project.id, "draft-1");
+    store.finishDraft(project.id, "draft-1");
+    expect(store.isDraftFinished(project.id, "draft-1")).toBe(true);
+  });
+});
+
 describe("Store ports and agent runs", () => {
   it("hands out the lowest free port block and reuses blocks of finished runs", () => {
     const { store, project } = setup();

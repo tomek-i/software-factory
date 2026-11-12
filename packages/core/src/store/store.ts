@@ -118,6 +118,17 @@ export interface Issue {
   created_by_factory: boolean;
 }
 
+/** One issue `factory new --approve` created from a draft. */
+export interface DraftIssueRecord {
+  /** 0 is the single issue or the parent; sub-issues follow in draft order. */
+  position: number;
+  number: number;
+  /** Hash of the draft entry it was created from, so a later edit cannot shift numbers onto other entries. */
+  fingerprint: string;
+  /** Linked to the parent as a GitHub sub-issue. */
+  linked: boolean;
+}
+
 /** An issue as fetched from GitHub, before local bookkeeping is added. */
 export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq" | "created_by_factory">;
 
@@ -303,6 +314,34 @@ export class Store {
       .prepare("UPDATE issues SET created_by_factory = 1 WHERE project_id = ? AND number = ?")
       .run(projectId, number);
     if (result.changes !== 1) throw new Error(`issue #${number} is not synced yet`);
+  }
+
+  // ---- issue drafts -------------------------------------------------------
+
+  /** Issues created so far from a draft, by position (0 is the single issue or the parent). */
+  listDraftIssues(projectId: string, draftId: string): DraftIssueRecord[] {
+    const rows = this.db
+      .prepare("SELECT position, number, fingerprint, linked FROM draft_issues WHERE project_id = ? AND draft_id = ? ORDER BY position")
+      .all(projectId, draftId) as (Omit<DraftIssueRecord, "linked"> & { linked: number })[];
+    return rows.map((r) => ({ ...r, linked: r.linked === 1 }));
+  }
+
+  recordDraftIssue(projectId: string, draftId: string, record: Omit<DraftIssueRecord, "linked">): void {
+    this.db
+      .prepare("INSERT INTO draft_issues (project_id, draft_id, position, number, fingerprint) VALUES (?, ?, ?, ?, ?)")
+      .run(projectId, draftId, record.position, record.number, record.fingerprint);
+  }
+
+  markDraftIssueLinked(projectId: string, draftId: string, position: number): void {
+    this.db.prepare("UPDATE draft_issues SET linked = 1 WHERE project_id = ? AND draft_id = ? AND position = ?").run(projectId, draftId, position);
+  }
+
+  finishDraft(projectId: string, draftId: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO drafts_done (project_id, draft_id, done_at) VALUES (?, ?, ?)").run(projectId, draftId, now());
+  }
+
+  isDraftFinished(projectId: string, draftId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM drafts_done WHERE project_id = ? AND draft_id = ?").get(projectId, draftId) !== undefined;
   }
 
   // ---- runs ---------------------------------------------------------------
