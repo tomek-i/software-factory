@@ -2,9 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
-import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT, REVIEW_PASS, type FakeStep } from "../../test/helpers.js";
-import type { Store } from "../store/store.js";
+import { bumpy, buildStep, CODE_PASS, lastMove, learnConfig as config, learned, LESSON, setup, TRIAGE } from "../../test/driver-setup.js";
+import { git, GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
 import { approveTarget, runDirOf, waitingCommit } from "./driver.js";
 import { RunMachine } from "./transitions.js";
 
@@ -12,22 +11,6 @@ import { RunMachine } from "./transitions.js";
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver learn stage", () => {
-  /** One review lens, and the merge gate as given (default: always, so the run merges by itself). */
-  const config = (merge = "always") =>
-    `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  merge: ${merge}\nreviews:\n  always: [code]\n  ui: []\n`;
-  const CODE_PASS: FakeStep = { role: "reviewer-code", output: REVIEW_PASS };
-  const LESSON = {
-    observation: "The builder wrote `broken` first and the feature check failed.",
-    evidence: "round-1/checks.md (feature failed), round-2/checks.md (passed)",
-    rule: "Run `node check.js` before handing over; the gate only passes when feature.txt says fixed.",
-  };
-  const learned = (lessons: object[]) =>
-    `LESSONS: ${lessons.length}\n\n## Summary\n- the gate failed once\n\n## Lessons\n\`\`\`json\n${JSON.stringify(lessons, null, 2)}\n\`\`\`\n`;
-  /** A run whose first build fails the quality gate, so it takes two rounds before it merges. */
-  const bumpy = (...learner: FakeStep[]): FakeStep[] => [{ output: TRIAGE() }, buildStep("broken"), buildStep("fixed"), CODE_PASS, ...learner.map((s) => ({ role: "learner", ...s }))];
-
-  const lastMove = (store: Store, runId: string) => store.listEvents(runId).at(-1)!;
-
   it("skips the learner for a run that went through in one clean round", async () => {
     const { driver, store, fake, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: config() });
     const run = driver.startRun(12);
@@ -121,35 +104,31 @@ describe("PipelineDriver learn stage", () => {
     expect(existsSync(join(runDirOf(root, run.id), "learn.md"))).toBe(true);
   });
 
-  it("never holds up a merged run: a failed learner only skips the lessons, with a warning", async () => {
-    const { driver, store, seen } = setup(bumpy({ stream: "error_max_turns" }), { config: config() });
+  it("learns from a run the approver escalated, even though a human then approved it", async () => {
+    const escalate = "DECISION: ESCALATE\n\n## Summary\n- unsure\n\n## Reasons\n- the issue leaves the price open\n";
+    const steps = [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, { role: "approver", output: escalate }, { role: "learner", output: learned([]) }];
+    const { driver, store, fake } = setup(steps, { config: config("auto") });
     const run = driver.startRun(12);
+    await driver.drive(run.id);
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "merge", { comment: "price is fine", commitSha: waitingCommit(store.listEvents(run.id)) });
 
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({ from_state: "learn", to_state: "done", reason: expect.stringMatching(/^lessons skipped: learner agent failed/) });
-    expect(seen).toContainEqual(expect.objectContaining({ type: "info", message: expect.stringMatching(/^warning: no lessons from this run: learner agent failed/) }));
-    expect(store.listLessons({ project_id: run.project_id })).toEqual([]);
+    const learner = fake.calls().find((c) => c.role === "learner")!;
+    expect(learner.stdin).toContain("## Why this run is worth a look\n- the approver escalated: the issue leaves the price open");
   });
 
-  it("finishes the run without lessons when the usage limit is hit", async () => {
-    const { driver, store } = setup(bumpy({ stream: "rate_limited" }), { config: config() });
+  it("learns from a run a hard rule stopped, even though a human then approved it", async () => {
+    const touchInfra: FakeStep = { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "infra/main.tf": "x\n" } };
+    const { driver, store, fake } = setup([{ output: TRIAGE() }, touchInfra, CODE_PASS, { role: "learner", output: learned([]) }], { config: config() });
     const run = driver.startRun(12);
-
-    // Not rate_limited: the merge is done, and there is nothing to continue after the reset.
-    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({ to_state: "done", reason: expect.stringMatching(/^lessons skipped: usage limit reached \(resets at /) });
-  });
-
-  it("finishes the run without lessons when the learner's output is malformed twice", async () => {
-    const vague = "LESSONS: 1\n\n## Lessons\n- write better code\n";
-    const { driver, store } = setup(bumpy({ output: vague }, { output: vague }), { config: config() });
-    const run = driver.startRun(12);
+    const machine = new RunMachine(store, factoryConfigSchema.parse({ version: 1 }));
+    await driver.drive(run.id); // waits at the review gate
+    machine.resume(run.id, approveTarget(store.getRun(run.id)!)!, { comment: "infra change is intended" });
+    await driver.drive(run.id); // waits at the merge gate
+    machine.resume(run.id, "merge", { comment: "go", commitSha: waitingCommit(store.listEvents(run.id)) });
 
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({
-      to_state: "done",
-      reason: expect.stringMatching(/^lessons skipped: learner output was rejected twice: ## Lessons must contain a ```json array block/),
-    });
-    expect(store.listLessons({ project_id: run.project_id })).toEqual([]);
+    const learner = fake.calls().find((c) => c.role === "learner")!;
+    expect(learner.stdin).toContain("- stopped by a hard rule: protected path (infra/**): infra/main.tf");
   });
 });

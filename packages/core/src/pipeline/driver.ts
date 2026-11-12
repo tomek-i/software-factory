@@ -917,16 +917,21 @@ export class PipelineDriver {
           : this.troubleReason("learner", turn);
       return this.skipLessons(run, why);
     }
-    const lessons = parseLessons(turn.verdict.body);
     const { store } = this.deps;
-    // One transaction, so a crash in between never stores the same proposals twice.
-    store.transaction(() => {
-      store.addLessons(run.id, lessons);
-      const reason = lessons.length
-        ? `${lessons.length} lesson${lessons.length > 1 ? "s" : ""} proposed; see \`factory lessons\``
-        : "the learner proposed no lessons";
-      this.move(run, "done", reason, { lessons: lessons.length });
-    });
+    try {
+      const lessons = parseLessons(turn.verdict.body);
+      // One transaction, so a crash in between never stores the same proposals twice.
+      store.transaction(() => {
+        store.addLessons(run.id, lessons);
+        const reason = lessons.length
+          ? `${lessons.length} lesson${lessons.length > 1 ? "s" : ""} proposed; see \`factory lessons\``
+          : "the learner proposed no lessons";
+        this.move(run, "done", reason, { lessons: lessons.length });
+      });
+    } catch (err) {
+      if (this.load(run.id).state !== run.state) return undefined; // cancelled meanwhile
+      return this.skipLessons(run, `could not store lessons: ${(err as Error).message}`);
+    }
     return undefined;
   }
 
@@ -957,9 +962,22 @@ export class PipelineDriver {
     }
     const events = this.deps.store.listEvents(run.id);
     for (const [i, event] of events.entries()) {
-      if (event.to_state === "needs_info") reasons.push(`triage asked the author for more information: ${event.reason}`);
-      // Waiting at a gate is routine; any other stop for a human is an escalation.
-      if (event.to_state === "needs_human" && !event.reason.startsWith("waiting at ")) reasons.push(`escalated: ${clip(event.reason)}`);
+      if (event.to_state === "needs_info") reasons.push(`triage asked the author for more information: ${clip(event.reason)}`);
+      if (event.to_state === "needs_human") {
+        if (!event.reason.startsWith("waiting at ")) {
+          reasons.push(`escalated: ${clip(event.reason)}`);
+        } else {
+          // Waiting only because the gate is set to human is routine; a hard rule or the approver
+          // escalating is not.
+          const waited = (event.data as { reasons?: unknown } | null)?.reasons;
+          const why = Array.isArray(waited) ? waited.filter((r): r is string => typeof r === "string") : [];
+          for (const hit of why.filter((r) => r.startsWith("hard rule: "))) reasons.push(`stopped by a ${clip(hit)}`);
+          if (event.from_state === "merge" && this.deps.config.gates.merge === "auto") {
+            const approver = why.filter((r) => !r.startsWith("hard rule") && r !== "gate is set to human");
+            if (approver.length) reasons.push(`the approver escalated: ${clip(approver.join("; "))}`);
+          }
+        }
+      }
       if (event.from_state !== "needs_human") continue;
       const gate = (event.data as { gate?: unknown } | null)?.gate;
       const parkedFrom = events.slice(0, i).findLast((e) => e.to_state === "needs_human")?.from_state ?? null;
@@ -1519,6 +1537,8 @@ export class PipelineDriver {
     const current = this.load(runId);
     if (current.state !== state) return undefined; // e.g. cancelled while this step ran
     const message = err instanceof Error ? err.message : String(err);
+    // The PR is merged by the time a run learns, so whatever went wrong there must not hold it up.
+    if (state === "learn") return this.skipLessons(current, `error: ${message.slice(0, 1000)}`);
     this.move(current, "needs_human", `error in ${state}: ${message.slice(0, 1000)}`);
     return undefined;
   }

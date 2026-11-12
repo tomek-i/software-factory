@@ -8,7 +8,7 @@ import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
 import type { GithubPort } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
-import { fakeClaude, repoWithRemote, type FakeStep } from "./helpers.js";
+import { fakeClaude, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
 export const TRIAGE = (decision = "APPROVE", extra = "") =>
   `DECISION: ${decision}\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- looks fine\n${extra}`;
@@ -143,3 +143,19 @@ export const reviewConfig = (reviews: string) =>
 const finding = (severity: string) =>
   `## Findings\n\`\`\`json\n[{ "id": "code-1", "severity": "${severity}", "file": "feature.txt", "line": 1, "claim": "it says fixed", "evidence": "line 1" }]\n\`\`\`\n`;
 export const review = (verdict: string, severity?: string) => `VERDICT: ${verdict}\n\n## Summary\n- reviewed\n\n${severity ? finding(severity) : "## Findings\nNone.\n"}`;
+
+/** Learn-stage tests: one review lens, and the merge gate as given (default: always, so the run merges by itself). */
+export const learnConfig = (merge = "always") =>
+  `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  merge: ${merge}\nreviews:\n  always: [code]\n  ui: []\n`;
+export const CODE_PASS: FakeStep = { role: "reviewer-code", output: REVIEW_PASS };
+export const LESSON = {
+  observation: "The builder wrote `broken` first and the feature check failed.",
+  evidence: "round-1/checks.md (feature failed), round-2/checks.md (passed)",
+  rule: "Run `node check.js` before handing over; the gate only passes when feature.txt says fixed.",
+};
+export const learned = (lessons: object[]) =>
+  `LESSONS: ${lessons.length}\n\n## Summary\n- the gate failed once\n\n## Lessons\n\`\`\`json\n${JSON.stringify(lessons, null, 2)}\n\`\`\`\n`;
+/** A run whose first build fails the quality gate, so it takes two rounds before it merges. */
+export const bumpy = (...learner: FakeStep[]): FakeStep[] => [{ output: TRIAGE() }, buildStep("broken"), buildStep("fixed"), CODE_PASS, ...learner.map((s) => ({ role: "learner", ...s }))];
+
+export const lastMove = (store: Store, runId: string) => store.listEvents(runId).at(-1)!;
