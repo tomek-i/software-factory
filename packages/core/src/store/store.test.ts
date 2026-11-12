@@ -87,6 +87,7 @@ describe("Store", () => {
     expect(long.id).toMatch(/^49-shorter-builder-summaries-one-[0-9a-f]{6}$/);
     expect(adhoc.id).toMatch(/^new-unicode-spaces-[0-9a-f]{6}$/);
     expect(again.id).not.toBe(long.id);
+    expect(store.createRun({ project_id: project.id, title: "!!! ???", issue_number: 7 }).id).toMatch(/^7-work-[0-9a-f]{6}$/);
   });
 
   it("filters runs by project and state", () => {
