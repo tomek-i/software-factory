@@ -74,7 +74,7 @@ export const factoryConfigSchema = z.object({
       name: z.string().optional(),
       default_branch: z.string().default("main"),
     })
-    .default({}),
+    .prefault({}),
   checks: z.array(checkSchema).default([]),
   app: z
     .object({
@@ -95,7 +95,7 @@ export const factoryConfigSchema = z.object({
       // ffmpeg is on PATH), `off` keeps the silent video only, anything else is a path to narrate.mjs.
       narrate: z.string().min(1).default("auto"),
     })
-    .default({}),
+    .prefault({}),
   gates: z
     .object({
       issue_writer: gateMode.default("human"),
@@ -106,7 +106,7 @@ export const factoryConfigSchema = z.object({
       pr: gateMode.default("always"),
       merge: gateMode.default("human"),
     })
-    .default({}),
+    .prefault({}),
   // The defaults are a floor: config can add paths but never remove them, otherwise an empty list
   // would be a way to switch hard rules off without --unsafe.
   hard_rules: z
@@ -120,37 +120,37 @@ export const factoryConfigSchema = z.object({
         .default([])
         .transform(() => [...HARD_RULE_TRIGGERS]),
     })
-    .default({}),
+    .prefault({}),
   loops: z
     .object({
       max_build_iterations: z.number().int().min(1).default(5),
       max_review_rounds: z.number().int().min(1).default(3),
       max_critic_rounds: z.number().int().min(1).default(2),
     })
-    .default({}),
+    .prefault({}),
   reviews: z
     .object({
       always: z.array(z.enum(REVIEW_LENSES)).default(["code", "security", "docs"]),
       ui: z.array(z.enum(REVIEW_LENSES)).default(["ux", "ui"]),
     })
-    .default({}),
+    .prefault({}),
   models: z
     .object({
       default: z.string().min(1).default("opus"),
       // Unset means Claude Code's own default effort.
       effort: z.enum(EFFORT_LEVELS).optional(),
-      roles: z.record(z.enum(AGENT_ROLES), modelSpec).default({}),
+      roles: z.partialRecord(z.enum(AGENT_ROLES), modelSpec).default({}),
       // Per review lens; a lens without an entry uses roles.reviewer.
-      reviews: z.record(z.enum(REVIEW_LENSES), modelSpec).default({}),
+      reviews: z.partialRecord(z.enum(REVIEW_LENSES), modelSpec).default({}),
       // Applied on top of everything else when triage rated the issue RISK: HIGH.
-      high_risk: z.record(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec).default({}),
+      high_risk: z.partialRecord(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec).default({}),
     })
-    .default({}),
+    .prefault({}),
   concurrency: z
     .object({
       max_runs: z.number().int().min(1).default(2),
     })
-    .default({}),
+    .prefault({}),
   // Whose issue text and comments the agents may treat as the spec. Anything else is handled as
   // untrusted data and triage always waits for a human before it can lead to a build.
   trust: z
@@ -159,7 +159,7 @@ export const factoryConfigSchema = z.object({
       // For private repos where only approved people can open issues.
       everyone: z.boolean().default(false),
     })
-    .default({}),
+    .prefault({}),
   merge: z
     .object({
       // How the factory merges a PR: a merge commit, one squashed commit titled after the PR, or a rebase.
@@ -167,7 +167,7 @@ export const factoryConfigSchema = z.object({
       // How long the merge stage waits for checks that branch protection requires, before asking a human.
       checks_timeout_min: z.number().positive().default(30),
     })
-    .default({}),
+    .prefault({}),
   github: z
     .object({
       // Labels only mirror run status onto GitHub issues. They are never read as input:
@@ -177,7 +177,7 @@ export const factoryConfigSchema = z.object({
       poll_interval_sec: z.number().int().min(30).default(120),
       max_starts_per_day: z.number().int().min(0).default(10),
     })
-    .default({}),
+    .prefault({}),
 });
 
 export type FactoryConfig = z.infer<typeof factoryConfigSchema>;
