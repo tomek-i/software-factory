@@ -16,9 +16,9 @@ describe("approve / reject / cancel", () => {
     await run();
     const worktrees = join(findRepoRoot(dir)!, ".worktrees");
 
-    const message = runCancel(dir, "run-12", {});
+    const message = runCancel(dir, "12-", {});
 
-    expect(message).toMatch(/^Cancelled run-12-\w+\./);
+    expect(message).toMatch(/^Cancelled 12-[\w-]+\./);
     expect(message).toContain("The worktree is kept");
     expect(existsSync(worktrees)).toBe(true);
     expect(git(dir, "worktree", "list")).toContain(".worktrees");
@@ -46,7 +46,7 @@ describe("approve / reject / cancel", () => {
     queue();
     expect(await run()).toMatch(/waiting for answers on issue #12/);
 
-    expect(await run()).toMatch(/waiting at the triage gate[\s\S]*See it with: `factory show run-12-\w+ triage`/);
+    expect(await run()).toMatch(/waiting at the triage gate[\s\S]*See it with: `factory show 12-[\w-]+ triage`/);
     expect(printed).toContain("-> triage: triage again with the current issue text");
   });
 

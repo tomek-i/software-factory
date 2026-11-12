@@ -32,7 +32,7 @@ describe("approve / reject / cancel", () => {
 
     const message = await runApprove(dir, "12", { message: "go" }, deps);
 
-    expect(printed.some((l) => /^Approved the triage gate of run-12-\w+; it moves to build\.$/.test(l))).toBe(true);
+    expect(printed.some((l) => /^Approved the triage gate of 12-[\w-]+; it moves to build\.$/.test(l))).toBe(true);
     expect(printed.some((l) => l.startsWith("[builder] ok"))).toBe(true);
     expect(message).toMatch(/waiting at the review gate/);
     // Approving the review gate drives on through capture and the PR to the merge gate.
@@ -82,11 +82,11 @@ describe("approve / reject / cancel", () => {
 
     const waiting = await runApprove(dir, "12", { message: "go" }, deps);
     expect(waiting).toMatch(/is waiting at the critic gate: waiting at critic gate: gate is set to human/);
-    expect(waiting).toMatch(/^See it with: `factory show run-12-\w+ critic`\.$/m);
-    expect(printed.some((l) => /^Approved the triage gate of run-12-\w+; it moves to refine\.$/.test(l))).toBe(true);
+    expect(waiting).toMatch(/^See it with: `factory show 12-[\w-]+ critic`\.$/m);
+    expect(printed.some((l) => /^Approved the triage gate of 12-[\w-]+; it moves to refine\.$/.test(l))).toBe(true);
 
     expect(await runApprove(dir, "12", { message: "spec is fine" }, deps)).toMatch(/waiting at the review gate/);
-    expect(printed.some((l) => /^Approved the critic gate of run-12-\w+; it moves to build\.$/.test(l))).toBe(true);
+    expect(printed.some((l) => /^Approved the critic gate of 12-[\w-]+; it moves to build\.$/.test(l))).toBe(true);
     expect(fake.calls().map((c) => c.role).slice(0, 3)).toEqual(["triage", "refine", "builder"]);
     expect(fake.calls().find((c) => c.role === "builder")!.stdin).toContain("feature.txt exists");
   });

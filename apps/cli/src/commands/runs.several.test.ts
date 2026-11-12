@@ -32,8 +32,8 @@ describe("factory run with several issues", () => {
     // The shared Ctrl+C handler is gone once the last run finishes.
     expect(process.listenerCount("SIGINT")).toBe(listeners);
     const lines = message.split("\n");
-    expect(lines[0]).toMatch(/^\[#12\] Run run-12-\w+ is waiting at the triage gate/);
-    expect(lines.filter((l) => l.startsWith("[#13] Run run-13-")).length).toBe(1);
+    expect(lines[0]).toMatch(/^\[#12\] Run 12-[\w-]+ is waiting at the triage gate/);
+    expect(lines.filter((l) => l.startsWith("[#13] Run 13-")).length).toBe(1);
     expect(lines.every((l) => /^\[#1[23]\] /.test(l))).toBe(true);
     expect(printed.every((l) => /^\[#1[23]\] /.test(l))).toBe(true);
     expect(printed).toEqual(expect.arrayContaining(["[#12] -> triage: issue loaded", "[#13] -> triage: issue loaded"]));
@@ -63,7 +63,7 @@ describe("factory run with several issues", () => {
 
     expect(error).toBeInstanceOf(CliError);
     const message = (error as CliError).message;
-    expect(message).toMatch(/\[#12\] Run run-12-\w+ is waiting at the triage gate/);
+    expect(message).toMatch(/\[#12\] Run 12-[\w-]+ is waiting at the triage gate/);
     expect(message).toContain("[#13] Skipped: Issue #13 is closed.");
   });
 

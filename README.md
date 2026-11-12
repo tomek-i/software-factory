@@ -103,7 +103,7 @@ factory lessons reject 5 -m "why"  # never apply this lesson; -m is optional
 
 `factory run <n>` is enough for a brand-new issue: running it is your decision to work on it, so if the issue isn't queued yet it fetches it fresh from GitHub and queues it, the same as `factory queue <n>`. Closed issues are refused, and an issue by an author outside `trust.authors` still waits for you at triage. Give several numbers to run them side by side in one terminal: at most `concurrency.max_runs` (default 2) run at once and the rest wait their turn. An issue that can't start (closed, not on GitHub) is skipped, the others still run, and the command exits non-zero. Once your usage limit is hit, issues not started yet are left for later. Ctrl+C stops all of them. Approve, resume and reject apply the config on the default branch, like `factory run`, so a local edit cannot change where an approved run goes. `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would; with `--no-run` they only record the decision.
 
-`<run>` is a run id, a unique prefix of one, or an issue number (`12`) for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
+`<run>` is a run id (the issue number, a slug of its title and a short random part, e.g. `49-shorter-builder-summaries-one-dfc238`; runs created before this used `run-49-dfc23835`), a unique prefix of one, or an issue number (`12`) for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
 
 What `factory run` does today:
 

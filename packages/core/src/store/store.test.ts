@@ -74,8 +74,19 @@ describe("Store", () => {
 
     expect(run.state).toBe("intake");
     expect(run.unsafe).toBe(true);
-    expect(run.id).toMatch(/^run-42-/);
+    expect(run.id).toMatch(/^42-csv-export-[0-9a-f]{6}$/);
     expect(store.listEvents(run.id)).toMatchObject([{ from_state: null, to_state: "intake", data: { unsafe: true } }]);
+  });
+
+  it("names runs after the issue number and a slug of the title", () => {
+    const { store, project } = setup();
+    const long = store.createRun({ project_id: project.id, title: "Shorter builder summaries: one line per bullet!", issue_number: 49 });
+    const adhoc = store.createRun({ project_id: project.id, title: "Ünïcode & spaces" });
+    const again = store.createRun({ project_id: project.id, title: "Shorter builder summaries: one line per bullet!", issue_number: 49 });
+
+    expect(long.id).toMatch(/^49-shorter-builder-summaries-one-[0-9a-f]{6}$/);
+    expect(adhoc.id).toMatch(/^new-unicode-spaces-[0-9a-f]{6}$/);
+    expect(again.id).not.toBe(long.id);
   });
 
   it("filters runs by project and state", () => {
