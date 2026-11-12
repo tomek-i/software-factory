@@ -66,6 +66,7 @@ describe("narrationScene", () => {
       name: "walkthrough",
       site: "http://127.0.0.1:4000/",
       viewport: { width: 1280, height: 720 },
+      waitUntil: "load",
       beats: [
         {
           id: "beat-1",
@@ -83,9 +84,9 @@ describe("narrationScene", () => {
 });
 
 describe("narrationScene fill values", () => {
-  it("escapes narrate's ${NAME} expansion, so a value is typed as written", () => {
+  it("passes a value as written, as --untrusted types ${NAME} literally", () => {
     const scene = narrationScene([walkthroughStepSchema.parse({ action: "fill", selector: "#q", value: "${USERPROFILE} and $${X}", say: "Typing." })], "http://127.0.0.1:1/");
-    expect(scene!.beats[0]!.do).toEqual([{ action: "fill", selector: "#q", text: "$${USERPROFILE} and $$${X}" }]);
+    expect(scene!.beats[0]!.do).toEqual([{ action: "fill", selector: "#q", text: "${USERPROFILE} and $${X}" }]);
   });
 });
 
@@ -105,11 +106,12 @@ describe("the walkthrough step schema", () => {
 });
 
 /**
- * A stand-in for narrate.mjs. What it does comes from mode.txt next to it (its environment is
- * filtered): `ok` writes walkthrough.mp4, `fail` exits 1, `none` writes nothing, `hang` never ends
- * (after writing its pid). It always records its arguments and environment.
+ * A stand-in for narrate.mjs `render --json`. What it does comes from mode.txt next to it (its
+ * environment is filtered): `ok` writes walkthrough.mp4 and reports it, `fail` reports a failed
+ * render, `old` prints what a narrate without --json would, `gone` reports a video it did not write,
+ * `hang` never ends (after writing its pid). It always records its arguments and environment.
  */
-function fakeNarrate(mode: "ok" | "fail" | "none" | "hang"): string {
+function fakeNarrate(mode: "ok" | "fail" | "old" | "gone" | "hang" | "noisy" | "mov" | "nostage"): string {
   const dir = tempDir("fake-narrate-");
   writeFileSync(join(dir, "mode.txt"), mode);
   const script = join(dir, "narrate.mjs");
@@ -122,8 +124,27 @@ const mode = readFileSync(join(here, "mode.txt"), "utf8");
 const args = process.argv.slice(2);
 writeFileSync(join(here, "seen.json"), JSON.stringify({ args, cwd: process.cwd(), env: process.env }));
 const out = args[args.indexOf("--out") + 1];
-if (mode === "ok") writeFileSync(join(out, "walkthrough.mp4"), readFileSync(args[args.indexOf("--scene") + 1]));
-if (mode === "fail") { console.error("boom"); process.exit(1); }
+console.error("progress goes to stderr");
+if (mode === "ok") {
+  writeFileSync(join(out, "walkthrough.mp4"), readFileSync(args[args.indexOf("--scene") + 1]));
+  console.log(JSON.stringify({ ok: true, video: join(out, "walkthrough.mp4"), captions: null }));
+}
+if (mode === "fail") {
+  console.log(JSON.stringify({ ok: false, stage: "record", error: "the page left http://127.0.0.1:1 for https://elsewhere.test (C:\\\\Users\\\\me)", log: "x" }));
+  process.exit(1);
+}
+if (mode === "old") { console.error("error: unknown option '--untrusted'"); process.exit(1); }
+if (mode === "noisy") {
+  writeFileSync(join(out, "walkthrough.webm"), "v");
+  process.stdout.write("a stray line\\n" + JSON.stringify({ video: "not the result" }) + "\\n");
+  const line = JSON.stringify({ ok: true, video: join(out, "walkthrough.webm") });
+  process.stdout.write(line.slice(0, 10));
+  await new Promise((r) => setTimeout(r, 100));
+  process.stdout.write(line.slice(10) + "\\n{not json\\n");
+}
+if (mode === "mov") { writeFileSync(join(out, "walkthrough.mov"), "v"); console.log(JSON.stringify({ ok: true, video: join(out, "walkthrough.mov") })); }
+if (mode === "nostage") { console.log(JSON.stringify({ ok: false, error: "crash" })); process.exit(1); }
+if (mode === "gone") console.log(JSON.stringify({ ok: true, video: join(out, "walkthrough.mp4") }));
 if (mode === "hang") { writeFileSync(join(here, "pid.txt"), String(process.pid)); setInterval(() => {}, 1000); }
 `,
   );
@@ -131,7 +152,7 @@ if (mode === "hang") { writeFileSync(join(here, "pid.txt"), String(process.pid))
 }
 
 const ffmpeg = (present: boolean): CommandRunner => () => ({ code: present ? 0 : 1, stdout: "", stderr: "" });
-const scene: NarrationScene = { name: "walkthrough", site: "http://127.0.0.1:1/", viewport: { width: 1280, height: 720 }, beats: [{ id: "beat-1", say: "Hi.", do: [] }] };
+const scene: NarrationScene = { name: "walkthrough", site: "http://127.0.0.1:1/", viewport: { width: 1280, height: 720 }, waitUntil: "load", beats: [{ id: "beat-1", say: "Hi.", do: [] }] };
 
 describe("renderNarrated", () => {
   it("renders the scene into the capture folder, from its own folder, without the factory's tokens", async () => {
@@ -143,7 +164,21 @@ describe("renderNarrated", () => {
       expect(result).toEqual({ video: join(outDir, "walkthrough-narrated.mp4") });
       expect(JSON.parse(readFileSync(join(outDir, "walkthrough-narrated.mp4"), "utf8"))).toEqual(scene);
       const seen = JSON.parse(readFileSync(join(narrate, "..", "seen.json"), "utf8")) as { args: string[]; cwd: string; env: Record<string, string> };
-      expect(seen.args).toEqual(["render", "--scene", join(outDir, "narrate", "walkthrough.scene.json"), "--out", join(outDir, "narrate")]);
+      const dir = join(outDir, "narrate");
+      expect(seen.args).toEqual([
+        "render",
+        "--scene",
+        join(dir, "walkthrough.scene.json"),
+        "--out",
+        dir,
+        "--untrusted",
+        "--site",
+        scene.site,
+        "--json",
+        "--log",
+        join(dir, "narrate.log"),
+      ]);
+      expect(readFileSync(join(dir, "cli-output.log"), "utf8")).toContain("progress goes to stderr");
       expect(seen.cwd.toLowerCase()).toBe(join(outDir, "narrate").toLowerCase());
       expect(Object.keys(seen.env).some((k) => k.toUpperCase().startsWith("GH_TOKEN"))).toBe(false);
       expect(Object.keys(seen.env).some((k) => k.toUpperCase() === "PATH")).toBe(true);
@@ -155,11 +190,22 @@ describe("renderNarrated", () => {
   it("says why there is no video", async () => {
     const outDir = tempDir("narrate-out-");
     expect(await renderNarrated({ narrate: fakeNarrate("ok"), scene, outDir, run: ffmpeg(false) })).toEqual({ problem: "ffmpeg is not on PATH; narrate needs it to add the voice" });
-    expect(await renderNarrated({ narrate: fakeNarrate("fail"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate failed (exit 1); see narrate/narrate.log and narrate/cli-output.log" });
-    expect(readFileSync(join(outDir, "narrate", "cli-output.log"), "utf8")).toContain("boom");
-    expect(await renderNarrated({ narrate: fakeNarrate("none"), scene, outDir, run: ffmpeg(true) })).toEqual({
-      problem: "narrate finished without writing a video; see narrate/narrate.log and narrate/cli-output.log",
+    // narrate's message goes on the second line, which the PR leaves out.
+    expect(await renderNarrated({ narrate: fakeNarrate("fail"), scene, outDir, run: ffmpeg(true) })).toEqual({
+      problem: "narrate failed while recording the browser; see narrate/narrate.log\nthe page left http://127.0.0.1:1 for https://elsewhere.test (C:\\Users\\me)",
     });
+    expect(await renderNarrated({ narrate: fakeNarrate("old"), scene, outDir, run: ffmpeg(true) })).toEqual({
+      problem: "narrate gave no result (exit 1; it needs 0.24.0 or newer); see narrate/cli-output.log",
+    });
+    expect(readFileSync(join(outDir, "narrate", "cli-output.log"), "utf8")).toContain("unknown option");
+    expect(await renderNarrated({ narrate: fakeNarrate("nostage"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate failed while rendering; see narrate/narrate.log\ncrash" });
+    expect(await renderNarrated({ narrate: fakeNarrate("mov"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate reported a video that is not there; see narrate/narrate.log" });
+    expect(await renderNarrated({ narrate: fakeNarrate("gone"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate reported a video that is not there; see narrate/narrate.log" });
+  });
+
+  it("finds the result among other output, even when it arrives in pieces", async () => {
+    const outDir = tempDir("narrate-out-");
+    expect(await renderNarrated({ narrate: fakeNarrate("noisy"), scene, outDir, run: ffmpeg(true) })).toEqual({ video: join(outDir, "walkthrough-narrated.webm") });
   });
 
   it("stops a render that takes too long, or is cancelled, and leaves nothing running", async () => {
@@ -197,7 +243,7 @@ describe.skipIf(!canRender)("renderNarrated with the real narrate plugin", () =>
     try {
       const steps = [
         { action: "goto", path: "/", say: "The home page." },
-        // Unset on purpose: unescaped, narrate would refuse the scene.
+        // Unset on purpose: if narrate expanded it, it would refuse the scene.
         { action: "fill", selector: "#q", value: "${FACTORY_NARRATE_TEST_UNSET}" },
         { action: "click", text: "go", say: "Go." },
       ].map((s) => walkthroughStepSchema.parse(s));
@@ -208,6 +254,37 @@ describe.skipIf(!canRender)("renderNarrated with the real narrate plugin", () =>
       if (before === undefined) delete process.env.NARRATE_HOME;
       else process.env.NARRATE_HOME = before;
       server.close();
+    }
+  }, 300_000);
+
+  it("fails without a video when the app sends the browser to another site", async () => {
+    const elsewhere = createServer((_, res) => res.end("<html><body>elsewhere</body></html>"));
+    await new Promise<void>((r) => elsewhere.listen(0, "127.0.0.1", () => r()));
+    const away = `http://localhost:${(elsewhere.address() as { port: number }).port}/`;
+    const app = createServer((req, res) => {
+      if (req.url === "/away") {
+        res.writeHead(302, { location: away });
+        return res.end();
+      }
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body><h1>Home</h1></body></html>");
+    });
+    await new Promise<void>((r) => app.listen(0, "127.0.0.1", () => r()));
+    const home = tempDir("narrate-settings-");
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ tts: { provider: "mock" } }));
+    const before = process.env.NARRATE_HOME;
+    process.env.NARRATE_HOME = home;
+    try {
+      const steps = [{ action: "goto", path: "/", say: "Home." }, { action: "goto", path: "/away", say: "Away." }].map((s) => walkthroughStepSchema.parse(s));
+      const outDir = tempDir("narrate-real-");
+      const result = await renderNarrated({ narrate: realNarrate!, scene: narrationScene(steps, `http://127.0.0.1:${(app.address() as { port: number }).port}/`)!, outDir });
+      expect(result).toMatchObject({ problem: expect.stringMatching(/^narrate failed while /) });
+      expect(existsSync(join(outDir, "walkthrough-narrated.mp4"))).toBe(false);
+    } finally {
+      if (before === undefined) delete process.env.NARRATE_HOME;
+      else process.env.NARRATE_HOME = before;
+      app.close();
+      elsewhere.close();
     }
   }, 300_000);
 });

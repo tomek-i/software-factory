@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import type { WalkthroughStep } from "@factory/shared";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { killTree } from "../util/process.js";
@@ -61,14 +61,17 @@ export interface NarrationScene {
   name: string;
   site: string;
   viewport: { width: number; height: number };
+  /** As the silent run waits; an app that keeps polling never goes network-idle. */
+  waitUntil: "load";
   beats: { id: string; say: string; do: SceneStep[] }[];
 }
 
 /**
  * The walkthrough as a narrate scene, or undefined when no step says anything. A step with `say`
  * starts a beat; steps before the first one join it. Only the plan's own fixed actions are mapped,
- * with paths turned into URLs on the app's origin, so the scene can never hold narrate's `eval`,
- * `uploadFile` or a URL elsewhere. Screenshots were already taken by the silent run, so they drop out.
+ * with paths turned into URLs on the app's origin. narrate's `--untrusted` mode enforces the rest
+ * (no `eval`, `uploadFile` or other sites). Screenshots were already taken by the silent run, so
+ * they drop out.
  */
 export function narrationScene(steps: WalkthroughStep[], baseUrl: string): NarrationScene | undefined {
   if (!steps.some((s) => s.say)) return undefined;
@@ -84,7 +87,7 @@ export function narrationScene(steps: WalkthroughStep[], baseUrl: string): Narra
       (beats.at(-1)?.do ?? pending).push(mapped);
     }
   }
-  return { name: "walkthrough", site: new URL("/", origin).href, viewport: { width: 1280, height: 720 }, beats };
+  return { name: "walkthrough", site: new URL("/", origin).href, viewport: { width: 1280, height: 720 }, waitUntil: "load", beats };
 }
 
 function sceneStep(step: WalkthroughStep, origin: string): SceneStep | undefined {
@@ -96,10 +99,8 @@ function sceneStep(step: WalkthroughStep, origin: string): SceneStep | undefined
       // quoted, so text holding `>>` stays text instead of becoming a selector chain.
       return { action: "click", selector: step.selector ?? `internal:text=${JSON.stringify(step.text)}i` };
     case "fill":
-      // narrate replaces `${NAME}` in fill text with that environment variable; `$${` keeps it literal,
-      // so a value cannot type the user's environment into a published video. (A function, as `$$` in
-      // a replacement string means a single `$`.)
-      return { action: "fill", selector: step.selector, text: step.value.replaceAll("${", () => "$${") };
+      // Typed as written: `--untrusted` turns off narrate's `${NAME}` expansion.
+      return { action: "fill", selector: step.selector, text: step.value };
     case "wait":
       return step.ms > 0 ? { action: "wait", ms: step.ms } : undefined;
     case "screenshot":
@@ -133,13 +134,29 @@ export async function renderNarrated(request: NarrateRequest): Promise<{ video: 
   mkdirSync(dir, { recursive: true });
   const sceneFile = join(dir, "walkthrough.scene.json");
   writeFileSync(sceneFile, `${JSON.stringify(request.scene, null, 2)}\n`);
-  // narrate writes its own narrate.log there; this catches what it prints, e.g. a crash.
+  // narrate writes its diagnostic log to narrate.log; its progress goes to stderr, caught here.
   const log = openSync(join(dir, "cli-output.log"), "w");
-  let code: number | null;
+  let exit: { code: number | null; stdout: string };
   try {
-    code = await spawnAndWait(
+    exit = await spawnAndWait(
       process.execPath,
-      [request.narrate, "render", "--scene", sceneFile, "--out", dir],
+      [
+        request.narrate,
+        "render",
+        "--scene",
+        sceneFile,
+        "--out",
+        dir,
+        // Safe mode for a generated scene: no eval, uploadFile or other sites, `${NAME}` typed
+        // literally, the browser kept on the app's origin (a redirect away fails the render).
+        "--untrusted",
+        "--site",
+        request.scene.site,
+        // One JSON result on stdout; it also refuses to hand back a video without a voice.
+        "--json",
+        "--log",
+        join(dir, "narrate.log"),
+      ],
       dir,
       log,
       request.timeoutMs ?? RENDER_TIMEOUT_MS,
@@ -151,14 +168,46 @@ export async function renderNarrated(request: NarrateRequest): Promise<{ video: 
   } finally {
     closeSync(log);
   }
-  if (code === null) return { problem: request.signal?.aborted ? "narration was cancelled" : "narrate took too long and was stopped" };
-  if (code !== 0) return { problem: `narrate failed (exit ${code}); see narrate/narrate.log and narrate/cli-output.log` };
-  // mp4 by default; the user's narrate settings may ask for webm.
-  const made = ["mp4", "webm"].map((ext) => ({ ext, file: join(dir, `walkthrough.${ext}`) })).find((v) => existsSync(v.file));
-  if (!made) return { problem: "narrate finished without writing a video; see narrate/narrate.log and narrate/cli-output.log" };
-  const video = join(request.outDir, `walkthrough-narrated.${made.ext}`);
-  renameSync(made.file, video);
+  if (exit.code === null) return { problem: request.signal?.aborted ? "narration was cancelled" : "narrate took too long and was stopped" };
+  const result = renderResult(exit.stdout);
+  // Also what a narrate older than 0.24.0 (without --json) ends in.
+  if (!result) return { problem: `narrate gave no result (exit ${exit.code}; it needs 0.24.0 or newer); see narrate/cli-output.log` };
+  // The PR shows only the first line, so narrate's own message (which can name local paths) goes on the next.
+  if (!result.ok) return { problem: `narrate failed while ${STAGES[result.stage ?? ""] ?? "rendering"}; see narrate/narrate.log\n${String(result.error ?? "").slice(0, 2000)}` };
+  const ext = typeof result.video === "string" ? extname(result.video).slice(1) : "";
+  if (!["mp4", "webm"].includes(ext) || !existsSync(result.video as string)) return { problem: "narrate reported a video that is not there; see narrate/narrate.log" };
+  const video = join(request.outDir, `walkthrough-narrated.${ext}`);
+  renameSync(result.video as string, video);
   return { video };
+}
+
+/** narrate's render stages, as they read in a problem. */
+const STAGES: Record<string, string> = {
+  validate: "checking the scene",
+  setup: "setting up ffmpeg and the browser",
+  tts: "speaking the narration",
+  record: "recording the browser",
+  mux: "adding the voice to the video",
+};
+
+interface RenderResult {
+  ok: boolean;
+  video?: unknown;
+  stage?: string;
+  error?: unknown;
+}
+
+/** The `render --json` result: the last line on stdout that is a JSON object with `ok`. */
+function renderResult(stdout: string): RenderResult | undefined {
+  for (const line of stdout.trim().split("\n").reverse()) {
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (parsed && typeof parsed === "object" && typeof (parsed as RenderResult).ok === "boolean") return parsed as RenderResult;
+    } catch {
+      // Not the result line.
+    }
+  }
+  return undefined;
 }
 
 /** What narrate reads from the environment besides what the app gets: browsers, settings folder, voice keys. */
@@ -173,12 +222,21 @@ export function narrateEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(env).filter(([key]) => wanted.has(key.toUpperCase())));
 }
 
-/** Exit code, or null when it was stopped for the timeout or the signal. Its whole tree is killed then. */
-function spawnAndWait(cmd: string, args: string[], cwd: string, log: number, timeoutMs: number, signal?: AbortSignal): Promise<number | null> {
+/**
+ * Exit code and stdout; the code is null when it was stopped for the timeout or the signal. Its
+ * whole tree is killed then. stderr goes to `log`.
+ */
+function spawnAndWait(cmd: string, args: string[], cwd: string, log: number, timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) return resolve(null);
+    if (signal?.aborted) return resolve({ code: null, stdout: "" });
     // Its own process group off Windows, so a kill takes Chromium and ffmpeg down with it.
-    const child = spawn(cmd, args, { cwd, env: narrateEnv(process.env), stdio: ["ignore", log, log], windowsHide: true, detached: process.platform !== "win32" });
+    const child = spawn(cmd, args, { cwd, env: narrateEnv(process.env), stdio: ["ignore", "pipe", log], windowsHide: true, detached: process.platform !== "win32" });
+    let stdout = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      // The result is one line; a runaway output must not grow without end.
+      stdout = (stdout + chunk).slice(-100_000);
+    });
     // Also killed if the factory itself ends mid-render (Ctrl+C, SIGTERM).
     if (child.pid !== undefined) track(child.pid);
     let stopped = false;
@@ -205,9 +263,17 @@ function spawnAndWait(cmd: string, args: string[], cwd: string, log: number, tim
       done();
       reject(err);
     });
-    child.on("exit", (code) => {
+    // "close", not "exit": stdout may still hold the result line when the process exits. A leftover
+    // process holding the pipe (which a kill on Windows cannot find once narrate is gone) must not
+    // keep "close" from ever coming, so the pipe is dropped shortly after the exit.
+    let grace: NodeJS.Timeout | undefined;
+    child.on("exit", () => {
+      grace = setTimeout(() => child.stdout?.destroy(), 2000);
+    });
+    child.on("close", (code) => {
+      clearTimeout(grace);
       done();
-      resolve(stopped ? null : code);
+      resolve({ code: stopped ? null : code, stdout });
     });
   });
 }

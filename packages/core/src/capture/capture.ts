@@ -110,9 +110,9 @@ async function captureWithPlaywright(request: CaptureRequest, run: CommandRunner
 }
 
 /**
- * Record the walkthrough again with a voice, while the after app still runs. Only after the silent,
- * guarded run went through every step without leaving the app: narrate's browser has no
- * same-origin guard of its own, so the silent run is what shows the steps stay on the app.
+ * Record the walkthrough again with a voice, while the after app still runs. Only after the silent
+ * run went through every step: steps that failed there would fail narrate's recording too, after
+ * the narration was already spoken (and, with a cloud voice, paid for).
  */
 async function narrate(request: CaptureRequest, baseUrl: string, walkthrough: Walkthrough, run: CommandRunner): Promise<void> {
   const scene = narrationScene(request.plan.walkthrough, baseUrl);
