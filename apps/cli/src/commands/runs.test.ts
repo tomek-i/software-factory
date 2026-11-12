@@ -50,7 +50,7 @@ describe("factory run", () => {
 
     expect(message).toMatch(/waiting at the review gate/);
     expect(message).toMatch(/reviews: code PASS, security PASS, docs PASS/);
-    expect(message).toMatch(/See it with: `factory show run-12-\w+`\./);
+    expect(message).toMatch(/See it with: `factory show 12-[\w-]+`\./);
     expect(message).toContain("factory approve");
     expect(printed).toEqual(expect.arrayContaining(["-> triage: issue loaded", "-> build: triage approved"]));
     expect(printed.some((l) => l.startsWith("[gate] ok: passed"))).toBe(true);
@@ -58,7 +58,7 @@ describe("factory run", () => {
 
     const status = runStatus(dir, {}, { github });
     expect(status.split("\n")[0]).toMatch(/^RUN\s+ISSUE\s+STATE\s+ROUND\s+COST\s+WAITING$/);
-    expect(status).toMatch(/run-12-\w+\s+#12\s+needs_human\s+b1 r1\s+\$0\.21\s+review/);
+    expect(status).toMatch(/12-[\w-]+\s+#12\s+needs_human\s+b1 r1\s+\$0\.21\s+review/);
 
     const logs = await runLogs(dir, "#12", {});
     expect(logs).toContain("intake -> triage  issue loaded");
@@ -78,11 +78,11 @@ describe("colour", () => {
     expect(printed.join("\n")).toContain(ESC);
     const lines = printed.map(strip);
     expect(lines).toEqual(expect.arrayContaining(["-> triage: issue loaded", "-> build: triage approved"]));
-    expect(lines.some((l) => /^Run run-12-\w+ \([a-z_]+\) for #12 Add the feature$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^Run 12-[\w-]+ \([a-z_]+\) for #12 Add the feature$/.test(l))).toBe(true);
     expect(lines.some((l) => /^\[gate\] ok: passed \(\d+\.\ds\)$/.test(l))).toBe(true);
     expect(lines.some((l) => /^\[builder\] ok \(\$0\.04\)$/.test(l))).toBe(true);
     expect(strip(message)).toMatch(
-      /^Run run-12-\w+ is waiting at the review gate: .+\nSee it with: `factory show run-12-\w+`\.\nApprove with `factory approve run-12-\w+`, or reject with `factory reject run-12-\w+ -m "<why>"`\.$/,
+      /^Run 12-[\w-]+ is waiting at the review gate: .+\nSee it with: `factory show 12-[\w-]+`\.\nApprove with `factory approve 12-[\w-]+`, or reject with `factory reject 12-[\w-]+ -m "<why>"`\.$/,
     );
 
     // status keeps its columns aligned: stripping the codes gives exactly the plain table.

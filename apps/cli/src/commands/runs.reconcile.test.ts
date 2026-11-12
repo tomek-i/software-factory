@@ -14,7 +14,7 @@ describe("runs whose PR was merged or closed on GitHub", () => {
     await run();
     prStates.set(7, { number: 7, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) });
 
-    expect(runStatus(dir, {}, { github })).toMatch(/^run-12-\w+: PR #7 merged -> done\n\nNo active runs/);
+    expect(runStatus(dir, {}, { github })).toMatch(/^12-[\w-]+: PR #7 merged -> done\n\nNo active runs/);
     expect(runStatus(dir, { all: true }, { github })).toMatch(/^RUN.*\n.*#12\s+done/);
   });
 
@@ -30,7 +30,7 @@ describe("runs whose PR was merged or closed on GitHub", () => {
     };
 
     const status = runStatus(dir, {}, { github: offline });
-    expect(status).toMatch(/^warning: could not check PR #7 of run-12-\w+: gh: not logged in\n\nRUN/);
+    expect(status).toMatch(/^warning: could not check PR #7 of 12-[\w-]+: gh: not logged in\n\nRUN/);
     expect(status).toMatch(/needs_human/);
   });
 
@@ -43,6 +43,6 @@ describe("runs whose PR was merged or closed on GitHub", () => {
 
     // The old run is cancelled first, so `factory run` starts a new one instead of continuing it.
     expect(await run()).toMatch(/waiting for answers on issue #12/);
-    expect(printed.some((l) => /^run-12-\w+: PR #7 closed -> cancelled$/.test(l))).toBe(true);
+    expect(printed.some((l) => /^12-[\w-]+: PR #7 closed -> cancelled$/.test(l))).toBe(true);
   });
 });

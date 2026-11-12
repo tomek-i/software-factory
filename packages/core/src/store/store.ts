@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import type { Gate, GateMode, RunState } from "@factory/shared";
+import { slugify } from "../git/worktrees.js";
 import { MIGRATIONS } from "./migrations.js";
 
 export interface Project {
@@ -368,7 +369,9 @@ export class Store {
 
   createRun(input: { project_id: string; title: string; issue_number?: number | null; unsafe?: boolean }): Run {
     const ts = now();
-    const id = `run-${input.issue_number ?? "new"}-${randomUUID().slice(0, 8)}`;
+    // Readable at a glance in `factory status`; the random suffix keeps repeat runs of one issue apart.
+    // The slug is short because the id also names the worktree folder, and Windows paths are limited.
+    const id = `${input.issue_number ?? "new"}-${slugify(input.title, 30)}-${randomUUID().slice(0, 6)}`;
     this.transaction(() => {
       this.db
         .prepare(
