@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { factoryConfigSchema, isTrustedAuthor, resolveModel } from "./config.js";
+import { factoryConfigSchema, isTrustedAuthor, isTrustedIssue, resolveModel } from "./config.js";
 
 describe("isTrustedAuthor", () => {
   it("trusts nobody by default", () => {
@@ -15,6 +15,20 @@ describe("isTrustedAuthor", () => {
 
   it("trusts everyone when the repo is configured that way", () => {
     expect(isTrustedAuthor(factoryConfigSchema.parse({ version: 1, trust: { everyone: true } }), "anyone")).toBe(true);
+  });
+});
+
+describe("isTrustedIssue", () => {
+  const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["alice"] } });
+
+  it("trusts an issue the factory created, whoever its GitHub author is", () => {
+    expect(isTrustedIssue(config, { author: "factory-bot", created_by_factory: true })).toBe(true);
+  });
+
+  it("otherwise goes by the author", () => {
+    expect(isTrustedIssue(config, { author: "alice", created_by_factory: false })).toBe(true);
+    expect(isTrustedIssue(config, { author: "mallory", created_by_factory: false })).toBe(false);
+    expect(isTrustedIssue(config, { author: "mallory" })).toBe(false);
   });
 });
 

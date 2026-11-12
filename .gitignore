@@ -8,6 +8,7 @@ coverage/
 # factory runtime state when dogfooding on this repo
 .factory/runs/
 .factory/factory.db*
+.factory/drafts/
 .worktrees/
 
 # local media (screenshots, walkthrough videos)

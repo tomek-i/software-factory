@@ -13,6 +13,7 @@ import {
   loadTrustedConfig,
   MEDIA_MARKER,
   mediaTag,
+  nextAfterTriage,
   PipelineDriver,
   RunMachine,
   resumeTargets,
@@ -28,10 +29,11 @@ import {
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
+import { lessonsNote } from "./lessons.js";
 import { reconcileRuns } from "./reconcile.js";
 
 export interface RunDeps {
@@ -66,7 +68,7 @@ export function findRun(store: Store, project: Project, ref: string): Run {
   throw new CliError(matches.length ? `"${ref}" matches several runs; use more of the id.` : `No run "${ref}". See \`factory status\`.`);
 }
 
-function formatEvent(event: FactoryEvent, style: Style): string | undefined {
+export function formatEvent(event: FactoryEvent, style: Style): string | undefined {
   switch (event.type) {
     case "run:state":
       return style.transition(`-> ${style.state(event.to)}: ${event.reason}`);
@@ -88,7 +90,7 @@ function formatEvent(event: FactoryEvent, style: Style): string | undefined {
 }
 
 /** The verdict file a gate is about, as a `factory show` short name. */
-const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage" };
+const GATE_FILE: Partial<Record<Gate, string>> = { triage: "triage", critic: "critic" };
 
 /** "See it with: `factory show ...`" for a run waiting at a gate, naming the file the gate is about. */
 export function showHint(run: Pick<Run, "id" | "waiting_gate">): string {
@@ -140,7 +142,7 @@ function ensureQueued(store: Store, project: Project, config: FactoryConfig, num
   if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
   store.setQueued(project.id, number, true);
   print(`Queued #${number} ${issue.title}`);
-  if (!isTrustedAuthor(config, issue.author)) print(UNTRUSTED_NOTE);
+  if (!isTrustedIssue(config, issue)) print(UNTRUSTED_NOTE);
   return store.getIssue(project.id, number)!;
 }
 
@@ -324,8 +326,10 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
     ({ store, project, config }) => {
       const reconciled = reconcileRuns(store, project, config, deps);
       const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
+      const lessons = lessonsNote(store, project);
+      const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
-      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.");
+      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.") + footer;
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
       const rows = runs.map((r) => [
         r.id,
@@ -345,7 +349,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
           const [id, issue, state, round, money, waiting] = row as [string, string, string, string, string, string];
           return line(row, [style.detail(id), issue, style.state(runs[n]!.state, state), round, style.detail(money), style.attention(waiting)]);
         }),
-      ].join("\n");
+      ].join("\n") + footer;
     },
     deps.run,
   );
@@ -439,6 +443,15 @@ async function continueRun(
   return driveIssue(store, project, config, run.issue_number, {}, deps);
 }
 
+/**
+ * The config from the default branch, as `factory run` uses it. A human's decision at a gate is
+ * applied by these rules too, so a local edit cannot change where an approved run goes next.
+ */
+function trustedConfig(project: Project, workingConfig: FactoryConfig, run?: CommandRunner): FactoryConfig {
+  const defaultBranch = workingConfig.project.default_branch;
+  return loadTrustedConfig(trustedReader(project.repo_path, defaultBranch, run), defaultBranch);
+}
+
 /** `factory approve <run>`: let a run waiting at a gate continue, and keep driving it unless --no-run. */
 export async function runApprove(
   cwd: string,
@@ -453,12 +466,14 @@ export async function runApprove(
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
-      const to = approveTarget(target);
+      const trusted = trustedConfig(project, config, deps.run);
+      // An approved triage goes where it would have gone on its own: refine, the spec critic or build.
+      const to = approveTarget(target, nextAfterTriage(runDirOf(project.repo_path, target.id), trusted));
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
       // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
       const commitSha = gate === "merge" ? waitingCommit(store.listEvents(target.id)) : undefined;
-      new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
+      new RunMachine(store, trusted).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
       const done = `Approved the ${gate} gate of ${target.id}; it moves to ${to}.`;
       return continueRun(store, project, config, target, to, done, options, deps);
     },
@@ -488,7 +503,7 @@ export async function runResume(
         throw new CliError(`Run ${target.id} can resume to: ${allowed.join(", ")}.`);
       }
       const to = options.to as RunState;
-      new RunMachine(store, config).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
+      new RunMachine(store, trustedConfig(project, config, deps.run)).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
       const loops = options.resetLoops ? " with a fresh loop budget" : "";
       return continueRun(store, project, config, target, to, `Resumed ${target.id} to ${to}${loops}.`, options, deps);
     },
@@ -522,7 +537,7 @@ export function runReject(cwd: string, ref: string, options: { message: string }
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
-      new RunMachine(store, config).resume(target.id, "rejected", { comment: options.message });
+      new RunMachine(store, trustedConfig(project, config, run)).resume(target.id, "rejected", { comment: options.message });
       return `Rejected ${target.id} at the ${target.waiting_gate} gate.${dropMedia(project, target.id, run)}`;
     },
     run,

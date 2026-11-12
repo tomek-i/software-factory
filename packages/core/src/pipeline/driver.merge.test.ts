@@ -25,7 +25,7 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
   function approve(store: Store, runId: string) {
     const run = store.getRun(runId)!;
     const commitSha = run.waiting_gate === "merge" ? waitingCommit(store.listEvents(runId)) : undefined;
-    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(runId, approveTarget(run)!, { comment: "go", commitSha });
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(runId, approveTarget(run, "build")!, { comment: "go", commitSha });
   }
 
   /** Commit a change straight to main on origin, as if another PR had been merged meanwhile. */

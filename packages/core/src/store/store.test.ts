@@ -113,6 +113,76 @@ describe("Store", () => {
   });
 });
 
+describe("Store issues created by the factory", () => {
+  const input = (title: string) => ({
+    number: 7,
+    title,
+    body: "b",
+    state: "open" as const,
+    author: "alice",
+    labels: [],
+    url: "https://github.com/o/r/issues/7",
+    gh_updated_at: "2026-01-01T00:00:00Z",
+  });
+
+  it("starts unmarked, and keeps the mark when the issue is synced again", () => {
+    const { store, project } = setup();
+    store.upsertIssue(project.id, input("first"));
+    expect(store.getIssue(project.id, 7)!.created_by_factory).toBe(false);
+
+    store.markCreatedByFactory(project.id, 7);
+    store.upsertIssue(project.id, input("edited on GitHub"));
+
+    expect(store.getIssue(project.id, 7)).toMatchObject({ title: "edited on GitHub", created_by_factory: true });
+    expect(store.listIssues({ project_id: project.id })[0]!.created_by_factory).toBe(true);
+  });
+
+  it("refuses to mark an issue that is not synced", () => {
+    const { store, project } = setup();
+    expect(() => store.markCreatedByFactory(project.id, 99)).toThrow(/not synced/);
+  });
+
+  it("adds the column to an existing database, unmarked", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "factory-db-")), "factory.db");
+    const store = new Store(path);
+    const project = store.upsertProject({ name: "a", repo_path: "/a" });
+    store.upsertIssue(project.id, input("old"));
+    store.close();
+    // Undo the migration, as if this database was made before it.
+    const version = MIGRATIONS.findIndex((sql) => sql.includes("ADD COLUMN created_by_factory")) + 1;
+    const db = new Database(path);
+    db.exec("ALTER TABLE issues DROP COLUMN created_by_factory");
+    db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(version);
+    db.close();
+
+    const reopened = new Store(path);
+    expect(reopened.getIssue(project.id, 7)).toMatchObject({ title: "old", created_by_factory: false });
+    reopened.close();
+  });
+});
+
+describe("Store issue drafts", () => {
+  it("records what was created from a draft, what was linked, and when it is finished", () => {
+    const { store, project } = setup();
+    expect(store.listDraftIssues(project.id, "draft-1")).toEqual([]);
+
+    store.recordDraftIssue(project.id, "draft-1", { position: 1, number: 21, fingerprint: "b" });
+    store.recordDraftIssue(project.id, "draft-1", { position: 0, number: 20, fingerprint: "a" });
+    store.markDraftIssueLinked(project.id, "draft-1", 1);
+    expect(() => store.recordDraftIssue(project.id, "draft-1", { position: 0, number: 99, fingerprint: "c" })).toThrow(/UNIQUE/);
+
+    expect(store.listDraftIssues(project.id, "draft-1")).toEqual([
+      { position: 0, number: 20, fingerprint: "a", linked: false },
+      { position: 1, number: 21, fingerprint: "b", linked: true },
+    ]);
+    expect(store.listDraftIssues(project.id, "draft-2")).toEqual([]);
+    expect(store.isDraftFinished(project.id, "draft-1")).toBe(false);
+    store.finishDraft(project.id, "draft-1");
+    store.finishDraft(project.id, "draft-1");
+    expect(store.isDraftFinished(project.id, "draft-1")).toBe(true);
+  });
+});
+
 describe("Store ports and agent runs", () => {
   it("hands out the lowest free port block and reuses blocks of finished runs", () => {
     const { store, project } = setup();
@@ -150,5 +220,45 @@ describe("Store ports and agent runs", () => {
     const run = store.createRun({ project_id: project.id, title: "a" });
     store.updateRunFields(run.id, { branch: "factory/1-a", pr_number: undefined });
     expect(store.getRun(run.id)).toMatchObject({ branch: "factory/1-a", state: "intake", pr_number: null });
+  });
+});
+
+describe("Store lessons", () => {
+  const lesson = (rule: string) => ({ observation: "the gate failed twice", evidence: "round-1/checks.md", rule });
+
+  it("stores proposals per run and lists them by status", () => {
+    const { store, project } = setup();
+    const other = store.upsertProject({ name: "other", repo_path: "/repo/other" });
+    const run = store.createRun({ project_id: project.id, title: "a", issue_number: 1 });
+    const elsewhere = store.createRun({ project_id: other.id, title: "b", issue_number: 1 });
+
+    const added = store.addLessons(run.id, [lesson("Run lint first."), lesson("Keep tests next to the code.")]);
+    store.addLessons(elsewhere.id, [lesson("Not this project's.")]);
+
+    expect(added).toMatchObject([
+      { project_id: project.id, run_id: run.id, status: "proposed", rule: "Run lint first.", comment: null, pull_request: null, decided_at: null },
+      { rule: "Keep tests next to the code." },
+    ]);
+    expect(store.listLessons({ project_id: project.id }).map((l) => l.rule)).toEqual(["Run lint first.", "Keep tests next to the code."]);
+    expect(store.listLessons({ project_id: project.id, status: "approved" })).toEqual([]);
+    expect(store.addLessons(run.id, [])).toEqual([]);
+    expect(() => store.addLessons("run-missing", [lesson("x")])).toThrow(/not found/);
+  });
+
+  it("records a decision once, and all or none of a batch", () => {
+    const { store, project } = setup();
+    const run = store.createRun({ project_id: project.id, title: "a" });
+    const [a, b, c] = store.addLessons(run.id, [lesson("a"), lesson("b"), lesson("c")]);
+
+    expect(store.decideLessons([a!.id, b!.id], "approved", { pull_request: 9 })).toMatchObject([
+      { status: "approved", pull_request: 9, decided_at: expect.any(String) },
+      { status: "approved", pull_request: 9 },
+    ]);
+    // b is already approved, so c is left as it was.
+    expect(() => store.decideLessons([c!.id, b!.id], "rejected", { comment: "too vague" })).toThrow(`lesson ${b!.id} is not waiting for a decision`);
+    expect(store.getLesson(c!.id)).toMatchObject({ status: "proposed", comment: null });
+
+    expect(store.decideLessons([c!.id], "rejected", { comment: "too vague" })).toMatchObject([{ status: "rejected", comment: "too vague", pull_request: null }]);
+    expect(store.listLessons({ project_id: project.id, status: "proposed" })).toEqual([]);
   });
 });

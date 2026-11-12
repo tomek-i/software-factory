@@ -24,6 +24,28 @@ describe("ghPort", () => {
     expect(calls[0]).toEqual(["pr", "create", "-R", "o/r", "--draft", "--head", "factory/1-x", "--base", "main", "--title", "T", "--body", "B"]);
   });
 
+  it("finds open PRs by the start of their branch name", () => {
+    const list = fakeGh(JSON.stringify([{ number: 5, headRefName: "factory/lessons-1" }, { number: 6, headRefName: "factory/12-x" }]));
+    expect(ghPort(project, list.run).findOpenPullRequests("factory/lessons-")).toEqual([{ number: 5, head: "factory/lessons-1" }]);
+    expect(list.calls[0]).toEqual(["pr", "list", "-R", "o/r", "--state", "open", "--json", "number,headRefName", "--limit", "200"]);
+    expect(() => ghPort(project, fakeGh("{}").run).findOpenPullRequests("x")).toThrow(/unexpected output/);
+  });
+
+  it("opens a ready (non-draft) PR with its description from a file, which it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "https://github.com/o/r/pull/43\n", stderr: "" };
+    };
+    expect(ghPort(project, run).createPullRequest({ head: "factory/lessons-1", base: "main", title: "T", body: "B" })).toBe(43);
+    expect(calls[0]!.slice(0, -1)).toEqual(["pr", "create", "-R", "o/r", "--head", "factory/lessons-1", "--base", "main", "--title", "T", "--body-file"]);
+    expect(sent).toBe("B");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
+    expect(() => ghPort(project, fakeGh("created").run).createPullRequest({ head: "h", base: "b", title: "t", body: "" })).toThrow(/unexpected output/);
+  });
+
   it("replaces a PR's description from a file, which it removes afterwards", () => {
     let sent = "";
     const calls: string[][] = [];
@@ -60,6 +82,47 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).mergePullRequest(42, "abc")).toThrow(/gh pr merge failed: boom/);
   });
 
+  it("opens an issue from a body file, which it removes afterwards, and returns its number", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "https://github.com/o/r/issues/31", stderr: "" };
+    };
+    expect(ghPort(project, run).createIssue({ title: "Add export", body: "## Why\nx\n" })).toBe(31);
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "create", "-R", "o/r", "--title", "Add export", "--body-file"]);
+    expect(sent).toBe("## Why\nx\n");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
+    expect(() => ghPort(project, fakeGh("created").run).createIssue({ title: "t", body: "b" })).toThrow(/unexpected output: created. The issue "t" may have been created anyway; check GitHub/);
+  });
+
+  it("links a sub-issue by the node ids of both issues", () => {
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      const stdout = args[1] === "view" ? JSON.stringify({ id: `I_${args[2]}` }) : '{"data":{"addSubIssue":{"issue":{"number":10}}}}';
+      return { code: 0, stdout, stderr: "" };
+    };
+    ghPort(project, run).addSubIssue(10, 11);
+    expect(calls).toEqual([
+      ["issue", "view", "10", "-R", "o/r", "--json", "id"],
+      ["issue", "view", "11", "-R", "o/r", "--json", "id"],
+      [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}",
+        "-f",
+        "p=I_10",
+        "-f",
+        "c=I_11",
+      ],
+    ]);
+    expect(() => ghPort(project, fakeGh("{}").run).addSubIssue(10, 11)).toThrow(/no id for #10/);
+    expect(() => ghPort(project, fakeGh("", 1).run).addSubIssue(10, 11)).toThrow(/gh issue view failed: boom/);
+  });
+
   it("finds an open PR for a branch", () => {
     expect(ghPort(project, fakeGh('[{"number":5}]').run).findPullRequest("b")).toBe(5);
     expect(ghPort(project, fakeGh("[]").run).findPullRequest("b")).toBeUndefined();
@@ -71,6 +134,41 @@ describe("ghPort", () => {
       GithubError,
     );
     expect(() => ghPort({ ...project, github_repo: null })).toThrow(/no GitHub repository/);
+  });
+
+  it("finds the latest of its own comments that starts with a marker, by its REST id", () => {
+    const comment = (body: string, id: number, viewerDidAuthor = true) => ({ body, viewerDidAuthor, url: `https://github.com/o/r/issues/3#issuecomment-${id}` });
+    const { calls, run } = fakeGh(
+      JSON.stringify({
+        comments: [
+          comment("<!-- factory:refine -->\nold", 11),
+          comment("<!-- factory:refine -->\nnewer", 12),
+          comment("<!-- factory:refine -->\nsomeone else pasted the marker", 13, false),
+          comment("quoting <!-- factory:refine --> later on", 14),
+        ],
+      }),
+    );
+    expect(ghPort(project, run).findComment(3, "<!-- factory:refine -->")).toBe(12);
+    expect(calls[0]).toEqual(["issue", "view", "3", "-R", "o/r", "--json", "comments"]);
+    expect(ghPort(project, fakeGh(JSON.stringify({ comments: [] })).run).findComment(3, "<!-- factory:refine -->")).toBeUndefined();
+    expect(() => ghPort(project, fakeGh("nope").run).findComment(3, "x")).toThrow(/unexpected output/);
+    const noId = fakeGh(JSON.stringify({ comments: [{ body: "x", viewerDidAuthor: true, url: "https://github.com/o/r/issues/3" }] }));
+    expect(() => ghPort(project, noId.run).findComment(3, "x")).toThrow(/without its id/);
+  });
+
+  it("edits a comment through the API, sending the body from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(/^body=@(.+)$/.exec(args[5]!)![1]!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).editComment(12, "new text");
+    expect(calls[0]).toEqual(["api", "-X", "PATCH", "repos/o/r/issues/comments/12", "-F", expect.stringMatching(/^body=@/), "--silent"]);
+    expect(sent).toBe("new text");
+    expect(existsSync(calls[0]![5]!.slice("body=@".length))).toBe(false);
+    expect(() => ghPort(project, fakeGh("", 1).run).editComment(12, "x")).toThrow(/gh api -X failed: boom/);
   });
 
   it("marks factory comments", () => {

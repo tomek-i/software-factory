@@ -114,15 +114,52 @@ export interface Issue {
   synced_at: string;
   queued_at: string | null;
   queue_seq: number | null;
+  /** The factory opened this issue itself (`factory new`), so it counts as trusted. */
+  created_by_factory: boolean;
+}
+
+/** One issue `factory new --approve` created from a draft. */
+export interface DraftIssueRecord {
+  /** 0 is the single issue or the parent; sub-issues follow in draft order. */
+  position: number;
+  number: number;
+  /** Hash of the draft entry it was created from, so a later edit cannot shift numbers onto other entries. */
+  fingerprint: string;
+  /** Linked to the parent as a GitHub sub-issue. */
+  linked: boolean;
+}
+
+export type LessonStatus = "proposed" | "approved" | "rejected";
+
+/** A lesson the learner proposed from a run, and what a human decided about it. */
+export interface StoredLesson {
+  id: number;
+  project_id: string;
+  run_id: string;
+  status: LessonStatus;
+  observation: string;
+  evidence: string;
+  /** The line that goes into `.factory/lessons.md` once approved. */
+  rule: string;
+  /** Why a human rejected it. */
+  comment: string | null;
+  /** The PR that appends it to `.factory/lessons.md`. */
+  pull_request: number | null;
+  created_at: string;
+  decided_at: string | null;
 }
 
 /** An issue as fetched from GitHub, before local bookkeeping is added. */
-export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq">;
+export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | "queue_seq" | "created_by_factory">;
 
 type RunRow = Omit<Run, "unsafe"> & { unsafe: number };
-type IssueRow = Omit<Issue, "labels"> & { labels: string };
+type IssueRow = Omit<Issue, "labels" | "created_by_factory"> & { labels: string; created_by_factory: number };
 
-const toIssue = (row: IssueRow): Issue => ({ ...row, labels: JSON.parse(row.labels) as string[] });
+const toIssue = (row: IssueRow): Issue => ({
+  ...row,
+  labels: JSON.parse(row.labels) as string[],
+  created_by_factory: row.created_by_factory === 1,
+});
 
 const now = () => new Date().toISOString();
 
@@ -286,6 +323,45 @@ export class Store {
         .run(projectId, number);
     }
     return this.getIssue(projectId, number)!;
+  }
+
+  /**
+   * Record that the factory opened this issue on GitHub itself. A local fact: upsertIssue never
+   * touches it, so syncing the issue from GitHub again keeps it.
+   */
+  markCreatedByFactory(projectId: string, number: number): void {
+    const result = this.db
+      .prepare("UPDATE issues SET created_by_factory = 1 WHERE project_id = ? AND number = ?")
+      .run(projectId, number);
+    if (result.changes !== 1) throw new Error(`issue #${number} is not synced yet`);
+  }
+
+  // ---- issue drafts -------------------------------------------------------
+
+  /** Issues created so far from a draft, by position (0 is the single issue or the parent). */
+  listDraftIssues(projectId: string, draftId: string): DraftIssueRecord[] {
+    const rows = this.db
+      .prepare("SELECT position, number, fingerprint, linked FROM draft_issues WHERE project_id = ? AND draft_id = ? ORDER BY position")
+      .all(projectId, draftId) as (Omit<DraftIssueRecord, "linked"> & { linked: number })[];
+    return rows.map((r) => ({ ...r, linked: r.linked === 1 }));
+  }
+
+  recordDraftIssue(projectId: string, draftId: string, record: Omit<DraftIssueRecord, "linked">): void {
+    this.db
+      .prepare("INSERT INTO draft_issues (project_id, draft_id, position, number, fingerprint) VALUES (?, ?, ?, ?, ?)")
+      .run(projectId, draftId, record.position, record.number, record.fingerprint);
+  }
+
+  markDraftIssueLinked(projectId: string, draftId: string, position: number): void {
+    this.db.prepare("UPDATE draft_issues SET linked = 1 WHERE project_id = ? AND draft_id = ? AND position = ?").run(projectId, draftId, position);
+  }
+
+  finishDraft(projectId: string, draftId: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO drafts_done (project_id, draft_id, done_at) VALUES (?, ?, ?)").run(projectId, draftId, now());
+  }
+
+  isDraftFinished(projectId: string, draftId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM drafts_done WHERE project_id = ? AND draft_id = ?").get(projectId, draftId) !== undefined;
   }
 
   // ---- runs ---------------------------------------------------------------
@@ -473,5 +549,53 @@ export class Store {
 
   listDecisions(runId: string): Decision[] {
     return this.db.prepare("SELECT * FROM decisions WHERE run_id = ? ORDER BY id").all(runId) as Decision[];
+  }
+
+  // ---- lessons ------------------------------------------------------------
+
+  /** Store the learner's proposals for a run; they wait for a human as `proposed`. */
+  addLessons(runId: string, lessons: { observation: string; evidence: string; rule: string }[]): StoredLesson[] {
+    const run = this.getRun(runId);
+    if (!run) throw new Error(`run ${runId} not found`);
+    const insert = this.db.prepare(
+      `INSERT INTO lessons (project_id, run_id, status, observation, evidence, rule, created_at)
+       VALUES (?, ?, 'proposed', ?, ?, ?, ?)`,
+    );
+    return this.transaction(() =>
+      lessons.map((l) => this.getLesson(Number(insert.run(run.project_id, runId, l.observation, l.evidence, l.rule, now()).lastInsertRowid))!),
+    );
+  }
+
+  getLesson(id: number): StoredLesson | undefined {
+    return this.db.prepare("SELECT * FROM lessons WHERE id = ?").get(id) as StoredLesson | undefined;
+  }
+
+  listLessons(filter: { project_id: string; status?: LessonStatus }): StoredLesson[] {
+    const where = ["project_id = ?"];
+    const params: unknown[] = [filter.project_id];
+    if (filter.status) {
+      where.push("status = ?");
+      params.push(filter.status);
+    }
+    return this.db.prepare(`SELECT * FROM lessons WHERE ${where.join(" AND ")} ORDER BY id`).all(...params) as StoredLesson[];
+  }
+
+  /**
+   * A human's decision on proposed lessons. All or none: every id must still be proposed, so a lesson
+   * decided by another process meanwhile is never decided twice.
+   */
+  decideLessons(ids: number[], status: Exclude<LessonStatus, "proposed">, extra: { comment?: string; pull_request?: number } = {}): StoredLesson[] {
+    return this.transaction(() => {
+      const update = this.db.prepare(
+        "UPDATE lessons SET status = ?, comment = ?, pull_request = ?, decided_at = ? WHERE id = ? AND status = 'proposed'",
+      );
+      const ts = now();
+      for (const id of ids) {
+        if (update.run(status, extra.comment ?? null, extra.pull_request ?? null, ts, id).changes !== 1) {
+          throw new Error(`lesson ${id} is not waiting for a decision`);
+        }
+      }
+      return ids.map((id) => this.getLesson(id)!);
+    });
   }
 }

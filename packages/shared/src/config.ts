@@ -177,6 +177,15 @@ export function isTrustedAuthor(config: Pick<FactoryConfig, "trust">, login: str
   const wanted = login.toLowerCase();
   return config.trust.authors.some((a) => a.replace(/^@/, "").toLowerCase() === wanted);
 }
+
+/**
+ * Whether an issue's own text is the spec. An issue the factory opened itself (`factory new`) was
+ * written from the operator's idea, so it is trusted whoever the gh login is. Comments on it by
+ * others are not covered: they are judged by their own author.
+ */
+export function isTrustedIssue(config: Pick<FactoryConfig, "trust">, issue: { author: string; created_by_factory?: boolean }): boolean {
+  return issue.created_by_factory === true || isTrustedAuthor(config, issue.author);
+}
 export type FactoryConfigInput = z.input<typeof factoryConfigSchema>;
 
 /**

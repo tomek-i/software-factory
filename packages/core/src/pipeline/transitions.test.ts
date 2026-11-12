@@ -99,7 +99,8 @@ describe("RunMachine.transition", () => {
   });
 
   it("can go from an approved triage straight to build", () => {
-    const { at, move } = setup();
+    // Only when the spec critic gate is set to always; the next test covers the other modes.
+    const { at, move } = setup({ gates: { critic: "always" } });
     at("triage");
     expect(() => move("build", fakeEvidence({ files: { triage: FILES.triage.replace("APPROVE", "NEEDS_INFO") } }))).toThrow(
       /did not APPROVE/,
@@ -107,11 +108,51 @@ describe("RunMachine.transition", () => {
     expect(move("build").state).toBe("build");
   });
 
+  it("does not skip the spec critic unless its gate is always, nor an incomplete issue's refine", () => {
+    const incomplete = fakeEvidence({ files: { triage: FILES.triage.replace("READY", "INCOMPLETE") } });
+    for (const critic of ["auto", "human"] as const) {
+      const { at, move } = setup({ gates: { critic } });
+      at("triage");
+      expect(() => move("build")).toThrow(new RegExp(`spec critic gate is ${critic}, not always`));
+    }
+    const { at, move } = setup({ gates: { critic: "always" } });
+    at("triage");
+    expect(() => move("build", incomplete)).toThrow(/INCOMPLETE/);
+    expect(() => move("critic", incomplete)).toThrow(/INCOMPLETE/);
+    expect(move("refine", incomplete).state).toBe("refine");
+  });
+
   it("only builds once the spec critic accepted", () => {
     const { at, move } = setup();
     at("critic");
     expect(() => move("build", fakeEvidence({ files: { critic: "VERDICT: REVISE\n" } }))).toThrow(/did not ACCEPT/);
     expect(move("build").state).toBe("build");
+  });
+
+  it("does not build on an ACCEPT older than the latest refined spec", () => {
+    const { at, move } = setup();
+    at("critic");
+    const rounds = (critic: number, refine: number): Evidence => ({
+      ...fakeEvidence(),
+      specRound: (file) => (file === "critic.md" ? critic : refine),
+    });
+    expect(() => move("build", rounds(1, 2))).toThrow(/accepted spec round 1, but refine has written round 2 since/);
+    expect(move("build", rounds(2, 2)).state).toBe("build");
+  });
+
+  it("builds without a critic verdict only when the critic gate is set to always", () => {
+    const always = setup({ gates: { critic: "always" } });
+    always.at("critic");
+    expect(always.move("build", fakeEvidence({ files: { critic: undefined } })).state).toBe("build");
+    const auto = setup();
+    auto.at("critic");
+    expect(() => auto.move("build", fakeEvidence({ files: { critic: undefined } }))).toThrow(/evidence unavailable/);
+  });
+
+  it("lets the spec critic wait for the issue's author", () => {
+    const { at, move } = setup();
+    at("critic");
+    expect(move("needs_info").state).toBe("needs_info");
   });
 
   it("only lets the builder hand over a clean, committed, pushed branch it reported on", () => {
@@ -222,6 +263,14 @@ describe("RunMachine.transition", () => {
     expect(move("refine", revise).critic_rounds).toBe(1);
     at("critic");
     expect(() => move("refine", revise)).toThrow(/critic round cap/);
+  });
+
+  it("gives the spec a fresh critic round budget once the author answered", () => {
+    const { at, move, store, run } = setup({ loops: { max_critic_rounds: 2 } });
+    at("critic", { critic_rounds: 1 });
+    expect(move("needs_info").critic_rounds).toBe(1);
+    expect(move("triage").critic_rounds).toBe(0);
+    expect(store.getRun(run.id)!.build_iterations).toBe(0);
   });
 
   it("starts a new round each time the run enters the gate, and never resets it", () => {

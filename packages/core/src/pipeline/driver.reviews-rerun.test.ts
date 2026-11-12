@@ -36,9 +36,9 @@ describe("PipelineDriver", () => {
 
       const parked = store.getRun(run.id)!;
       expect(parked).toMatchObject({ waiting_gate: "review", parked_from: "review" });
-      expect(approveTarget(parked)).toBe("capture");
+      expect(approveTarget(parked, "build")).toBe("capture");
       // A run parked at the review gate before reviews existed gets its reviews when approved.
-      expect(approveTarget({ ...parked, parked_from: "gate" })).toBe("review");
+      expect(approveTarget({ ...parked, parked_from: "gate" }, "build")).toBe("review");
     });
 
     it("reviews a run that was parked at the review gate before reviews existed, once approved", async () => {
@@ -50,7 +50,7 @@ describe("PipelineDriver", () => {
       for (const lens of ["code", "security", "docs"]) rmSync(join(runDirOf(root, run.id), "round-1", `review-${lens}.md`));
 
       const parked = store.getRun(run.id)!;
-      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, approveTarget(parked)!, { comment: "approved" });
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, approveTarget(parked, "build")!, { comment: "approved" });
       expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringContaining("reviews: code PASS, security PASS, docs PASS") });
       expect(fake.calls().filter((c) => c.role!.startsWith("reviewer-"))).toHaveLength(6);
     });

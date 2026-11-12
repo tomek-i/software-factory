@@ -25,11 +25,26 @@ export const BUILD: FakeStep = {
 export const prStates = new Map<number, PullRequestState>();
 /** PRs the fake GitHub merged. */
 export const merged: { number: number; head: string }[] = [];
+/** Ready-for-review PRs the fake GitHub opened (the lessons PR). */
+export const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
+/** PR descriptions the fake GitHub replaced. */
+export const prEdits: { number: number; body: string }[] = [];
 export const github: GithubPort = {
   commentOnIssue: () => undefined,
+  findComment: () => undefined,
+  editComment: () => undefined,
   findPullRequest: () => undefined,
   createDraftPullRequest: () => 7,
-  updatePullRequest: () => undefined,
+  // Numbered 8, 9, ...; open unless prStates says otherwise.
+  createPullRequest: (pr) => {
+    readyPrs.push(pr);
+    return 7 + readyPrs.length;
+  },
+  findOpenPullRequests: (prefix) =>
+    readyPrs.flatMap((p, i) => (p.head.startsWith(prefix) && (prStates.get(8 + i)?.state ?? "open") === "open" ? [{ number: 8 + i, head: p.head }] : [])),
+  updatePullRequest: (number, body) => {
+    prEdits.push({ number, body });
+  },
   markReady: () => undefined,
   mergePullRequest: (number, head) => {
     merged.push({ number, head });
@@ -41,7 +56,11 @@ export const github: GithubPort = {
 export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
   prStates.clear();
   merged.length = 0;
-  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  review: human\n  ${gates}\n${extraConfig}`;
+  readyPrs.length = 0;
+  prEdits.length = 0;
+  // Unless `gates` sets it, the spec critic passes straight through, so a READY issue goes from triage to build.
+  const critic = /\bcritic:/.test(gates) ? "" : "  critic: always\n";
+  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n${critic}  review: human\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
   const store = new Store(join(root, ".factory", "factory.db"));

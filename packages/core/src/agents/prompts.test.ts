@@ -18,6 +18,10 @@ describe("rolePrompt", () => {
     expect(rolePrompt("verifier", () => undefined)).toContain("# Role: verifier");
     expect(rolePrompt("approver", () => undefined)).toContain("# Role: approver");
     expect(rolePrompt("capture", () => undefined)).toContain("# Role: capture");
+    expect(rolePrompt("refine", () => undefined)).toContain("# Role: refine");
+    expect(rolePrompt("critic", () => undefined)).toContain("# Role: spec critic");
+    expect(rolePrompt("learner", () => undefined)).toContain("# Role: learner");
+    expect(rolePrompt("issue_writer", () => undefined)).toContain("# Role: issue writer");
     const read = (p: string) => (p === ".factory/prompts/builder.md" ? "custom builder" : undefined);
     expect(rolePrompt("builder", read)).toBe("custom builder");
     expect(rolePrompt("triage", read)).toContain("# Role: triage");
@@ -87,6 +91,50 @@ describe("permissionProfile", () => {
     expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
     expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
     expect(() => permissionProfile("approver", { runDirFromCwd: "x" })).toThrow(/approver profile needs its output file/);
+  });
+
+  it("gives the issue writer the same: no shell, read the repo, and only its draft to write", () => {
+    const outputFile = join(tempDir(), "draft.md");
+    const { permissions } = permissionProfile("issue_writer", {
+      runDirFromCwd: ".factory/drafts/draft-1",
+      outputFile,
+      denyRead: [".factory\\drafts\\draft-2"],
+    });
+    expect(permissions.deny).toEqual([
+      "Bash",
+      "PowerShell",
+      "NotebookEdit",
+      "WebFetch",
+      "WebSearch",
+      // Run state from untrusted issues and other drafts must not feed a draft that becomes trusted.
+      "Read(.factory/runs/**)",
+      "Read(.worktrees/**)",
+      "Read(.factory/drafts/draft-2/**)",
+    ]);
+    expect(permissionProfile("reviewer", { runDirFromCwd: "x", outputFile }).permissions.deny).not.toContain("Read(.factory/runs/**)");
+    expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+    expect(() => permissionProfile("issue_writer", { runDirFromCwd: "x" })).toThrow(/issue_writer profile needs its output file/);
+  });
+
+  it("gives the learner the same: no shell, and only learn.md to write", () => {
+    const outputFile = join(tempDir(), "learn.md");
+    const { permissions } = permissionProfile("learner", { runDirFromCwd: "../..", outputFile });
+    expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+    expect(() => permissionProfile("learner", { runDirFromCwd: "x" })).toThrow(/learner profile needs its output file/);
+  });
+
+  it("gives refine and the spec critic the same: no shell, and only their own spec file to write", () => {
+    for (const [role, file] of [
+      ["refine", "refine.md"],
+      ["critic", "critic.md"],
+    ] as const) {
+      const outputFile = join(tempDir(), "spec-1", file);
+      const { permissions } = permissionProfile(role, { runDirFromCwd: ".factory/runs/run-1", outputFile });
+      expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch", "WebSearch"]));
+      expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+      expect(() => permissionProfile(role, { runDirFromCwd: "x" })).toThrow(new RegExp(`${role} profile needs its output file`));
+    }
   });
 
   it("gives the capture agent the same: no shell, and only capture.md to write", () => {

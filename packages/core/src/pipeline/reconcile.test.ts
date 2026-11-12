@@ -13,8 +13,12 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>) {
   const asked: number[] = [];
   const github: GithubPort = {
     commentOnIssue: () => undefined,
+    findComment: () => undefined,
+    editComment: () => undefined,
     findPullRequest: () => undefined,
     createDraftPullRequest: () => 1,
+    createPullRequest: () => 1,
+    findOpenPullRequests: () => [],
     updatePullRequest: () => undefined,
     markReady: () => undefined,
     mergePullRequest: () => undefined,

@@ -34,6 +34,42 @@ export type Finding = z.infer<typeof findingSchema>;
 
 export const isBlocking = (f: Finding) => f.severity === "critical" || f.severity === "major";
 
+/**
+ * A lesson the learner proposes from one run. `rule` is the single line that would go into
+ * `.factory/lessons.md` once a human approves it, so it must stay one short line.
+ */
+export const lessonSchema = z.object({
+  observation: z.string().min(1),
+  evidence: z.string().min(1),
+  rule: z
+    .string()
+    .trim()
+    .min(1)
+    .max(300)
+    .refine((r) => !/[\r\n]/.test(r), { message: "must be a single line" })
+    .refine((r) => !Array.from(r).some((ch) => isUnprintable(ch.codePointAt(0)!)), {
+      message: "must not contain control, line-separator or text-direction characters",
+    }),
+});
+export type Lesson = z.infer<typeof lessonSchema>;
+
+/**
+ * Code points that can hide or reorder text in a terminal or a rendered file: C0 and C1 controls
+ * (including escape sequences), the line and paragraph separators, and the bidi marks, embeddings,
+ * overrides and isolates. Numbers rather than a regex, so the ranges read the same everywhere.
+ */
+const UNPRINTABLE: [number, number][] = [
+  [0x0000, 0x001f],
+  [0x007f, 0x009f],
+  [0x200e, 0x200f],
+  [0x2028, 0x202e],
+  [0x2066, 0x2069],
+];
+
+export function isUnprintable(code: number): boolean {
+  return UNPRINTABLE.some(([from, to]) => code >= from && code <= to);
+}
+
 const csv = z
   .string()
   .transform((s) =>
@@ -53,6 +89,8 @@ export const verdictHeaderSchemas = {
     RISK: z.enum(["LOW", "MEDIUM", "HIGH"]),
     SURFACES: csv,
   }),
+  // BLOCKED when no spec can be written from the issue and the code (e.g. its text tries to steer the agent).
+  refine: z.object({ STATUS: z.enum(["REFINED", "BLOCKED"]) }),
   critic: z.object({ VERDICT: z.enum(["ACCEPT", "REVISE", "REJECT"]) }),
   // COMMIT ties the builder's report to the code it describes, so a stale READY can't be reused.
   build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha }),
@@ -62,6 +100,10 @@ export const verdictHeaderSchemas = {
   approver: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
   // PLAN comes with a ## Plan json block (parseCapturePlan); SKIP when nothing visible can be shown.
   capture: z.object({ CAPTURE: z.enum(["PLAN", "SKIP"]) }),
+  // How many lessons the `## Lessons` block proposes; zero is the common case.
+  learn: z.object({ LESSONS: z.string().regex(/^\d+$/, "must be a whole number").transform(Number) }),
+  // The issues themselves follow the header in delimited blocks (see drafts/draft.ts in core).
+  issue_writer: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
 } as const;
 
 export type VerdictKind = keyof typeof verdictHeaderSchemas;
@@ -144,6 +186,41 @@ function parseFindings(lines: string[]): { findings: Finding[]; problems: string
   };
 }
 
+/**
+ * The learner's `## Lessons` section: one ```json array of lessons, or nothing / "None." for none.
+ * Same strictness as the findings block.
+ */
+function parseLessonLines(lines: string[]): { lessons: Lesson[]; problems: string[] } {
+  const section = sectionLines(lines, "lessons");
+  if (!section) return { lessons: [], problems: [] };
+  const text = section.join("\n");
+  const blocks = [...text.matchAll(/```json\s*\n([\s\S]*?)\n```/g)];
+  if (blocks.length === 0) {
+    return text.trim() === "" || /^none\.?$/i.test(text.trim())
+      ? { lessons: [], problems: [] }
+      : { lessons: [], problems: ["## Lessons must contain a ```json array block"] };
+  }
+  if (blocks.length > 1) return { lessons: [], problems: ["## Lessons must contain exactly one ```json block"] };
+  let data: unknown;
+  try {
+    data = JSON.parse(blocks[0]![1]!);
+  } catch (err) {
+    return { lessons: [], problems: [`lessons JSON is invalid: ${(err as Error).message}`] };
+  }
+  const result = z.array(lessonSchema).safeParse(data);
+  if (!result.success) {
+    return { lessons: [], problems: result.error.issues.map((i) => `lessons.${i.path.join(".")}: ${i.message}`) };
+  }
+  return { lessons: result.data, problems: [] };
+}
+
+/** The lessons of a learner's output body (ParsedVerdict.body). Throws VerdictParseError when malformed. */
+export function parseLessons(body: string): Lesson[] {
+  const { lessons, problems } = parseLessonLines(body.replace(/\r\n/g, "\n").split("\n"));
+  if (problems.length) throw new VerdictParseError("invalid lessons", problems);
+  return lessons;
+}
+
 /** A verdict must agree with its own findings. */
 function consistencyProblems(kind: VerdictKind, header: Record<string, unknown>, findings: Finding[]): string[] {
   const blocking = findings.filter(isBlocking).length;
@@ -184,6 +261,14 @@ export function parseVerdict<K extends VerdictKind>(kind: K, text: string): Pars
   problems.push(...findingProblems);
   if (header.success && findingProblems.length === 0) {
     problems.push(...consistencyProblems(kind, header.data as Record<string, unknown>, findings));
+  }
+  if (kind === "learn") {
+    const { lessons, problems: lessonProblems } = parseLessonLines(bodyLines);
+    problems.push(...lessonProblems);
+    const count = header.success ? (header.data as { LESSONS: number }).LESSONS : undefined;
+    if (count !== undefined && lessonProblems.length === 0 && count !== lessons.length) {
+      problems.push(`LESSONS: ${count} but ## Lessons lists ${lessons.length}`);
+    }
   }
 
   if (problems.length > 0 || !header.success) {

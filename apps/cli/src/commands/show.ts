@@ -6,10 +6,12 @@ import { CliError, withProject } from "../context.js";
 import { findRun } from "./runs.js";
 
 /** Verdict files the overview summarises, with the header that says the most about each. */
-const VERDICTS: { kind: VerdictKind; key: string }[] = [
-  { kind: "triage", key: "DECISION" },
-  { kind: "build", key: "STATUS" },
-  { kind: "checks", key: "GATE" },
+const VERDICTS: { kind: VerdictKind; key: string; path: (files: string[]) => string | undefined }[] = [
+  { kind: "triage", key: "DECISION", path: () => "triage.md" },
+  { kind: "refine", key: "STATUS", path: (files) => latestRoundFile(files, "spec", "refine.md") },
+  { kind: "critic", key: "VERDICT", path: (files) => latestRoundFile(files, "spec", "critic.md") },
+  { kind: "build", key: "STATUS", path: () => "build.md" },
+  { kind: "checks", key: "GATE", path: (files) => latestChecks(files) },
 ];
 
 /** Every file under dir, as sorted `/`-separated paths relative to it. */
@@ -24,21 +26,22 @@ function listFiles(dir: string, prefix = ""): string[] {
   return out.sort();
 }
 
-/** `round-N/<name>` of the highest round N (numerically) that has one. */
-function latestInRound(files: string[], name: string): string | undefined {
+/** `<folder>-N/<name>` of the highest N (numerically) that has one, e.g. `spec-2/critic.md`. */
+function latestRoundFile(files: string[], folder: "round" | "spec", name: string): string | undefined {
   let best: { round: number; path: string } | undefined;
   for (const path of files) {
-    const match = /^round-(\d+)\/(.+)$/.exec(path);
-    if (!match || match[2] !== name) continue;
+    const [dir, file] = path.split("/");
+    const match = new RegExp(`^${folder}-(\\d+)$`).exec(dir!);
+    if (!match || file !== name || path.split("/").length !== 2) continue;
     const round = Number(match[1]);
     if (!best || round > best.round) best = { round, path };
   }
   return best?.path;
 }
 
-/** `round-N/checks.md` of the highest round N that has one. */
+/** `round-N/checks.md` of the highest round N (numerically) that has one. */
 function latestChecks(files: string[]): string | undefined {
-  return latestInRound(files, "checks.md");
+  return latestRoundFile(files, "round", "checks.md");
 }
 
 function fileList(files: string[]): string {
@@ -52,14 +55,21 @@ function fileList(files: string[]): string {
 function resolveInRunDir(runDir: string, file: string, files: string[]): string {
   const short: Record<string, string | undefined> = {
     triage: "triage.md",
+    refine: latestRoundFile(files, "spec", "refine.md"),
+    critic: latestRoundFile(files, "spec", "critic.md"),
     build: "build.md",
     checks: latestChecks(files),
-    capture: latestInRound(files, "capture-report.md"),
+    capture: latestRoundFile(files, "round", "capture-report.md"),
     approval: "approval.md",
+    learn: "learn.md",
   };
   if (Object.hasOwn(short, file)) {
     const path = short[file];
-    if (!path) throw new CliError(`No round has a ${file === "capture" ? "capture-report.md" : "checks.md"} yet. Files in the run folder:\n${fileList(files)}`);
+    if (!path) {
+      const missing =
+        file === "checks" ? "No round has a checks.md yet" : file === "capture" ? "No round has a capture-report.md yet" : `No spec round has a ${file}.md yet`;
+      throw new CliError(`${missing}. Files in the run folder:\n${fileList(files)}`);
+    }
     return path;
   }
   const slashed = file.replace(/\\/g, "/");
@@ -105,7 +115,7 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
     }
   };
   const checks = latestChecks(files);
-  for (const { kind, key } of VERDICTS) summarise(kind === "checks" ? checks : `${kind}.md`, kind, key);
+  for (const { kind, key, path } of VERDICTS) summarise(path(files), kind, key);
 
   // The reviews of the latest gated round, each lens with its verdict and the findings that block,
   // then the verifier's judgement of those: the findings it confirmed and how many it refuted.
@@ -130,7 +140,7 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
   }
 
   // The capture stage's report: its summary says what was shot, new browser errors and the upload.
-  const capture = latestInRound(files, "capture-report.md");
+  const capture = latestRoundFile(files, "round", "capture-report.md");
   if (capture) {
     const text = readFileSync(join(runDir, capture), "utf8");
     const summary = /^## Summary\s*$([\s\S]*?)(?=^#{1,3}\s|(?![\s\S]))/m.exec(text)?.[1] ?? "";
@@ -141,6 +151,8 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
   // The merge stage: the quality gate again after merging the default branch in, and the approver's call.
   summarise(round && `${round}/resync/checks.md`, "checks", "GATE");
   summarise("approval.md", "approver", "DECISION");
+  // After the merge: what the learner made of the run (its lessons wait in `factory lessons`).
+  summarise("learn.md", "learn", "LESSONS");
 
   lines.push("", `Files in ${runDir}:`, fileList(files), "", `Show one with \`factory show ${run.id} <file>\`, e.g. \`factory show ${run.id} triage\`.`);
   return lines.join("\n");
