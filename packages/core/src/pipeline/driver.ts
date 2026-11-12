@@ -100,6 +100,15 @@ function specFile(runDir: string, round: number, file: "refine.md" | "critic.md"
   return join(runDir, `spec-${round}`, file);
 }
 
+/** The highest spec round below `before` for which `read` gives a value, with that value. */
+function latestRoundWith<T>(before: number, read: (round: number) => T | undefined): { round: number; value: T } | undefined {
+  for (let round = before - 1; round >= 1; round--) {
+    const value = read(round);
+    if (value !== undefined) return { round, value };
+  }
+  return undefined;
+}
+
 /** readValid check: a refine output that is a spec (a BLOCKED one has none). */
 const refined = (v: ParsedVerdict<"refine">) => (v.header.STATUS === "REFINED" ? [] : ["refine was blocked"]);
 
@@ -586,16 +595,17 @@ export class PipelineDriver {
     const files = writeRoleFiles(dir, "refine", rolePrompt("refine", this.deps.read), permissionProfile("refine", { runDirFromCwd: relative(root, dir), outputFile }));
 
     const sections = this.triageScope(dir);
-    const previous = latestSpecRound(dir, "refine.md");
-    const spec = previous ? readValid("refine", specFile(dir, previous, "refine.md"), refined) : undefined;
-    if (spec) sections.push({ title: `Your spec from round ${previous}`, body: spec.body });
-    const critique = round > 1 ? readValid("critic", specFile(dir, round - 1, "critic.md"), () => []) : undefined;
-    if (critique) sections.push({ title: `The spec critic's verdict on round ${round - 1}: ${critique.header.VERDICT}`, body: critique.body });
-    // Only a human's call at the critic gate since refine last ran is meant for it (not, say, the triage approval).
+    // The latest usable spec and verdict, skipping rounds where refine was blocked or wrote nothing valid.
+    const previous = latestRoundWith(round, (r) => readValid("refine", specFile(dir, r, "refine.md"), refined));
+    if (previous) sections.push({ title: `Your spec from round ${previous.round}`, body: previous.value.body });
+    const critique = latestRoundWith(round, (r) => readValid("critic", specFile(dir, r, "critic.md"), () => []));
+    if (critique) sections.push({ title: `The spec critic's verdict on round ${critique.round}: ${critique.value.header.VERDICT}`, body: critique.value.body });
+    // Only a human's call since refine last ran is meant for it (not, say, the triage approval): one
+    // at the critic gate, or an escalation such as a blocked refine sent back here.
     const lastRefine = this.deps.store.listAgentRuns(run.id).filter((a) => a.role === "refine").at(-1)?.started_at ?? "";
     const human = this.deps.store
       .listDecisions(run.id)
-      .filter((d) => d.actor === "human" && d.gate === "critic" && d.created_at >= lastRefine)
+      .filter((d) => d.actor === "human" && (d.gate === "critic" || d.gate === "escalation") && d.created_at >= lastRefine)
       .at(-1);
     if (human) sections.push({ title: "A human sent the spec back with this comment", body: human.comment });
 

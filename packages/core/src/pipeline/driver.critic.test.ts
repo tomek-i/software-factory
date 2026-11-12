@@ -234,6 +234,23 @@ describe("PipelineDriver", () => {
       expect(vague.fake.calls()[2]!.stdin).toContain("VERDICT: REVISE needs the problems listed under ## Problems");
     });
 
+    it("gives refine the last usable spec and verdict, and the human's comment, after a blocked round", async () => {
+      const blocked: FakeStep = { role: "refine", output: "STATUS: BLOCKED\n\n## Blocker\nno idea\n" };
+      const { driver, store, fake } = setup([{ output: INCOMPLETE }, refined(1), revise(1), blocked, refined(3), accept, blockedBuild], {
+        config: config("critic: auto"),
+      });
+      const run = driver.startRun(12);
+      expect(await driver.drive(run.id)).toMatchObject({ reason: "refine is blocked: no idea" });
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "refine", { comment: "the file is feature.txt" });
+      await driver.drive(run.id);
+
+      expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "critic", "refine", "refine", "critic", "builder"]);
+      const third = fake.calls()[4]!.stdin;
+      expect(third).toContain("## Your spec from round 1");
+      expect(third).toContain("## The spec critic's verdict on round 1: REVISE");
+      expect(third).toContain("## A human sent the spec back with this comment\nthe file is feature.txt");
+    });
+
     it("needs a human before an untrusted author's spec is built, frames it as data, and does not ping anyone it names", async () => {
       const mentioning: FakeStep = {
         role: "refine",
