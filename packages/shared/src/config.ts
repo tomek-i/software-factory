@@ -160,6 +160,14 @@ export const factoryConfigSchema = z.object({
       everyone: z.boolean().default(false),
     })
     .default({}),
+  merge: z
+    .object({
+      // How the factory merges a PR: a merge commit, one squashed commit titled after the PR, or a rebase.
+      method: z.enum(["merge", "squash", "rebase"]).default("merge"),
+      // How long the merge stage waits for checks that branch protection requires, before asking a human.
+      checks_timeout_min: z.number().positive().default(30),
+    })
+    .default({}),
   github: z
     .object({
       // Labels only mirror run status onto GitHub issues. They are never read as input:

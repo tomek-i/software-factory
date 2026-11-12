@@ -123,3 +123,15 @@ describe("resolveModel", () => {
     expect(resolveModel(factoryConfigSchema.parse({ version: 1 }), { role: "builder" })).toEqual({ model: "opus" });
   });
 });
+
+describe("merge config", () => {
+  it("merges with a merge commit and waits 30 minutes for required checks by default", () => {
+    expect(factoryConfigSchema.parse({ version: 1 }).merge).toEqual({ method: "merge", checks_timeout_min: 30 });
+    expect(factoryConfigSchema.parse({ version: 1, merge: { method: "squash" } }).merge.method).toBe("squash");
+  });
+
+  it("refuses an unknown method and a timeout that is not positive", () => {
+    expect(factoryConfigSchema.safeParse({ version: 1, merge: { method: "fast-forward" } }).success).toBe(false);
+    expect(factoryConfigSchema.safeParse({ version: 1, merge: { checks_timeout_min: 0 } }).success).toBe(false);
+  });
+});

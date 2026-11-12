@@ -30,7 +30,7 @@ import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { MEDIA_MARKER, mediaTag } from "../github/media.js";
-import { factoryComment, type GithubPort, type PullRequestState } from "../github/port.js";
+import { factoryComment, type GithubPort, type PullRequestState, type RequiredCheck } from "../github/port.js";
 import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunEvent, type RunPatch, type Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
@@ -292,6 +292,21 @@ export interface DriverDeps {
   watchMs?: number;
   /** Screenshots, video and their upload; Playwright and GitHub release assets by default. */
   capture?: CapturePort;
+  /** How often the merge stage looks at required checks that are still running. */
+  checksPollMs?: number;
+}
+
+/** Wait `ms`, or less when `signal` aborts. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 export type DriveOutcome =
@@ -1317,12 +1332,12 @@ export class PipelineDriver {
       if (gate.outcome === "wait_human") return this.waitForHuman(run, "merge", [...gate.reasons, ...lifted], { commit: head });
       this.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted].join("; "), head);
     }
-    return this.mergePullRequest(run, number, head, git);
+    return await this.mergePullRequest(run, number, head, git);
   }
 
   /** Merge exactly `head`, which passed the quality gate and is what GitHub has, then move on to learn. */
-  private mergePullRequest(run: Run, number: number, head: string, git: GitEvidence): StepResult {
-    const { github } = this.deps;
+  private async mergePullRequest(run: Run, number: number, head: string, git: GitEvidence): Promise<StepResult> {
+    const { github, config } = this.deps;
     const problems: string[] = [];
     if (!this.passedOn(this.runDir(run), run.round, head)) problems.push(`no passing quality gate on ${head.slice(0, 7)}`);
     if (!git.isClean()) problems.push("the worktree has uncommitted changes");
@@ -1330,11 +1345,14 @@ export class PipelineDriver {
     if (problems.length) return this.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
     try {
       if (github.pullRequestState(number).draft) github.markReady(number);
+      const waited = await this.awaitRequiredChecks(run, number);
+      if (waited) return waited.result;
       // The last moment to notice a cancel (or a lost lease) before something that cannot be undone.
       if (this.load(run.id).state !== run.state) return undefined;
       if (this.signal?.aborted) return { kind: "stopped", state: run.state, reason: "this worker lost the run before merging" };
-      // --match-head-commit: GitHub refuses if the PR's head is anything but the commit that passed.
-      github.mergePullRequest(number, head);
+      // --match-head-commit: GitHub refuses if the PR's head is anything but the commit that passed,
+      // so a commit pushed while the checks ran is never merged.
+      github.mergePullRequest(number, head, config.merge.method);
     } catch (err) {
       return this.escalate(run, `could not merge PR #${number}: ${(err as Error).message}`);
     }
@@ -1344,6 +1362,38 @@ export class PipelineDriver {
       pullRequest: () => merged,
     });
     return undefined;
+  }
+
+  /**
+   * Wait until the checks that branch protection requires on the PR have passed, so a merge is not
+   * refused only because CI is still running. Undefined means go on and merge. A failed check, or
+   * one still running after `merge.checks_timeout_min`, needs a human; a cancel stops the wait.
+   * Throws when gh cannot read the checks.
+   */
+  private async awaitRequiredChecks(run: Run, number: number): Promise<{ result: StepResult } | undefined> {
+    const { github, config } = this.deps;
+    const minutes = config.merge.checks_timeout_min;
+    const deadline = Date.now() + minutes * 60_000;
+    const describe = (c: RequiredCheck) => (c.link ? `${c.name} (${c.link})` : c.name);
+    let told = false;
+    for (;;) {
+      const checks = github.requiredChecks(number);
+      const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
+      if (failed.length) {
+        return { result: this.escalate(run, `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`) };
+      }
+      const pending = checks.filter((c) => c.bucket === "pending");
+      if (pending.length === 0) return undefined;
+      const names = pending.map((c) => c.name).join(", ");
+      if (Date.now() >= deadline) return { result: this.escalate(run, `required checks still running on PR #${number} after ${minutes} min: ${names}`) };
+      if (!told) {
+        this.info(run, `waiting for required checks on PR #${number}: ${names}`);
+        told = true;
+      }
+      await pause(this.deps.checksPollMs ?? 30_000, this.signal);
+      if (this.load(run.id).state !== run.state) return { result: undefined };
+      if (this.signal?.aborted) return { result: { kind: "stopped", state: run.state, reason: "this worker lost the run while waiting for checks" } };
+    }
   }
 
   /**

@@ -82,6 +82,45 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).mergePullRequest(42, "abc")).toThrow(/gh pr merge failed: boom/);
   });
 
+  it("squashes under the PR's title, or rebases, still only at the commit that passed", () => {
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      return { code: 0, stdout: args[1] === "view" ? JSON.stringify({ title: "feat(cli): colour the overview" }) : "", stderr: "" };
+    };
+    ghPort(project, run).mergePullRequest(42, "abc", "squash");
+    ghPort(project, run).mergePullRequest(42, "abc", "rebase");
+    expect(calls).toEqual([
+      ["pr", "view", "42", "-R", "o/r", "--json", "title"],
+      ["pr", "merge", "42", "-R", "o/r", "--squash", "--match-head-commit", "abc", "--subject", "feat(cli): colour the overview (#42)"],
+      ["pr", "merge", "42", "-R", "o/r", "--rebase", "--match-head-commit", "abc"],
+    ]);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ title: "" })).run).mergePullRequest(42, "abc", "squash")).toThrow(/no title/);
+  });
+
+  it("reads the required checks, also while gh exits non-zero for a failed or pending one", () => {
+    const listed = [
+      { name: "test (ubuntu-latest)", bucket: "pending", link: "https://ci/1" },
+      { name: "pr-title", bucket: "fail", link: "" },
+    ];
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      return { code: 8, stdout: JSON.stringify(listed), stderr: "" };
+    };
+    expect(ghPort(project, run).requiredChecks(42)).toEqual([
+      { name: "test (ubuntu-latest)", bucket: "pending", link: "https://ci/1" },
+      { name: "pr-title", bucket: "fail" },
+    ]);
+    expect(calls[0]).toEqual(["pr", "checks", "42", "-R", "o/r", "--required", "--json", "name,bucket,link"]);
+
+    const none: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no required checks reported on the 'x' branch" });
+    expect(ghPort(project, none).requiredChecks(42)).toEqual([]);
+    const broken: CommandRunner = () => ({ code: 1, stdout: "", stderr: "HTTP 502" });
+    expect(() => ghPort(project, broken).requiredChecks(42)).toThrow(/gh pr checks failed: HTTP 502/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).requiredChecks(42)).toThrow(/unexpected output/);
+  });
+
   it("opens an issue from a body file, which it removes afterwards, and returns its number", () => {
     let sent = "";
     const calls: string[][] = [];
