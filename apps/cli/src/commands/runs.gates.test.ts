@@ -1,11 +1,11 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { Store } from "@factory/core";
+import { MEDIA_MARKER, mediaTag, runCommand, Store, type CommandRunner } from "@factory/core";
 import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
-import { runApprove, runReject, runResume, runStatus } from "./runs.js";
+import { runApprove, runCancel, runReject, runResume, runStatus } from "./runs.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -112,6 +112,36 @@ describe("approve / reject / cancel", () => {
     expect(await runResume(dir, "12", { to: "refine", message: "name the file" }, deps)).toMatch(/is waiting at the critic gate/);
     expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "refine"]);
     expect(fake.calls()[2]!.stdin).toContain("name the file");
+  });
+
+  it("deletes the screenshots release of a run that ends unmerged, or says how to", async () => {
+    const { run, queue, dir, root } = setup([{ output: TRIAGE }, { output: TRIAGE }], "triage: human");
+    queue(12, 13);
+    await run("12");
+    await run("13");
+    const runs = join(root, ".factory", "runs");
+    const ids = readdirSync(runs).sort();
+    // As if both runs had uploaded screenshots.
+    for (const id of ids) writeFileSync(join(runs, id, MEDIA_MARKER), `${mediaTag(id)}\n`);
+    const gh: string[][] = [];
+    const runner =
+      (fail: boolean): CommandRunner =>
+      (cmd, args, options) => {
+        if (cmd !== "gh") return runCommand(cmd, args, options);
+        gh.push(args);
+        return fail ? { code: 1, stdout: "", stderr: "HTTP 403" } : { code: 0, stdout: "", stderr: "" };
+      };
+
+    const [first, second] = ids as [string, string];
+    expect(runReject(dir, first, { message: "not now" }, runner(false))).toContain(`Deleted its screenshots release factory-media-${first}.`);
+    expect(gh).toEqual([["release", "delete", `factory-media-${first}`, "--yes", "-R", "o/r"]]);
+    expect(existsSync(join(runs, first, MEDIA_MARKER))).toBe(false);
+
+    const cancelled = runCancel(dir, second, {}, runner(true));
+    expect(cancelled).toMatch(/^Cancelled /);
+    expect(cancelled).toContain(`Could not delete its screenshots release (gh release delete failed: HTTP 403); delete it with \`gh release delete factory-media-${second}\`.`);
+    // Kept, so a later cancel or reject does not lose track of the release.
+    expect(existsSync(join(runs, second, MEDIA_MARKER))).toBe(true);
   });
 
   it("explains unknown run references", async () => {

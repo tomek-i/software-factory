@@ -6,7 +6,7 @@ import type { ReviewLens } from "@factory/shared";
 import type { TrustedReader } from "../config/trusted.js";
 
 /** Roles that have a shipped prompt and permission profile so far. */
-export type PromptRole = "issue_writer" | "triage" | "refine" | "critic" | "builder" | "reviewer" | "verifier" | "approver" | "learner";
+export type PromptRole = "issue_writer" | "triage" | "refine" | "critic" | "builder" | "reviewer" | "verifier" | "approver" | "capture" | "learner";
 
 /** Default prompts shipped with the factory (packages/core/prompts), the same from src/ and dist/. */
 export const SHIPPED_PROMPTS_DIR = fileURLToPath(new URL("../../prompts/", import.meta.url));
@@ -71,7 +71,16 @@ export function permissionProfile(
 ): ClaudeSettings {
   const runDir = options.runDirFromCwd.replace(/\\/g, "/").replace(/\/$/, "");
   const web = ["WebFetch", "WebSearch"];
-  if (role === "reviewer" || role === "verifier" || role === "approver" || role === "refine" || role === "critic" || role === "learner" || role === "issue_writer") {
+  if (
+    role === "reviewer" ||
+    role === "verifier" ||
+    role === "approver" ||
+    role === "refine" ||
+    role === "critic" ||
+    role === "capture" ||
+    role === "learner" ||
+    role === "issue_writer"
+  ) {
     if (!options.outputFile) throw new Error(`a ${role} profile needs its output file`);
     return {
       permissions: {
@@ -81,6 +90,7 @@ export function permissionProfile(
         // must not be able to rewrite the reviews it judges, nor the approver (or the learner) the
         // reports it weighs, nor the spec critic the refined spec it checks. The issue writer only
         // drafts: what it writes goes to GitHub after the gate, never into the repo.
+        // The capture agent only plans: the engine runs the browser, so it needs no shell either.
         allow: ["Read", "Grep", "Glob", `Edit(${absoluteRule(options.outputFile)})`],
         deny: ["Bash", "PowerShell", "NotebookEdit", ...web, ...(role === "issue_writer" ? issueWriterUnreadable(options.denyRead ?? []) : [])],
       },

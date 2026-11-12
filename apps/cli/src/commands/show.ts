@@ -59,13 +59,15 @@ function resolveInRunDir(runDir: string, file: string, files: string[]): string 
     critic: latestRoundFile(files, "spec", "critic.md"),
     build: "build.md",
     checks: latestChecks(files),
+    capture: latestRoundFile(files, "round", "capture-report.md"),
     approval: "approval.md",
     learn: "learn.md",
   };
   if (Object.hasOwn(short, file)) {
     const path = short[file];
     if (!path) {
-      const missing = file === "checks" ? "No round has a checks.md yet" : `No spec round has a ${file}.md yet`;
+      const missing =
+        file === "checks" ? "No round has a checks.md yet" : file === "capture" ? "No round has a capture-report.md yet" : `No spec round has a ${file}.md yet`;
       throw new CliError(`${missing}. Files in the run folder:\n${fileList(files)}`);
     }
     return path;
@@ -135,6 +137,15 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
       if (!(err instanceof VerdictParseError)) throw err;
       lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
     }
+  }
+
+  // The capture stage's report: its summary says what was shot, new browser errors and the upload.
+  const capture = latestRoundFile(files, "round", "capture-report.md");
+  if (capture) {
+    const text = readFileSync(join(runDir, capture), "utf8");
+    const summary = /^## Summary\s*$([\s\S]*?)(?=^#{1,3}\s|(?![\s\S]))/m.exec(text)?.[1] ?? "";
+    const items = summary.split(/\r?\n/).flatMap((l) => /^[-*]\s+(.+)$/.exec(l.trim())?.[1] ?? []);
+    lines.push("", capture, ...(items.length ? items.map((s) => `  - ${s}`) : ["  (no summary)"]));
   }
 
   // The merge stage: the quality gate again after merging the default branch in, and the approver's call.

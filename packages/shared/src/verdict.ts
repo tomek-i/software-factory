@@ -98,6 +98,8 @@ export const verdictHeaderSchemas = {
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),
   approver: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
+  // PLAN comes with a ## Plan json block (parseCapturePlan); SKIP when nothing visible can be shown.
+  capture: z.object({ CAPTURE: z.enum(["PLAN", "SKIP"]) }),
   // How many lessons the `## Lessons` block proposes; zero is the common case.
   learn: z.object({ LESSONS: z.string().regex(/^\d+$/, "must be a whole number").transform(Number) }),
   // The issues themselves follow the header in delimited blocks (see drafts/draft.ts in core).

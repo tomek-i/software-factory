@@ -17,6 +17,7 @@ describe("rolePrompt", () => {
     expect(rolePrompt("triage", () => undefined)).toContain("# Role: triage");
     expect(rolePrompt("verifier", () => undefined)).toContain("# Role: verifier");
     expect(rolePrompt("approver", () => undefined)).toContain("# Role: approver");
+    expect(rolePrompt("capture", () => undefined)).toContain("# Role: capture");
     expect(rolePrompt("refine", () => undefined)).toContain("# Role: refine");
     expect(rolePrompt("critic", () => undefined)).toContain("# Role: spec critic");
     expect(rolePrompt("learner", () => undefined)).toContain("# Role: learner");
@@ -134,6 +135,13 @@ describe("permissionProfile", () => {
       expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
       expect(() => permissionProfile(role, { runDirFromCwd: "x" })).toThrow(new RegExp(`${role} profile needs its output file`));
     }
+  });
+
+  it("gives the capture agent the same: no shell, and only capture.md to write", () => {
+    const outputFile = join(tempDir(), "capture.md");
+    const { permissions } = permissionProfile("capture", { runDirFromCwd: "../..", outputFile });
+    expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
   });
 
   it("writes absolute rules the way Claude Code matches them", () => {

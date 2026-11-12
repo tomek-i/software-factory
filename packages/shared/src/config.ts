@@ -79,8 +79,18 @@ export const factoryConfigSchema = z.object({
   app: z
     .object({
       start: z.string().optional(),
-      url: z.string().default("http://localhost:{port}"),
+      // The app gets a free port per run, so a URL without {port} would point at the wrong app.
+      url: z
+        .string()
+        .refine((u) => u.includes("{port}"), { message: "must contain {port}, which is replaced by the port the app is started on" })
+        .default("http://localhost:{port}"),
       port_env: z.string().default("PORT"),
+      // How long `start` may take until `url` answers. It also runs in a fresh checkout of the
+      // default branch for the before shots, so an install step in `start` has to fit in here.
+      ready_timeout_sec: z.number().int().positive().default(180),
+      // Names of further variables the app gets from the factory's environment; it gets only what a
+      // shell and Node need otherwise. Tokens (GH_TOKEN, ANTHROPIC_API_KEY, ...) are never passed.
+      env: z.array(z.string().min(1)).default([]),
     })
     .default({}),
   gates: z

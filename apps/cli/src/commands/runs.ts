@@ -1,14 +1,18 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
   approveTarget,
   applyStreamLine,
   createAgentRunner,
+  deleteMedia,
   emptySummary,
   FactoryEvents,
   fetchIssue,
   ghPort,
   killTree,
   loadTrustedConfig,
+  MEDIA_MARKER,
+  mediaTag,
   nextAfterTriage,
   PipelineDriver,
   RunMachine,
@@ -507,6 +511,22 @@ export async function runResume(
   );
 }
 
+/**
+ * Best effort: a run that ends without being merged takes its screenshots release (a draft, see
+ * uploadMedia) with it. Returns a line for the command's output, or "" when it had none.
+ */
+function dropMedia(project: Project, runId: string, run?: CommandRunner): string {
+  const marker = join(runDirOf(project.repo_path, runId), MEDIA_MARKER);
+  if (!existsSync(marker)) return "";
+  try {
+    deleteMedia(project, runId, run);
+    rmSync(marker);
+    return `\nDeleted its screenshots release ${mediaTag(runId)}.`;
+  } catch (err) {
+    return `\nCould not delete its screenshots release (${(err as Error).message.split("\n")[0]}); delete it with \`gh release delete ${mediaTag(runId)}\`.`;
+  }
+}
+
 /** `factory reject <run> -m <why>`: end a run waiting at a gate. */
 export function runReject(cwd: string, ref: string, options: { message: string }, run?: CommandRunner): string {
   return withProject(
@@ -518,7 +538,7 @@ export function runReject(cwd: string, ref: string, options: { message: string }
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
       new RunMachine(store, trustedConfig(project, config, run)).resume(target.id, "rejected", { comment: options.message });
-      return `Rejected ${target.id} at the ${target.waiting_gate} gate.`;
+      return `Rejected ${target.id} at the ${target.waiting_gate} gate.${dropMedia(project, target.id, run)}`;
     },
     run,
   );
@@ -539,7 +559,7 @@ export function runCancel(cwd: string, ref: string, options: { message?: string 
       new RunMachine(store, config).cancel(target.id, options.message?.trim() || "cancelled from the CLI");
       const stopped = running.length ? ` Stopped ${running.length} agent process${running.length > 1 ? "es" : ""}.` : "";
       const kept = target.worktree_path ? `\nThe worktree is kept for inspection: ${target.worktree_path}` : "";
-      return `Cancelled ${target.id}.${stopped}${kept}`;
+      return `Cancelled ${target.id}.${stopped}${kept}${dropMedia(project, target.id, run)}`;
     },
     run,
   );
