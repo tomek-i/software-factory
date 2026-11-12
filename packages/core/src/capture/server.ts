@@ -102,7 +102,7 @@ export function appEnv(env: NodeJS.ProcessEnv, portEnv: string, port: number, pa
   return { ...kept, [portEnv]: String(port), BROWSER: "none" };
 }
 
-/** Servers started by this process and not stopped yet, killed when the process ends. */
+/** Servers (and narrate renders) started by this process and not stopped yet, killed when the process ends. */
 const live = new Set<number>();
 
 const killLive = () => {
@@ -115,7 +115,8 @@ const onSignal = (signal: NodeJS.Signals) => {
   if (process.listenerCount(signal) === 0) process.exit(signal === "SIGTERM" ? 143 : 129);
 };
 
-function track(pid: number): void {
+/** Kill this process group (its tree on Windows) if the factory ends before it does. */
+export function track(pid: number): void {
   if (live.size === 0) {
     // Ctrl+C ends the factory with process.exit, which still emits "exit".
     process.on("exit", killLive);
@@ -125,7 +126,7 @@ function track(pid: number): void {
   live.add(pid);
 }
 
-function untrack(pid: number): void {
+export function untrack(pid: number): void {
   if (!live.delete(pid) || live.size > 0) return;
   process.off("exit", killLive);
   process.off("SIGTERM", onSignal);

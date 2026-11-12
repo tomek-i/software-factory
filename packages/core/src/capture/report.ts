@@ -104,6 +104,8 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
     if (w) {
       lines.push("", "## Walkthrough", `- ${walkthroughLine(result)}`);
       if (w.video) lines.push(`- video: ${basename(w.video)}`);
+      if (w.narrated) lines.push(`- narrated video: ${basename(w.narrated)}`);
+      if (w.narrationProblem) lines.push(`- no narration: ${w.narrationProblem}`);
       for (const s of w.screenshots) lines.push(`- screenshot: ${basename(s)}`);
       for (const s of [...new Set(w.signals)]) lines.push(`- error: ${s}`);
     }
@@ -168,8 +170,11 @@ export function screenshotsSection(outcome: CaptureOutcome, runId: string): stri
   );
   const parts = ["## Screenshots", ["| Page | Before | After |", "|---|---|---|", ...rows].join("\n")];
   const w = result.walkthrough;
-  const video = w?.video ? urls[basename(w.video)] : undefined;
-  if (video) parts.push(`**Walkthrough video:** [walkthrough.webm](${video})`);
+  // The narrated video replaces the silent one when there is one; only one of them is uploaded.
+  const shown = w?.narrated ?? w?.video;
+  const video = shown ? urls[basename(shown)] : undefined;
+  if (video) parts.push(`**Walkthrough video${w?.narrated ? " (narrated)" : ""}:** [${basename(shown!)}](${video})`);
+  if (w?.narrationProblem) parts.push(`No narration: ${brief(w.narrationProblem)}`);
   if (w?.problem) parts.push(`The walkthrough stopped early: ${brief(w.problem)}`);
   const fresh = newErrors(result.pages);
   if (fresh.length) {

@@ -21,6 +21,10 @@ list of fixed steps the engine runs itself.
    - `new`: the change adds the page, so there is nothing to compare with.
 4. Optionally add a walkthrough (at most 30 steps) that shows the acceptance criteria working, in the
    order a person would try them. Keep it short; a failing step only ends the video early.
+5. Optionally narrate it: give a step a `say`, one short spoken sentence about what the viewer is
+   about to see (what changed and why it matters, not "now I click"). It is spoken while that step
+   and the ones after it run, until the next `say`. Three to six sentences for the whole video is
+   plenty. Without any `say` the video is silent.
 
 Paths are on the app's own origin: they start with a single `/` (e.g. `/`, `/settings?tab=billing`).
 Never a full URL or another host.
@@ -49,10 +53,10 @@ SKIP when the change shows nothing in the app after all (say why in the summary,
     { "name": "invoices", "path": "/invoices", "screen": "new" }
   ],
   "walkthrough": [
-    { "action": "goto", "path": "/settings" },
-    { "action": "click", "text": "Billing" },
+    { "action": "goto", "path": "/settings", "say": "Settings now has a billing tab." },
+    { "action": "click", "text": "Billing", "say": "It keeps the company name used on invoices." },
     { "action": "fill", "selector": "#company", "value": "Acme" },
-    { "action": "click", "selector": "button[type=submit]" },
+    { "action": "click", "selector": "button[type=submit]", "say": "Saving it shows a confirmation." },
     { "action": "wait", "ms": 500 },
     { "action": "screenshot", "name": "saved" }
   ]
@@ -64,6 +68,7 @@ SKIP when the change shows nothing in the app after all (say why in the summary,
 - Steps: `goto` (`path`), `click` (exactly one of `selector`, a CSS selector, or `text`, visible
   text), `fill` (`selector`, `value`), `wait` (`ms`, at most 10000) and `screenshot` (`name`).
   Nothing else is accepted.
+- `say` (optional, on any step): one line of plain text, at most 300 characters.
 - `walkthrough` may be `[]`.
 
 You have no shell, and you can write only your output file.

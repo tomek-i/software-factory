@@ -89,6 +89,22 @@ describe("screenshotsSection", () => {
     expect(text).toContain("- no before shot of invoices (/invoices): it is a new screen");
   });
 
+  it("links the narrated video instead of the silent one, and says why there is no narration", () => {
+    const narrated = { ...result, walkthrough: { ...result.walkthrough!, narrated: "/run/round-1/capture/walkthrough-narrated.mp4" } };
+    const url = "https://github.com/o/r/releases/download/factory-media-r1/walkthrough-narrated.mp4";
+    const text = screenshotsSection({ result: narrated, urls: { ...urls, "walkthrough-narrated.mp4": url } }, "r1");
+    expect(text).toContain(`**Walkthrough video (narrated):** [walkthrough-narrated.mp4](${url})`);
+    expect(text).not.toContain("walkthrough.webm");
+    expect(renderCaptureReport({ result: narrated, urls })).toContain("- narrated video: walkthrough-narrated.mp4");
+
+    const silent = { ...result, walkthrough: { ...result.walkthrough!, narrationProblem: "narrate failed (exit 1); see narrate/narrate.log\nC:\\Users\\me" } };
+    const pr = screenshotsSection({ result: silent, urls }, "r1");
+    expect(pr).toContain(`**Walkthrough video:** [walkthrough.webm](${urls["walkthrough.webm"]})`);
+    expect(pr).toContain("No narration: `narrate failed (exit 1); see narrate/narrate.log`");
+    expect(pr).not.toContain("C:\\Users");
+    expect(renderCaptureReport({ result: silent, urls })).toContain("- no narration: narrate failed (exit 1)");
+  });
+
   it("keeps app text from rendering as markup", () => {
     const evil = [{ ...pages[1]!, after: [shot("after", "invoices", 1440, ["console error: <img src=x onerror=alert(1)> `tick`"])] }];
     expect(screenshotsSection({ result: { ...result, pages: evil }, urls }, "r1")).toContain("`console error: <img src=x onerror=alert(1)> 'tick'`");
