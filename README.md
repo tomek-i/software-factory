@@ -513,3 +513,21 @@ packages/core     engine: config, SQLite store, state machine, gates, agent runn
   test/           fake `claude` binary and fixtures: tests never spend real usage
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```
+
+## License
+
+Software Factory is **source-available** under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is not open source in the OSI sense.
+
+**Free to use for:**
+- personal, hobby and private projects;
+- study, research and experiments;
+- charities, schools, public research and government bodies.
+
+**Needs a commercial license:**
+- any use at work or inside a company, including internal tools;
+- using it to build anything you plan to sell, such as an app or a SaaS;
+- offering it, or a service built on it, to paying customers.
+
+**Commercial license:** open an issue titled "Commercial license", or contact [tomek-i](https://github.com/tomek-i) through their GitHub profile.
+
+**Contributing:** pull requests from others need a signed [Contributor License Agreement](CLA.md), so contributions can be included in commercially licensed versions. A bot asks for it on your first pull request.
