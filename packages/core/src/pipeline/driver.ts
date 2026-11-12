@@ -1243,7 +1243,7 @@ export class PipelineDriver {
           lessons: this.lessons(),
           branch: worktree.branch,
           defaultBranch: this.defaultBranch,
-          sections: [...this.triageScope(dir), { title: "Run files", body: reports.map((path) => `- \`${path}\``).join("\n") }],
+          sections: [...this.triageScope(dir), ...this.acceptedSpec(run), { title: "Run files", body: reports.map((path) => `- \`${path}\``).join("\n") }],
           instructions: [
             `Decide whether PR #${run.pr_number} for issue #${issue.number} may be merged.`,
             `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Final commit: \`${head}\`.`,
@@ -1307,6 +1307,7 @@ export class PipelineDriver {
           defaultBranch: this.defaultBranch,
           sections: [
             ...this.triageScope(dir),
+            ...this.acceptedSpec(run),
             { title: "Findings to verify", body: ["```json", JSON.stringify(findings, null, 2), "```"].join("\n") },
           ],
           instructions: [
@@ -1362,7 +1363,7 @@ export class PipelineDriver {
       rolePrompt("reviewer", this.deps.read, lens),
       permissionProfile("reviewer", { runDirFromCwd: relative(worktree.path, dir), outputFile }),
     );
-    const sections = this.triageScope(dir);
+    const sections = [...this.triageScope(dir), ...this.acceptedSpec(run)];
     const previous = this.previousReview(run, lens, round);
     if (previous) {
       sections.push({
@@ -1487,11 +1488,11 @@ export class PipelineDriver {
 
   /**
    * Hard rules the branch trips against where it left the default branch. The scope a deletion is
-   * checked against is the issue plus triage's reading of it.
+   * checked against is the issue plus triage's reading of it and the accepted spec.
    */
   private hardRuleHits(run: Run, worktree: Worktree, head: string): string[] {
     const issue = this.issueOf(run);
-    const scope = [issue.title, issue.body, ...this.triageScope(this.runDir(run)).map((s) => s.body)].join("\n");
+    const scope = [issue.title, issue.body, ...this.triageScope(this.runDir(run)).map((s) => s.body), ...this.acceptedSpec(run).map((s) => s.body)].join("\n");
     return diffHardRuleHits({ cwd: worktree.path, defaultBranch: this.defaultBranch, config: this.deps.config, scope, head, run: this.run });
   }
 

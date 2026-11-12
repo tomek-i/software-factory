@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
-import { setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, tempDir, type FakeStep } from "../../test/helpers.js";
+import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
+import { GIT_TEST_TIMEOUT, REVIEW_PASS, tempDir, type FakeStep } from "../../test/helpers.js";
 import { approveTarget, latestSpecRound, nextAfterTriage, quietMentions, REFINE_MARKER, runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
 
@@ -264,6 +264,16 @@ describe("PipelineDriver", () => {
       });
     });
 
+    it("gives the reviewers the accepted spec to judge the change against", async () => {
+      const { driver, fake } = setup([{ output: INCOMPLETE }, refined(1), buildStep("fixed"), { role: "reviewer-code", output: REVIEW_PASS }], {
+        config: config("critic: always\n  review: human", "reviews:\n  always: [code]\n  ui: []\n"),
+      });
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+      const reviewer = fake.calls().find((c) => c.role === "reviewer-code")!.stdin;
+      expect(reviewer).toContain("## Refined spec\n");
+      expect(reviewer).toContain("feature.txt says fixed (v1)");
+    });
   });
 
   describe("quietMentions", () => {
