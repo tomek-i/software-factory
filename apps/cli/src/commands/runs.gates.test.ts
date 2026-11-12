@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Store } from "@factory/core";
@@ -88,6 +89,17 @@ describe("approve / reject / cancel", () => {
     expect(printed.some((l) => /^Approved the critic gate of run-12-\w+; it moves to build\.$/.test(l))).toBe(true);
     expect(fake.calls().map((c) => c.role).slice(0, 3)).toEqual(["triage", "refine", "builder"]);
     expect(fake.calls().find((c) => c.role === "builder")!.stdin).toContain("feature.txt exists");
+  });
+
+  it("routes an approval by the default branch's config, not a local edit of it", async () => {
+    const { run, queue, dir, root } = setup([{ output: TRIAGE }], "triage: human\n  critic: auto");
+    queue();
+    await run();
+    // A local copy that would skip the critic, never committed: the approval must not follow it.
+    const file = join(root, ".factory", "config.yaml");
+    writeFileSync(file, readFileSync(file, "utf8").replace("critic: auto", "critic: always"));
+
+    expect(await runApprove(dir, "12", { message: "go", run: false })).toContain("it moves to critic.");
   });
 
   it("resumes a run at the critic gate back to refine", async () => {

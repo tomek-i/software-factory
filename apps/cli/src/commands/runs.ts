@@ -436,6 +436,15 @@ async function continueRun(
   return driveIssue(store, project, config, run.issue_number, {}, deps);
 }
 
+/**
+ * The config from the default branch, as `factory run` uses it. A human's decision at a gate is
+ * applied by these rules too, so a local edit cannot change where an approved run goes next.
+ */
+function trustedConfig(project: Project, workingConfig: FactoryConfig, run?: CommandRunner): FactoryConfig {
+  const defaultBranch = workingConfig.project.default_branch;
+  return loadTrustedConfig(trustedReader(project.repo_path, defaultBranch, run), defaultBranch);
+}
+
 /** `factory approve <run>`: let a run waiting at a gate continue, and keep driving it unless --no-run. */
 export async function runApprove(
   cwd: string,
@@ -450,13 +459,14 @@ export async function runApprove(
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
+      const trusted = trustedConfig(project, config, deps.run);
       // An approved triage goes where it would have gone on its own: refine, the spec critic or build.
-      const to = approveTarget(target, nextAfterTriage(runDirOf(project.repo_path, target.id), config));
+      const to = approveTarget(target, nextAfterTriage(runDirOf(project.repo_path, target.id), trusted));
       if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
       const gate = target.waiting_gate;
       // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
       const commitSha = gate === "merge" ? waitingCommit(store.listEvents(target.id)) : undefined;
-      new RunMachine(store, config).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
+      new RunMachine(store, trusted).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
       const done = `Approved the ${gate} gate of ${target.id}; it moves to ${to}.`;
       return continueRun(store, project, config, target, to, done, options, deps);
     },
@@ -486,7 +496,7 @@ export async function runResume(
         throw new CliError(`Run ${target.id} can resume to: ${allowed.join(", ")}.`);
       }
       const to = options.to as RunState;
-      new RunMachine(store, config).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
+      new RunMachine(store, trustedConfig(project, config, deps.run)).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
       const loops = options.resetLoops ? " with a fresh loop budget" : "";
       return continueRun(store, project, config, target, to, `Resumed ${target.id} to ${to}${loops}.`, options, deps);
     },
@@ -504,7 +514,7 @@ export function runReject(cwd: string, ref: string, options: { message: string }
       if (target.state !== "needs_human" || !target.waiting_gate) {
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
-      new RunMachine(store, config).resume(target.id, "rejected", { comment: options.message });
+      new RunMachine(store, trustedConfig(project, config, run)).resume(target.id, "rejected", { comment: options.message });
       return `Rejected ${target.id} at the ${target.waiting_gate} gate.`;
     },
     run,
