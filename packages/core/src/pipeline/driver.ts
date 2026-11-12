@@ -1223,7 +1223,8 @@ export class PipelineDriver {
     if (result?.status !== "captured") return;
     const files = [
       ...result.pages.flatMap((p) => [...p.after, ...(p.before ?? [])].flatMap((s) => (s.file ? [s.file] : []))),
-      ...(result.walkthrough?.video ? [result.walkthrough.video] : []),
+      // The narrated video, when there is one, instead of the silent one: the PR links only one.
+      ...(result.walkthrough?.narrated ? [result.walkthrough.narrated] : result.walkthrough?.video ? [result.walkthrough.video] : []),
       ...(result.walkthrough?.screenshots ?? []),
     ];
     if (files.length === 0) return;

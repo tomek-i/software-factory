@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { capturePlanSchema, factoryConfigSchema } from "@factory/shared";
 import { git, GIT_TEST_TIMEOUT, repoWithRemote, tempDir } from "../../test/helpers.js";
 import { createWorktree } from "../git/worktrees.js";
+import { runCommand, type CommandRunner } from "../util/exec.js";
 import { isAlive } from "../util/process.js";
 import { chromiumInstalled } from "./browser.js";
 import { playwrightCapture } from "./capture.js";
@@ -159,6 +160,58 @@ describe.skipIf(!available)("playwrightCapture (real browser)", () => {
     } finally {
       outside.close();
     }
+    for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
+  });
+
+  it("narrates a walkthrough that went through, while the app still runs, and only then", async () => {
+    const home = `<html><body><h1>Home</h1><button id="go">Go</button></body></html>`;
+    const { root } = repoWithRemote({ "README.md": "# app\n", "app.js": appJs(home, null) });
+    const pids = join(tempDir(), "pids.txt");
+    writeFileSync(pids, "");
+    process.env.CAPTURE_TEST_PIDS = pids;
+    // A stand-in for narrate.mjs: it fetches the scene's site, so the video holds the app's page.
+    const narrate = join(tempDir("fake-narrate-"), "narrate.mjs");
+    writeFileSync(
+      narrate,
+      `import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const args = process.argv.slice(2);
+const scene = JSON.parse(readFileSync(args[args.indexOf("--scene") + 1], "utf8"));
+const page = await (await fetch(scene.site)).text();
+writeFileSync(join(args[args.indexOf("--out") + 1], "walkthrough.mp4"), JSON.stringify({ beats: scene.beats, page }));
+`,
+    );
+    const outDir = join(tempDir(), "capture");
+    // ffmpeg is faked; everything else (git) is real.
+    const run: CommandRunner = (cmd, args, options) => (cmd === "ffmpeg" ? { code: 0, stdout: "", stderr: "" } : runCommand(cmd, args, options));
+    const capture = (walkthrough: unknown[]) =>
+      playwrightCapture({ id: "p", name: "demo", repo_path: root, github_repo: "o/r", created_at: "" }, run).capture({
+        runId: "r4",
+        root,
+        worktreePath: root,
+        defaultBranch: "main",
+        app: { ...testApp, narrate },
+        plan: capturePlanSchema.parse({ pages: [{ name: "home", path: "/", screen: "new" }], walkthrough }),
+        outDir,
+        ports: [],
+      });
+
+    const told = await capture([
+      { action: "goto", path: "/", say: "The home page has a new button." },
+      { action: "click", selector: "#go", say: "Pressing it goes on." },
+    ]);
+    const walk = told.walkthrough!;
+    expect(walk).toMatchObject({ ran: 2, video: join(outDir, "walkthrough.webm"), narrated: join(outDir, "walkthrough-narrated.mp4") });
+    expect(walk.narrationProblem).toBeUndefined();
+    const video = JSON.parse(readFileSync(walk.narrated!, "utf8")) as { beats: { say: string }[]; page: string };
+    expect(video.beats.map((b) => b.say)).toEqual(["The home page has a new button.", "Pressing it goes on."]);
+    expect(video.page).toContain("<h1>Home</h1>");
+
+    rmSync(walk.narrated!);
+    const stopped = await capture([{ action: "goto", path: "/", say: "Hello." }, { action: "click", selector: "#missing" }]);
+    expect(stopped.walkthrough!.narrated).toBeUndefined();
+    expect(stopped.walkthrough!.narrationProblem).toBe("not narrated, as the silent walkthrough did not finish");
+    expect(existsSync(join(outDir, "walkthrough-narrated.mp4"))).toBe(false);
     for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
   });
 

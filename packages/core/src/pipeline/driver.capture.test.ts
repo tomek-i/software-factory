@@ -89,6 +89,20 @@ describe("PipelineDriver > capture", () => {
 
   const infos = (seen: { type: string; message?: string }[]) => seen.flatMap((e) => (e.type === "info" ? [e.message!] : []));
 
+  it("uploads and links the narrated walkthrough instead of the silent one", async () => {
+    const narrated = { video: "/x/walkthrough.webm", narrated: "/x/walkthrough-narrated.mp4", screenshots: [], ran: 2, signals: [] };
+    const capture = fakeCapture({ result: { walkthrough: narrated } });
+    const { driver, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
+    const uploaded = capture.uploads[0]!.map((f) => basename(f));
+    expect(uploaded).toContain("walkthrough-narrated.mp4");
+    expect(uploaded).not.toContain("walkthrough.webm");
+    const url = `https://github.com/o/r/releases/download/factory-media-${run.id}/walkthrough-narrated.mp4`;
+    expect(edits.at(-1)!.body).toContain(`**Walkthrough video (narrated):** [walkthrough-narrated.mp4](${url})`);
+  });
+
   it("skips capture without an agent when triage did not list ui, or no app.start is configured", async () => {
     for (const [triage, config, why] of [
       [TRIAGE(), captureConfig(), "triage did not list ui in SURFACES"],

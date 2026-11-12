@@ -33,13 +33,24 @@ export const samePath = z
 
 const selector = z.string().min(1).max(300);
 
+/**
+ * What a narrated walkthrough says while this step runs (and the steps after it, until the next
+ * step that says something). Spoken aloud and published in the video, so it is plain text.
+ */
+const say = z
+  .string()
+  .min(1)
+  .max(300)
+  .refine((t) => ![...t].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f), { message: "must be one line of plain text" })
+  .optional();
+
 export const walkthroughStepSchema = z
   .discriminatedUnion("action", [
-    z.object({ action: z.literal("goto"), path: samePath }).strict(),
-    z.object({ action: z.literal("click"), selector: selector.optional(), text: z.string().min(1).max(200).optional() }).strict(),
-    z.object({ action: z.literal("fill"), selector, value: z.string().max(500) }).strict(),
-    z.object({ action: z.literal("wait"), ms: z.number().int().min(0).max(MAX_STEP_WAIT_MS) }).strict(),
-    z.object({ action: z.literal("screenshot"), name }).strict(),
+    z.object({ action: z.literal("goto"), path: samePath, say }).strict(),
+    z.object({ action: z.literal("click"), selector: selector.optional(), text: z.string().min(1).max(200).optional(), say }).strict(),
+    z.object({ action: z.literal("fill"), selector, value: z.string().max(500), say }).strict(),
+    z.object({ action: z.literal("wait"), ms: z.number().int().min(0).max(MAX_STEP_WAIT_MS), say }).strict(),
+    z.object({ action: z.literal("screenshot"), name, say }).strict(),
   ])
   .superRefine((step, ctx) => {
     if (step.action === "click" && (step.selector === undefined) === (step.text === undefined)) {

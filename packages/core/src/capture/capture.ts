@@ -6,6 +6,7 @@ import { uploadMedia } from "../github/media.js";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { launchBrowser, recordWalkthrough, shootPages, type Shot, type Walkthrough } from "./browser.js";
+import { findNarrate, narrationScene, renderNarrated } from "./narrate.js";
 import { appUrl, freePort, startApp, type AppServer } from "./server.js";
 
 export type { Shot, Walkthrough } from "./browser.js";
@@ -80,7 +81,10 @@ async function captureWithPlaywright(request: CaptureRequest, run: CommandRunner
     const after = await withApp(request, request.worktreePath, "after", async (server) => {
       const shots = await shootPages(browser, server.url, plan.pages, outDir, "after");
       pages = plan.pages.map((p) => ({ name: p.name, path: p.path, screen: p.screen, after: shots.get(p.name) ?? [] }));
-      if (plan.walkthrough.length) walkthrough = await recordWalkthrough(browser, server.url, plan.walkthrough, outDir);
+      if (plan.walkthrough.length) {
+        walkthrough = await recordWalkthrough(browser, server.url, plan.walkthrough, outDir);
+        await narrate(request, server.url, walkthrough, run);
+      }
     });
     if (after) return { status: "failed", problem: after, pages: [], notes };
     // Cancelled while the after app ran: do not start another one.
@@ -103,6 +107,29 @@ async function captureWithPlaywright(request: CaptureRequest, run: CommandRunner
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * Record the walkthrough again with a voice, while the after app still runs. Only after the silent,
+ * guarded run went through every step without leaving the app: narrate's browser has no
+ * same-origin guard of its own, so the silent run is what shows the steps stay on the app.
+ */
+async function narrate(request: CaptureRequest, baseUrl: string, walkthrough: Walkthrough, run: CommandRunner): Promise<void> {
+  const scene = narrationScene(request.plan.walkthrough, baseUrl);
+  if (!scene) return;
+  const cli = findNarrate(request.app.narrate);
+  if (!cli) {
+    // Without the plugin the silent video is the normal case; only a configured path that is wrong is news.
+    if (request.app.narrate !== "off" && request.app.narrate !== "auto") walkthrough.narrationProblem = `narrate was not found at ${request.app.narrate}`;
+    return;
+  }
+  if (walkthrough.problem || !walkthrough.video) {
+    walkthrough.narrationProblem = "not narrated, as the silent walkthrough did not finish";
+    return;
+  }
+  const result = await renderNarrated({ narrate: cli, scene, outDir: request.outDir, signal: request.signal, run });
+  if ("video" in result) walkthrough.narrated = result.video;
+  else walkthrough.narrationProblem = result.problem;
 }
 
 /**

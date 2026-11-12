@@ -1,23 +1,46 @@
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright";
 import { CAPTURE_WIDTHS, MAX_STEP_WAIT_MS, type CapturePage, type WalkthroughStep } from "@factory/shared";
+import { findNarrate } from "./narrate.js";
 
 /** How to make Playwright available, for the notes when it is not. */
 export const PLAYWRIGHT_HINT =
-  "install playwright to enable screenshots: `pnpm install` in the factory's checkout (playwright is an optional dependency), then `pnpm exec playwright install chromium`";
+  "install playwright to enable screenshots: `pnpm install` in the factory's checkout (playwright is an optional dependency), then `pnpm exec playwright install chromium`; the narrate Claude Code plugin's own copy is used too when it is installed";
 
 const NAV_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 10_000;
+
+type PlaywrightModule = typeof import("playwright");
+
+/**
+ * Playwright from the factory's own install, or else the copy the narrate plugin ships with, so a
+ * machine that has the plugin needs no separate install. Throws the first error when neither loads.
+ */
+export async function loadPlaywright(home?: string): Promise<PlaywrightModule> {
+  try {
+    return await import("playwright");
+  } catch (err) {
+    const cli = findNarrate("auto", home);
+    if (!cli) throw err;
+    try {
+      // bin/narrate.mjs sits next to the plugin's package.json and node_modules.
+      return createRequire(join(dirname(dirname(cli)), "package.json"))("playwright") as PlaywrightModule;
+    } catch {
+      throw err;
+    }
+  }
+}
 
 /**
  * Launch headless Chromium, or say why it cannot be. Playwright is an optional dependency loaded on
  * demand: without it (or its browsers) capture is skipped and the run goes on.
  */
 export async function launchBrowser(): Promise<{ browser: Browser } | { problem: string }> {
-  let chromium: typeof import("playwright").chromium;
+  let chromium: PlaywrightModule["chromium"];
   try {
-    ({ chromium } = await import("playwright"));
+    ({ chromium } = await loadPlaywright());
   } catch (err) {
     return { problem: `${PLAYWRIGHT_HINT} (${(err as Error).message.split("\n")[0]})` };
   }
@@ -35,7 +58,7 @@ export async function launchBrowser(): Promise<{ browser: Browser } | { problem:
  */
 export async function chromiumInstalled(): Promise<boolean> {
   try {
-    const { chromium } = await import("playwright");
+    const { chromium } = await loadPlaywright();
     return existsSync(chromium.executablePath());
   } catch {
     return false;
@@ -179,6 +202,10 @@ export interface Walkthrough {
   screenshots: string[];
   /** Steps that ran. */
   ran: number;
+  /** The same walkthrough with a voice (`walkthrough-narrated.mp4`), when the plan says something and narrate is installed. */
+  narrated?: string;
+  /** Why there is no narrated video although the plan asked for one. For the report and the PR. */
+  narrationProblem?: string;
   /** Why the walkthrough stopped early, e.g. `step 3 (click "Save"): timeout`. */
   problem?: string;
   signals: string[];

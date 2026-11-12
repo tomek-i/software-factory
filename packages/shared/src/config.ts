@@ -91,6 +91,9 @@ export const factoryConfigSchema = z.object({
       // Names of further variables the app gets from the factory's environment; it gets only what a
       // shell and Node need otherwise. Tokens (GH_TOKEN, ANTHROPIC_API_KEY, ...) are never passed.
       env: z.array(z.string().min(1)).default([]),
+      // The narrated walkthrough: `auto` uses the narrate Claude Code plugin when it is installed (and
+      // ffmpeg is on PATH), `off` keeps the silent video only, anything else is a path to narrate.mjs.
+      narrate: z.string().min(1).default("auto"),
     })
     .default({}),
   gates: z
