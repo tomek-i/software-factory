@@ -60,6 +60,7 @@ function resolveInRunDir(runDir: string, file: string, files: string[]): string 
     build: "build.md",
     checks: latestChecks(files),
     approval: "approval.md",
+    learn: "learn.md",
   };
   if (Object.hasOwn(short, file)) {
     const path = short[file];
@@ -139,6 +140,8 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
   // The merge stage: the quality gate again after merging the default branch in, and the approver's call.
   summarise(round && `${round}/resync/checks.md`, "checks", "GATE");
   summarise("approval.md", "approver", "DECISION");
+  // After the merge: what the learner made of the run (its lessons wait in `factory lessons`).
+  summarise("learn.md", "learn", "LESSONS");
 
   lines.push("", `Files in ${runDir}:`, fileList(files), "", `Show one with \`factory show ${run.id} <file>\`, e.g. \`factory show ${run.id} triage\`.`);
   return lines.join("\n");

@@ -29,8 +29,12 @@ export interface GithubPort {
   editComment(commentId: number, body: string): void;
   /** The open pull request whose head is this branch, if any. */
   findPullRequest(branch: string): number | undefined;
+  /** Open pull requests whose head branch starts with `prefix`, e.g. `factory/lessons-`. */
+  findOpenPullRequests(prefix: string): { number: number; head: string }[];
   /** Open a draft PR and return its number. */
   createDraftPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
+  /** Open a PR that is ready for review (not a draft) and return its number. */
+  createPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
   /** Replace a PR's description. */
   updatePullRequest(number: number, body: string): void;
   pullRequestState(number: number): PullRequestState;
@@ -40,12 +44,25 @@ export interface GithubPort {
   mergePullRequest(number: number, head: string): void;
 }
 
+/**
+ * What `factory new` needs from GitHub to open the issues it drafted. Kept apart from GithubPort:
+ * the pipeline never creates issues, so its fakes need not grow these methods. Faked in tests.
+ */
+export interface IssueWriterPort {
+  /** Open an issue and return its number. */
+  createIssue(issue: { title: string; body: string }): number;
+  /** Link `child` as a GitHub sub-issue of `parent`. */
+  addSubIssue(parent: number, child: number): void;
+}
+
+const ADD_SUB_ISSUE = "mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}";
+
 /** Hidden marker on every comment the factory posts, so later stages can find (and not duplicate) them. */
 export function factoryComment(runId: string, kind: string, body: string): string {
   return `<!-- factory:${runId}:${kind} -->\n${body.trim()}\n`;
 }
 
-export function ghPort(project: Project, run: CommandRunner = runCommand): GithubPort {
+export function ghPort(project: Project, run: CommandRunner = runCommand): GithubPort & IssueWriterPort {
   const repo = project.github_repo;
   if (!repo) throw new GithubError(`project ${project.name} has no GitHub repository`);
   const gh = (args: string[]) => {
@@ -53,7 +70,45 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     if (result.code !== 0) throw new GithubError(`gh ${args.slice(0, 2).join(" ")} failed: ${result.stderr || "unknown error"}`);
     return result.stdout;
   };
+  // From a file: a long text can exceed the Windows command-line limit (~32k characters).
+  const withBodyFile = <T>(body: string, fn: (file: string) => T): T => {
+    const dir = mkdtempSync(join(tmpdir(), "factory-body-"));
+    try {
+      const file = join(dir, "body.md");
+      writeFileSync(file, body);
+      return fn(file);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  /** The GraphQL node id of an issue, which the sub-issue mutation needs instead of its number. */
+  const nodeId = (number: number): string => {
+    const out = gh(["issue", "view", String(number), "-R", repo, "--json", "id"]);
+    let issue: { id?: unknown };
+    try {
+      issue = JSON.parse(out) as typeof issue;
+    } catch {
+      throw new GithubError(`gh issue view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+    }
+    if (typeof issue.id !== "string" || !issue.id) throw new GithubError(`gh issue view returned no id for #${number}`);
+    return issue.id;
+  };
   return {
+    createIssue({ title, body }) {
+      // gh prints the new issue's URL.
+      const out = withBodyFile(body, (file) => gh(["issue", "create", "-R", repo, "--title", title, "--body-file", file]));
+      const match = /\/issues\/(\d+)/.exec(out);
+      if (!match) {
+        // gh succeeded, so the issue probably exists; only its number is unknown.
+        throw new GithubError(
+          `gh issue create returned unexpected output: ${out.slice(0, 200) || "(empty)"}. The issue "${title}" may have been created anyway; check GitHub before trying again.`,
+        );
+      }
+      return Number(match[1]);
+    },
+    addSubIssue(parent, child) {
+      gh(["api", "graphql", "-f", `query=${ADD_SUB_ISSUE}`, "-f", `p=${nodeId(parent)}`, "-f", `c=${nodeId(child)}`]);
+    },
     commentOnIssue(issueNumber, body) {
       gh(["issue", "comment", String(issueNumber), "-R", repo, "--body", body]);
     },
@@ -96,9 +151,29 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       }
       return prs[0]?.number;
     },
+    findOpenPullRequests(prefix) {
+      // `--head` only matches a whole branch name, so the prefix is matched here.
+      const out = gh(["pr", "list", "-R", repo, "--state", "open", "--json", "number,headRefName", "--limit", "200"]);
+      let prs: { number?: unknown; headRefName?: unknown }[];
+      try {
+        prs = JSON.parse(out) as typeof prs;
+        if (!Array.isArray(prs)) throw new Error("not a list");
+      } catch {
+        throw new GithubError(`gh pr list returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      return prs.flatMap((pr) =>
+        typeof pr.number === "number" && typeof pr.headRefName === "string" && pr.headRefName.startsWith(prefix) ? [{ number: pr.number, head: pr.headRefName }] : [],
+      );
+    },
     createDraftPullRequest({ head, base, title, body }) {
       // gh prints the new PR's URL.
       const out = gh(["pr", "create", "-R", repo, "--draft", "--head", head, "--base", base, "--title", title, "--body", body]);
+      const match = /\/pull\/(\d+)/.exec(out);
+      if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      return Number(match[1]);
+    },
+    createPullRequest({ head, base, title, body }) {
+      const out = withBodyFile(body, (file) => gh(["pr", "create", "-R", repo, "--head", head, "--base", base, "--title", title, "--body-file", file]));
       const match = /\/pull\/(\d+)/.exec(out);
       if (!match) throw new GithubError(`gh pr create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       return Number(match[1]);
@@ -125,15 +200,7 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       gh(["pr", "merge", String(number), "-R", repo, "--merge", "--match-head-commit", head]);
     },
     updatePullRequest(number, body) {
-      // From a file: a long description can exceed the Windows command-line limit (~32k characters).
-      const dir = mkdtempSync(join(tmpdir(), "factory-pr-"));
-      try {
-        const file = join(dir, "body.md");
-        writeFileSync(file, body);
-        gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
+      withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));
     },
   };
 }

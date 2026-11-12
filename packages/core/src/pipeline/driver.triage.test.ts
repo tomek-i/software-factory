@@ -46,6 +46,19 @@ describe("PipelineDriver", () => {
     expect(fake.calls()).toHaveLength(1);
   });
 
+  it("trusts an issue the factory created, whoever opened it on GitHub", async () => {
+    const config = "version: 1\nchecks: []\ntrust:\n  authors: [alice]\ngates:\n  triage: human\n";
+    const { driver, store, project, fake } = setup([{ output: TRIAGE() }], { author: "mallory", config });
+    store.markCreatedByFactory(project.id, 12);
+    const run = driver.startRun(12);
+
+    const outcome = await driver.drive(run.id);
+
+    expect(outcome).toMatchObject({ kind: "parked", state: "needs_human", reason: "waiting at triage gate: gate is set to human" });
+    expect(fake.calls()[0]!.stdin).toContain("a trusted author");
+    expect(fake.calls()[0]!.stdin).not.toContain("NOT a trusted author");
+  });
+
   it("parks at the triage gate when it is set to human", async () => {
     const config = "version: 1\nchecks: []\ntrust:\n  authors: [alice]\ngates:\n  triage: human\n";
     const { driver, store } = setup([{ output: TRIAGE() }], { config });

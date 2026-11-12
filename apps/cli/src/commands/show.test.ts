@@ -60,6 +60,19 @@ describe("factory show <run>", () => {
     expect(runShow(dir, "16", "approval")).toContain("the issue leaves the price open");
   });
 
+  it("lists what the learner made of the run after the merge", () => {
+    const lessons = '[{ "observation": "lint failed", "evidence": "round-1/checks.md", "rule": "Run lint first." }]';
+    const { dir } = setup({
+      "round-2/checks.md": checks("PASS", "round two"),
+      "learn.md": `LESSONS: 1\n\n## Summary\n- the gate failed on lint once\n\n## Lessons\n\`\`\`json\n${lessons}\n\`\`\`\n`,
+    });
+
+    const text = runShow(dir, "16");
+    expect(text).toContain("learn.md (LESSONS: 1)\n  - the gate failed on lint once");
+    expect(text).toMatch(/Files in .*\n( {2}.*\n)* {2}learn\.md\n/);
+    expect(runShow(dir, "16", "learn")).toContain("Run lint first.");
+  });
+
   it("prints the run, the verdict summaries with their paths, and the files", () => {
     const { dir, runId } = setup(
       {

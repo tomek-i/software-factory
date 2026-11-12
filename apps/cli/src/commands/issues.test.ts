@@ -61,6 +61,19 @@ describe("issue commands", () => {
     expect(runIssues(dir, { queued: true }, run)).toBe("No issues.");
   });
 
+  it("treats an issue the factory created as trusted, also after syncing it again", () => {
+    const dir = repo();
+    runSync(dir, run);
+    const store = new Store(join(dir, ".factory", "factory.db"));
+    store.markCreatedByFactory(store.listProjects()[0]!.id, 2);
+    store.close();
+
+    runSync(dir, run);
+
+    expect(runIssues(dir, {}, run)).toContain("  #2  Issue 2  @mallory\n");
+    expect(runQueue(dir, ["2"], true, run)).toBe("Queued #2 Issue 2");
+  });
+
   it("lets you queue an untrusted issue but says what that means", () => {
     const dir = repo();
     runSync(dir, run);
@@ -103,6 +116,8 @@ describe("issue commands", () => {
       editComment: () => undefined,
       findPullRequest: () => undefined,
       createDraftPullRequest: () => 1,
+      createPullRequest: () => 1,
+      findOpenPullRequests: () => [],
       updatePullRequest: () => undefined,
     markReady: () => undefined,
     mergePullRequest: () => undefined,

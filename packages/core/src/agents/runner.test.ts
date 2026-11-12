@@ -128,6 +128,21 @@ describe("createAgentRunner", () => {
     expect(seen.map((e) => e.type)).toEqual(["agent:start", "agent:activity", "agent:activity", "agent:end"]);
   });
 
+  it("runs without a store for agents that have no run yet, still logging the stream", async () => {
+    const { options, fake } = setup([{ stream: "success" }]);
+    const seen: FactoryEvent[] = [];
+    const events = new FactoryEvents();
+    events.on((e) => seen.push(e));
+    const runner = createAgentRunner({ events, env: fake.env });
+
+    const result = await runner(options({ runId: "draft-1" }));
+
+    expect(result.outcome).toEqual({ kind: "ok" });
+    expect(result.agentRunId).toMatch(/^agent-/);
+    expect(readFileSync(result.logPath, "utf8")).toContain(result.sessionId);
+    expect(seen.at(-1)).toMatchObject({ type: "agent:end", runId: "draft-1", agentRunId: result.agentRunId, status: "ok" });
+  });
+
   it("reports hitting max turns as an error", async () => {
     const { runner, options, store, run } = setup([{ stream: "error_max_turns" }]);
     const result = await runner(options());

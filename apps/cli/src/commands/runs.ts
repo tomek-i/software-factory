@@ -25,10 +25,11 @@ import {
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
+import { lessonsNote } from "./lessons.js";
 import { reconcileRuns } from "./reconcile.js";
 
 export interface RunDeps {
@@ -63,7 +64,7 @@ export function findRun(store: Store, project: Project, ref: string): Run {
   throw new CliError(matches.length ? `"${ref}" matches several runs; use more of the id.` : `No run "${ref}". See \`factory status\`.`);
 }
 
-function formatEvent(event: FactoryEvent, style: Style): string | undefined {
+export function formatEvent(event: FactoryEvent, style: Style): string | undefined {
   switch (event.type) {
     case "run:state":
       return style.transition(`-> ${style.state(event.to)}: ${event.reason}`);
@@ -137,7 +138,7 @@ function ensureQueued(store: Store, project: Project, config: FactoryConfig, num
   if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
   store.setQueued(project.id, number, true);
   print(`Queued #${number} ${issue.title}`);
-  if (!isTrustedAuthor(config, issue.author)) print(UNTRUSTED_NOTE);
+  if (!isTrustedIssue(config, issue)) print(UNTRUSTED_NOTE);
   return store.getIssue(project.id, number)!;
 }
 
@@ -321,8 +322,10 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
     ({ store, project, config }) => {
       const reconciled = reconcileRuns(store, project, config, deps);
       const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
+      const lessons = lessonsNote(store, project);
+      const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
-      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.");
+      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.") + footer;
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
       const rows = runs.map((r) => [
         r.id,
@@ -342,7 +345,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
           const [id, issue, state, round, money, waiting] = row as [string, string, string, string, string, string];
           return line(row, [style.detail(id), issue, style.state(runs[n]!.state, state), round, style.detail(money), style.attention(waiting)]);
         }),
-      ].join("\n");
+      ].join("\n") + footer;
     },
     deps.run,
   );
