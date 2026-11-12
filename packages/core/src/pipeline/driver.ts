@@ -294,11 +294,14 @@ export interface DriverDeps {
   capture?: CapturePort;
   /** How often the merge stage looks at required checks that are still running. */
   checksPollMs?: number;
+  /** How long after its own push the merge stage keeps looking for required checks that are not reported yet. */
+  checksGraceMs?: number;
 }
 
 /** Wait `ms`, or less when `signal` aborts. */
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
     const done = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", done);
@@ -1310,7 +1313,8 @@ export class PipelineDriver {
     }
     // Whatever a human approves, or GitHub merges, must be what the PR shows; this also catches up
     // on a push that failed in an earlier attempt.
-    if (!git.isPushed()) this.push(worktree);
+    const justPushed = !git.isPushed();
+    if (justPushed) this.push(worktree);
 
     if (!this.approvalCovers(run, worktree, head)) {
       let hits: string[];
@@ -1332,11 +1336,11 @@ export class PipelineDriver {
       if (gate.outcome === "wait_human") return this.waitForHuman(run, "merge", [...gate.reasons, ...lifted], { commit: head });
       this.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted].join("; "), head);
     }
-    return await this.mergePullRequest(run, number, head, git);
+    return await this.mergePullRequest(run, number, head, git, justPushed);
   }
 
   /** Merge exactly `head`, which passed the quality gate and is what GitHub has, then move on to learn. */
-  private async mergePullRequest(run: Run, number: number, head: string, git: GitEvidence): Promise<StepResult> {
+  private async mergePullRequest(run: Run, number: number, head: string, git: GitEvidence, justPushed: boolean): Promise<StepResult> {
     const { github, config } = this.deps;
     const problems: string[] = [];
     if (!this.passedOn(this.runDir(run), run.round, head)) problems.push(`no passing quality gate on ${head.slice(0, 7)}`);
@@ -1345,7 +1349,7 @@ export class PipelineDriver {
     if (problems.length) return this.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
     try {
       if (github.pullRequestState(number).draft) github.markReady(number);
-      const waited = await this.awaitRequiredChecks(run, number);
+      const waited = await this.awaitRequiredChecks(run, number, head, justPushed);
       if (waited) return waited.result;
       // The last moment to notice a cancel (or a lost lease) before something that cannot be undone.
       if (this.load(run.id).state !== run.state) return undefined;
@@ -1370,23 +1374,33 @@ export class PipelineDriver {
    * one still running after `merge.checks_timeout_min`, needs a human; a cancel stops the wait.
    * Throws when gh cannot read the checks.
    */
-  private async awaitRequiredChecks(run: Run, number: number): Promise<{ result: StepResult } | undefined> {
+  private async awaitRequiredChecks(run: Run, number: number, head: string, justPushed: boolean): Promise<{ result: StepResult } | undefined> {
     const { github, config } = this.deps;
     const minutes = config.merge.checks_timeout_min;
-    const deadline = Date.now() + minutes * 60_000;
+    const started = Date.now();
+    const deadline = started + minutes * 60_000;
+    // Right after a push, GitHub has not created the new commit's checks yet, so "none required"
+    // may only mean "none yet". A repo without required checks just waits this long once.
+    const graceUntil = justPushed ? started + (this.deps.checksGraceMs ?? 60_000) : started;
     const describe = (c: RequiredCheck) => (c.link ? `${c.name} (${c.link})` : c.name);
     let told = false;
     for (;;) {
       const checks = github.requiredChecks(number);
+      if (checks.length === 0 && Date.now() >= graceUntil) return undefined;
+      // gh reads the checks of the PR's current head: a commit pushed meanwhile is not ours to judge.
+      const prHead = checks.length ? github.pullRequestState(number).head : head;
+      if (prHead !== head) {
+        return { result: this.escalate(run, `PR #${number} moved to ${prHead.slice(0, 7)} while waiting for checks; only ${head.slice(0, 7)} passed the gate`) };
+      }
       const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
       if (failed.length) {
         return { result: this.escalate(run, `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`) };
       }
       const pending = checks.filter((c) => c.bucket === "pending");
-      if (pending.length === 0) return undefined;
-      const names = pending.map((c) => c.name).join(", ");
+      if (checks.length && pending.length === 0) return undefined;
+      const names = pending.length ? pending.map((c) => c.name).join(", ") : "none reported yet";
       if (Date.now() >= deadline) return { result: this.escalate(run, `required checks still running on PR #${number} after ${minutes} min: ${names}`) };
-      if (!told) {
+      if (!told && pending.length) {
         this.info(run, `waiting for required checks on PR #${number}: ${names}`);
         told = true;
       }

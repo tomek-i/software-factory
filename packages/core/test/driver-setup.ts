@@ -9,7 +9,7 @@ import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
 import type { GithubPort, MergeMethod, RequiredCheck } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
-import { fakeClaude, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
+import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
 export const TRIAGE = (decision = "APPROVE", extra = "") =>
   `DECISION: ${decision}\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- looks fine\n${extra}`;
@@ -66,7 +66,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     options.config ??
       "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n",
   );
-  const { root } = repoWithRemote({
+  const { root, remote } = repoWithRemote({
     "README.md": "# demo\n",
     "check.js": CHECK_JS,
     ".gitignore": ".factory/runs/\n.worktrees/\n",
@@ -103,6 +103,8 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     onView?: (count: number) => void;
     checks?: RequiredCheck[][];
     checksError?: string;
+    /** The PR's head as GitHub reports it; by default what the run's branch has on the remote. */
+    head?: string;
   } = {
     state: "open",
     draft: true,
@@ -135,7 +137,8 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     updatePullRequest: (number, body) => edits.push({ number, body }),
     pullRequestState: (number) => {
       pr.onView?.(++views);
-      return { number, state: pr.state, draft: pr.draft, head: "", ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
+      const head = pr.head ?? (prs[0] ? git(remote, "rev-parse", `refs/heads/${prs[0].head}`) : "");
+      return { number, state: pr.state, draft: pr.draft, head, ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
     },
     markReady: () => {
       pr.draft = false;
@@ -169,6 +172,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     events,
     watchMs: 50,
     checksPollMs: 20,
+    checksGraceMs: 200,
     capture: options.capture,
   });
   return { root, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges };

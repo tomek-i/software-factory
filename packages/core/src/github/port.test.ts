@@ -98,7 +98,7 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh(JSON.stringify({ title: "" })).run).mergePullRequest(42, "abc", "squash")).toThrow(/no title/);
   });
 
-  it("reads the required checks, also while gh exits non-zero for a failed or pending one", () => {
+  it("reads the required checks, and treats a commit with none as an empty list", () => {
     const listed = [
       { name: "test (ubuntu-latest)", bucket: "pending", link: "https://ci/1" },
       { name: "pr-title", bucket: "fail", link: "" },
@@ -106,7 +106,7 @@ describe("ghPort", () => {
     const calls: string[][] = [];
     const run: CommandRunner = (_cmd, args) => {
       calls.push(args);
-      return { code: 8, stdout: JSON.stringify(listed), stderr: "" };
+      return { code: 0, stdout: JSON.stringify(listed), stderr: "" };
     };
     expect(ghPort(project, run).requiredChecks(42)).toEqual([
       { name: "test (ubuntu-latest)", bucket: "pending", link: "https://ci/1" },
@@ -116,6 +116,10 @@ describe("ghPort", () => {
 
     const none: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no required checks reported on the 'x' branch" });
     expect(ghPort(project, none).requiredChecks(42)).toEqual([]);
+    const noneAtAll: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no checks reported on the 'x' branch" });
+    expect(ghPort(project, noneAtAll).requiredChecks(42)).toEqual([]);
+    const pendingExit: CommandRunner = () => ({ code: 8, stdout: JSON.stringify(listed), stderr: "" });
+    expect(ghPort(project, pendingExit).requiredChecks(42)).toHaveLength(2);
     const broken: CommandRunner = () => ({ code: 1, stdout: "", stderr: "HTTP 502" });
     expect(() => ghPort(project, broken).requiredChecks(42)).toThrow(/gh pr checks failed: HTTP 502/);
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).requiredChecks(42)).toThrow(/unexpected output/);

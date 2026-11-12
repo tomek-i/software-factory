@@ -88,7 +88,7 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 
 - Node.js 22+ and pnpm
 - Git
-- GitHub CLI (`gh`), logged in
+- GitHub CLI (`gh`) 2.50 or newer, logged in
 - Claude Code (`claude`), logged in with your subscription.
   - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing.
 - Optional, for screenshots and videos of UI changes: Playwright's Chromium.
@@ -352,6 +352,8 @@ What `factory run` does today:
     - Hard-rule hits need you at the merge gate too, whatever its mode.
 11. **Merge**: the engine merges the PR with `merge.method` (default a merge commit; `squash` titles the commit after the PR, `rebase` rebases), always with `--match-head-commit <sha>`, so GitHub only merges the commit that passed the gate.
     - If branch protection requires status checks, it first waits for them (`gh pr checks --required`), looking every 30 seconds. A failed check, or one still running after `merge.checks_timeout_min` (default 30), stops for you with the check's name and link.
+    - Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required, as GitHub reports a new commit's checks only once CI picks it up.
+    - `factory run` prints that it is waiting and for which checks; `factory status` shows the run in `merge`.
     - A commit pushed to the PR while it waits is never merged: `--match-head-commit` makes GitHub refuse.
     - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
     - Its worktree and branch are kept.

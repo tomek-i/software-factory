@@ -230,9 +230,10 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     },
     requiredChecks(number) {
       const args = ["pr", "checks", String(number), "-R", repo, "--required", "--json", "name,bucket,link"];
-      // gh exits non-zero when a check failed (1) or is still pending (8), with the list on stdout all the same.
+      // A commit with no checks at all, or none that are required, is an error to gh, not an empty list.
+      // (Without --json gh also exits 1 for a failed check and 8 for a pending one, so stdout is read whatever the code.)
       const result = run("gh", args, { cwd: project.repo_path });
-      if (result.code !== 0 && /no required checks reported/i.test(result.stderr)) return [];
+      if (result.code !== 0 && /no (required )?checks reported/i.test(result.stderr)) return [];
       let checks: unknown;
       try {
         checks = JSON.parse(result.stdout);
