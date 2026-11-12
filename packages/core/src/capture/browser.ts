@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright";
 import { CAPTURE_WIDTHS, MAX_STEP_WAIT_MS, type CapturePage, type WalkthroughStep } from "@factory/shared";
@@ -29,6 +29,19 @@ export async function launchBrowser(): Promise<{ browser: Browser } | { problem:
   }
 }
 
+/**
+ * Whether Playwright and its Chromium are installed, without launching a browser (tests use it to
+ * decide whether a real-browser test can run).
+ */
+export async function chromiumInstalled(): Promise<boolean> {
+  try {
+    const { chromium } = await import("playwright");
+    return existsSync(chromium.executablePath());
+  } catch {
+    return false;
+  }
+}
+
 /** One screenshot of one page at one width, and what went wrong on the page while it loaded. */
 export interface Shot {
   width: number;
@@ -45,18 +58,54 @@ function originFree(text: string, origin: string): string {
   return text.split(origin).join("");
 }
 
+/** The origin of a URL, or undefined for one without (about:blank, chrome-error://, garbage). */
+function originOf(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether the page is anywhere but the app: another site, or Chromium's error page after a blocked navigation. */
+export function leftApp(url: string, origin: string): boolean {
+  return url !== "about:blank" && originOf(url) !== origin;
+}
+
+/** Whether Playwright failed because the same-origin guard blocked where the page was going. */
+function blockedByGuard(err: unknown): boolean {
+  return (err as Error).message.includes("ERR_BLOCKED_BY_CLIENT");
+}
+
+const NOT_SHOT = "the page led away from the app, so it was not shot";
+
+/** Whether a response redirects to another origin (a 3xx whose Location resolves elsewhere). */
+export function redirectsAway(status: number, location: string | undefined, requestUrl: string, origin: string): boolean {
+  if (status < 300 || status > 399 || !location) return false;
+  try {
+    return new URL(location, requestUrl).origin !== origin;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Same-origin guard for a context: navigations of the top frame to another origin are aborted, so
- * neither a plan nor a link in the app takes the browser to another site. Other requests (fonts,
- * CDNs) are left alone; the app needs them to render.
+ * neither a plan nor a link in the app takes the browser to another site, and a same-origin page
+ * that redirects to another origin is cut off at the redirect. Other requests (fonts, CDNs) are
+ * left alone; the app needs them to render. Callers still check where the page ended up (leftApp),
+ * since a redirect the browser makes on its own (a meta refresh, script) never passes through here.
  */
 async function sameOriginOnly(context: BrowserContext, origin: string): Promise<void> {
-  await context.route("**/*", (route) => {
+  await context.route("**/*", async (route) => {
     const request = route.request();
-    if (request.isNavigationRequest() && request.frame().parentFrame() === null && new URL(request.url()).origin !== origin) {
-      return route.abort("blockedbyclient");
-    }
-    return route.continue();
+    if (!request.isNavigationRequest() || request.frame().parentFrame() !== null) return route.continue();
+    if (originOf(request.url()) !== origin) return route.abort("blockedbyclient");
+    // Fetched here without following redirects, so a Location to another site never reaches the browser.
+    const response = await route.fetch({ maxRedirects: 0 });
+    if (redirectsAway(response.status(), response.headers()["location"], request.url(), origin)) return route.abort("blockedbyclient");
+    return route.fulfill({ response });
   });
 }
 
@@ -104,10 +153,15 @@ export async function shootPages(browser: Browser, baseUrl: string, pages: Captu
           await page.goto(new URL(target.path, origin).href, { waitUntil: "load", timeout: NAV_TIMEOUT_MS });
           // Let client-side rendering and late requests settle; an app that never goes idle is shot anyway.
           await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => undefined);
+          // Never shoot (and publish) anything but the app itself.
+          if (leftApp(page.url(), origin)) {
+            shots.push({ width, signals, error: NOT_SHOT });
+            continue;
+          }
           await page.screenshot({ path: file, fullPage: true });
           shots.push({ width, file, signals });
         } catch (err) {
-          shots.push({ width, signals, error: (err as Error).message.split("\n")[0] });
+          shots.push({ width, signals, error: blockedByGuard(err) ? NOT_SHOT : (err as Error).message.split("\n")[0] });
         }
       } finally {
         await context.close();
@@ -158,6 +212,8 @@ export async function recordWalkthrough(browser: Browser, baseUrl: string, steps
   const context = await browser.newContext({ viewport: size, recordVideo: { dir: videoDir, size } });
   const out: Walkthrough = { screenshots: [], ran: 0, signals: [] };
   let page: Page | undefined;
+  // Set when the guard blocked a step on its way off the app.
+  let blocked = false;
   try {
     await sameOriginOnly(context, origin);
     page = await context.newPage();
@@ -170,13 +226,14 @@ export async function recordWalkthrough(browser: Browser, baseUrl: string, steps
         await runStep(page, step, origin, outDir, out);
         out.ran++;
       } catch (err) {
-        out.problem = `step ${i + 1} (${describeStep(step)}): ${(err as Error).message.split("\n")[0]}`;
+        blocked = blockedByGuard(err);
+        out.problem = blocked ? `step ${i + 1} (${describeStep(step)}) left the app` : `step ${i + 1} (${describeStep(step)}): ${(err as Error).message.split("\n")[0]}`;
         break;
       }
-      // A click can follow a link off the app. The guard aborts it, which leaves Chromium on its
-      // error page; the walkthrough cannot go on from there.
-      if (new URL(page.url()).origin !== origin && page.url() !== "about:blank") {
-        out.problem = `step ${i + 1} (${describeStep(step)}) tried to leave the app; the navigation was blocked`;
+      // A click or a redirect can lead off the app. The guard aborts what it sees, which leaves
+      // Chromium on its error page; either way the walkthrough cannot go on from there.
+      if (leftApp(page.url(), origin)) {
+        out.problem = `step ${i + 1} (${describeStep(step)}) left the app`;
         break;
       }
     }
@@ -184,13 +241,21 @@ export async function recordWalkthrough(browser: Browser, baseUrl: string, steps
   } catch (err) {
     out.problem ??= (err as Error).message.split("\n")[0];
   } finally {
+    // However the walkthrough ended, a page that is not the app means the video may show it.
+    const left = blocked || (page !== undefined && leftApp(page.url(), origin));
+    if (left) out.problem = `${out.problem ?? "the walkthrough left the app"}; the video was discarded, as it may show a page outside the app`;
     const video = page?.video();
     await context.close();
     if (video) {
       try {
-        const file = join(outDir, "walkthrough.webm");
-        renameSync(await video.path(), file);
-        out.video = file;
+        const recorded = await video.path();
+        // It may show whatever was outside the app for a moment: never publish that.
+        if (left) rmSync(recorded, { force: true });
+        else {
+          const file = join(outDir, "walkthrough.webm");
+          renameSync(recorded, file);
+          out.video = file;
+        }
       } catch (err) {
         out.problem ??= `the video could not be saved: ${(err as Error).message}`;
       }
@@ -214,6 +279,7 @@ async function runStep(page: Page, step: WalkthroughStep, origin: string, outDir
       await page.waitForTimeout(Math.min(step.ms, MAX_STEP_WAIT_MS));
       return;
     case "screenshot": {
+      if (leftApp(page.url(), origin)) throw new Error("the page is no longer the app");
       const file = join(outDir, `step-${step.name}.png`);
       await page.screenshot({ path: file });
       out.screenshots.push(file);

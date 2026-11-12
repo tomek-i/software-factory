@@ -1,33 +1,38 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { capturePlanSchema, factoryConfigSchema } from "@factory/shared";
 import { git, GIT_TEST_TIMEOUT, repoWithRemote, tempDir } from "../../test/helpers.js";
 import { createWorktree } from "../git/worktrees.js";
 import { isAlive } from "../util/process.js";
-import { launchBrowser } from "./browser.js";
+import { chromiumInstalled } from "./browser.js";
 import { playwrightCapture } from "./capture.js";
 
-// Closing Chromium in afterAll can take longer than the default hook timeout on a busy machine.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT, hookTimeout: GIT_TEST_TIMEOUT });
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 // Only where Playwright and its Chromium are installed; the driver tests cover the rest with a fake.
-const launched = await launchBrowser();
-const available = "browser" in launched;
-afterAll(async () => {
-  if ("browser" in launched) await launched.browser.close();
+// FACTORY_REQUIRE_BROWSER=1 turns a missing browser into a failure instead of a silent skip.
+const available = await chromiumInstalled();
+const required = process.env.FACTORY_REQUIRE_BROWSER === "1";
+
+describe("the real-browser tests", () => {
+  it.runIf(required)("have Playwright's Chromium when FACTORY_REQUIRE_BROWSER=1", () => {
+    expect(available, "Chromium is missing: run `pnpm exec playwright install chromium`").toBe(true);
+  });
 });
 
 /**
  * A tiny app. On main, / links to a stylesheet that is missing (an error that was already there).
  * The branch adds a console error on / and a new /invoices page. Every server appends its pid to
- * $CAPTURE_TEST_PIDS, so the test can check none is left running.
+ * $CAPTURE_TEST_PIDS, so the test can check none is left running. `redirects` answer with a 302.
  */
-const appJs = (home: string, invoices: string | null) => `const fs = require("fs");
+const appJs = (home: string, invoices: string | null, redirects: Record<string, string> = {}) => `const fs = require("fs");
 fs.appendFileSync(process.env.CAPTURE_TEST_PIDS, process.pid + "\\n");
 const pages = { "/": ${JSON.stringify(home)}, "/invoices": ${JSON.stringify(invoices)} };
+const redirects = ${JSON.stringify(redirects)};
 require("http").createServer((req, res) => {
+  if (redirects[req.url]) { res.statusCode = 302; res.setHeader("location", redirects[req.url]); return res.end(); }
   const page = pages[req.url];
   if (!page) { res.statusCode = 404; return res.end("not found"); }
   res.setHeader("content-type", "text/html");
@@ -35,22 +40,21 @@ require("http").createServer((req, res) => {
 }).listen(Number(process.env.PORT), "127.0.0.1");
 `;
 const HOME_V1 = `<html><head><link rel="stylesheet" href="/old.css"></head><body><h1>Home</h1></body></html>`;
+const testApp = {
+  ...factoryConfigSchema.parse({ version: 1 }).app,
+  start: `"${process.execPath}" app.js`,
+  url: "http://127.0.0.1:{port}/",
+  ready_timeout_sec: 60,
+  // The app gets nothing else from the environment, so the pid file is asked for by name.
+  env: ["CAPTURE_TEST_PIDS"],
+};
 
 describe.skipIf(!available)("playwrightCapture (real browser)", () => {
   it("shoots after and before, records the walkthrough, reports new errors and leaves no server running", async () => {
-    // A site the walkthrough must never reach: its link is on the page, the guard blocks it.
-    const hits: string[] = [];
-    const outside = createServer((req, res) => {
-      hits.push(req.url ?? "");
-      res.end("outside");
-    });
-    await new Promise<void>((r) => outside.listen(0, "127.0.0.1", () => r()));
-    const outsideUrl = `http://127.0.0.1:${(outside.address() as { port: number }).port}/`;
-
     const { root } = repoWithRemote({ "README.md": "# app\n", "app.js": appJs(HOME_V1, null), ".gitignore": ".worktrees/\n" });
     const worktree = createWorktree({ root, runId: "r1", branch: "factory/1-invoices", defaultBranch: "main" });
     const homeV2 = `<html><head><link rel="stylesheet" href="/old.css"></head><body><h1>Home</h1>
-<a href="/invoices">Invoices</a> <a id="away" href="${outsideUrl}">away</a>
+<a href="/invoices">Invoices</a>
 <script>console.error("boom")</script></body></html>`;
     const invoices = `<html><body><h1>Invoices</h1><input id="q"><script>window.missing.call()</script></body></html>`;
     writeFileSync(join(worktree.path, "app.js"), appJs(homeV2, invoices));
@@ -70,55 +74,90 @@ describe.skipIf(!available)("playwrightCapture (real browser)", () => {
         { action: "click", text: "Invoices" },
         { action: "fill", selector: "#q", value: "acme" },
         { action: "screenshot", name: "search" },
-        { action: "goto", path: "/" },
-        { action: "click", selector: "#away" },
-        { action: "wait", ms: 100 },
       ],
     });
-    const app = { ...factoryConfigSchema.parse({ version: 1 }).app, start: `"${process.execPath}" app.js`, url: "http://127.0.0.1:{port}/", ready_timeout_sec: 60 };
+    const result = await playwrightCapture({ id: "p", name: "demo", repo_path: root, github_repo: "o/r", created_at: "" }).capture({
+      runId: "r1",
+      root,
+      worktreePath: worktree.path,
+      defaultBranch: "main",
+      app: testApp,
+      plan,
+      outDir,
+      ports: [],
+    });
 
-    try {
-      const result = await playwrightCapture({ id: "p", name: "demo", repo_path: root, github_repo: "o/r", created_at: "" }).capture({
-        runId: "r1",
+    expect(result.status).toBe("captured");
+    const [home, inv] = result.pages;
+    expect(home!.after.map((s) => s.width)).toEqual([1440, 390]);
+    for (const s of [...home!.after, ...home!.before!, ...inv!.after]) expect(existsSync(s.file!), s.file).toBe(true);
+    // The missing stylesheet was there before, the console error is new; the new page has no before.
+    expect(home!.before![0]!.signals).toEqual(["HTTP 404: GET /old.css"]);
+    expect(home!.after[0]!.signals).toEqual(expect.arrayContaining(["HTTP 404: GET /old.css", "console error: boom"]));
+    expect(inv!.before).toBeUndefined();
+    expect(inv!.after[0]!.signals.some((s) => s.startsWith("page error:"))).toBe(true);
+    expect(result.notes).toEqual(["no before shot of invoices (/invoices): it is a new screen"]);
+
+    const walk = result.walkthrough!;
+    expect(walk).toMatchObject({ ran: 4, screenshots: [join(outDir, "step-search.png")], video: join(outDir, "walkthrough.webm") });
+    expect(walk.problem).toBeUndefined();
+    expect(readFileSync(walk.video!).length).toBeGreaterThan(0);
+
+    // Media stays out of the branch: nothing new in the worktree, and the before worktree is gone.
+    expect(git(worktree.path, "status", "--porcelain")).toBe("");
+    expect(existsSync(join(root, ".worktrees", "r1-before"))).toBe(false);
+    expect(git(root, "worktree", "list")).not.toContain("r1-before");
+    const started = readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number);
+    expect(started).toHaveLength(2); // after and before
+    for (const pid of started) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
+  });
+
+  it("never shoots or records a page outside the app, whether a redirect or a link leads there", async () => {
+    // The site the app tries to send the browser to: it must never be asked for anything.
+    const hits: string[] = [];
+    const outside = createServer((req, res) => {
+      hits.push(req.url ?? "");
+      res.end("<h1>outside</h1>");
+    });
+    await new Promise<void>((r) => outside.listen(0, "127.0.0.1", () => r()));
+    const outsideUrl = `http://127.0.0.1:${(outside.address() as { port: number }).port}/`;
+    const home = `<html><body><h1>Home</h1><a id="away" href="${outsideUrl}link">away</a></body></html>`;
+    const { root } = repoWithRemote({ "README.md": "# app\n", "app.js": appJs(home, null, { "/go": `${outsideUrl}redirect` }) });
+    const pids = join(tempDir(), "pids.txt");
+    writeFileSync(pids, "");
+    process.env.CAPTURE_TEST_PIDS = pids;
+    const outDir = join(tempDir(), "capture");
+    const capture = (walkthrough: unknown[]) =>
+      playwrightCapture({ id: "p", name: "demo", repo_path: root, github_repo: "o/r", created_at: "" }).capture({
+        runId: "r3",
         root,
-        worktreePath: worktree.path,
+        worktreePath: root,
         defaultBranch: "main",
-        app,
-        plan,
+        app: testApp,
+        plan: capturePlanSchema.parse({ pages: [{ name: "go", path: "/go", screen: "new" }], walkthrough }),
         outDir,
         ports: [],
       });
 
-      expect(result.status).toBe("captured");
-      const [home, inv] = result.pages;
-      expect(home!.after.map((s) => s.width)).toEqual([1440, 390]);
-      for (const s of [...home!.after, ...home!.before!, ...inv!.after]) expect(existsSync(s.file!), s.file).toBe(true);
-      // The missing stylesheet was there before, the console error is new; the new page has no before.
-      expect(home!.before![0]!.signals).toEqual(["HTTP 404: GET /old.css"]);
-      expect(home!.after[0]!.signals).toEqual(expect.arrayContaining(["HTTP 404: GET /old.css", "console error: boom"]));
-      expect(inv!.before).toBeUndefined();
-      expect(inv!.after[0]!.signals.some((s) => s.startsWith("page error:"))).toBe(true);
-      expect(result.notes).toEqual(["no before shot of invoices (/invoices): it is a new screen"]);
+    try {
+      const redirected = await capture([{ action: "goto", path: "/go" }]);
+      expect(redirected.status).toBe("captured");
+      for (const shot of redirected.pages[0]!.after) {
+        expect(shot.file).toBeUndefined();
+        expect(shot.error).toBe("the page led away from the app, so it was not shot");
+      }
+      expect(redirected.walkthrough).toMatchObject({ ran: 0, problem: "step 1 (goto /go) left the app; the video was discarded, as it may show a page outside the app" });
+      expect(redirected.walkthrough!.video).toBeUndefined();
+      expect(existsSync(join(outDir, "walkthrough.webm"))).toBe(false);
 
-      const walk = result.walkthrough!;
-      expect(walk.video).toBe(join(outDir, "walkthrough.webm"));
-      expect(readFileSync(walk.video!).length).toBeGreaterThan(0);
-      expect(walk.screenshots).toEqual([join(outDir, "step-search.png")]);
-      // The link off the app ends the walkthrough, and the browser never reached the other site.
-      expect(walk.problem).toBe("step 6 (click #away) tried to leave the app; the navigation was blocked");
-      expect(walk.ran).toBe(6);
+      const clicked = await capture([{ action: "goto", path: "/" }, { action: "click", selector: "#away" }, { action: "screenshot", name: "away" }]);
+      expect(clicked.walkthrough).toMatchObject({ ran: 2, screenshots: [], problem: "step 2 (click #away) left the app; the video was discarded, as it may show a page outside the app" });
+      expect(clicked.walkthrough!.video).toBeUndefined();
       expect(hits).toEqual([]);
-
-      // Media stays out of the branch: nothing new in the worktree, and the before worktree is gone.
-      expect(git(worktree.path, "status", "--porcelain")).toBe("");
-      expect(existsSync(join(root, ".worktrees", "r1-before"))).toBe(false);
-      expect(git(root, "worktree", "list")).not.toContain("r1-before");
     } finally {
       outside.close();
     }
-    const started = readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number);
-    expect(started).toHaveLength(2); // after and before
-    for (const pid of started) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
+    for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
   });
 
   it("reports an app that does not start, without throwing", async () => {
