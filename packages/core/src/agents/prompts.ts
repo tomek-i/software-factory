@@ -43,11 +43,32 @@ export function absoluteRule(path: string): string {
 }
 
 /**
+ * Runtime state the issue writer must not read (relative to the repo root, its cwd). Its draft
+ * becomes a trusted issue, so it must not pick up text from issues by untrusted authors: their run
+ * folders and the worktrees built from them. Other drafts are denied one by one (`denyRead`): a
+ * blanket rule on .factory/drafts would also stop it reading back its own draft to fix it, and a
+ * deny always wins over an allow.
+ */
+const ISSUE_WRITER_UNREADABLE = ["Read(.factory/runs/**)", "Read(.worktrees/**)"];
+
+function issueWriterUnreadable(folders: string[]): string[] {
+  return [...ISSUE_WRITER_UNREADABLE, ...folders.map((f) => `Read(${f.replace(/\\/g, "/").replace(/\/$/, "")}/**)`)];
+}
+
+/**
  * What each role may do, enforced by Claude Code with --permission-mode dontAsk (anything not
  * allowed is denied). Bash deny rules are prefix matches and best effort; the real protection for
  * merges and history is GitHub branch protection plus the engine checking the result.
  */
-export function permissionProfile(role: PromptRole, options: { runDirFromCwd: string; outputFile?: string }): ClaudeSettings {
+export function permissionProfile(
+  role: PromptRole,
+  options: {
+    runDirFromCwd: string;
+    outputFile?: string;
+    /** Issue writer: further folders, relative to its cwd, it may not read. */
+    denyRead?: string[];
+  },
+): ClaudeSettings {
   const runDir = options.runDirFromCwd.replace(/\\/g, "/").replace(/\/$/, "");
   const web = ["WebFetch", "WebSearch"];
   if (role === "reviewer" || role === "verifier" || role === "approver" || role === "issue_writer") {
@@ -60,7 +81,7 @@ export function permissionProfile(role: PromptRole, options: { runDirFromCwd: st
         // must not be able to rewrite the reviews it judges, nor the approver the reports it weighs.
         // The issue writer only drafts: what it writes goes to GitHub after the gate, never into the repo.
         allow: ["Read", "Grep", "Glob", `Edit(${absoluteRule(options.outputFile)})`],
-        deny: ["Bash", "PowerShell", "NotebookEdit", ...web],
+        deny: ["Bash", "PowerShell", "NotebookEdit", ...web, ...(role === "issue_writer" ? issueWriterUnreadable(options.denyRead ?? []) : [])],
       },
     };
   }
