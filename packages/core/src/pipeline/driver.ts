@@ -45,7 +45,7 @@ const LEASE_RENEW_MS = 60_000;
  * gets its reviews instead. Approving the PR gate moves on to merge (which marks the PR ready
  * itself), and approving the merge gate lets the merge stage merge the commit that was waiting.
  */
-export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">, afterTriage: RunState = "build"): RunState | undefined {
+export function approveTarget(run: Pick<Run, "waiting_gate" | "parked_from">, afterTriage: RunState): RunState | undefined {
   switch (run.waiting_gate) {
     case "triage":
       return afterTriage;
@@ -332,6 +332,7 @@ export function runEvidence(runDir: string, round: number, git: GitEvidence = no
     },
     // Every lens that wrote a review this round; which lenses had to run is the review stage's business.
     reviews: () => REVIEW_LENSES.flatMap((lens) => readReview(join(runDir, `round-${round}`), lens) ?? []),
+    specRound: (file) => latestSpecRound(runDir, file),
     git,
   };
 }

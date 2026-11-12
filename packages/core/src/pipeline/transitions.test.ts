@@ -99,7 +99,8 @@ describe("RunMachine.transition", () => {
   });
 
   it("can go from an approved triage straight to build", () => {
-    const { at, move } = setup();
+    // Only when the spec critic gate is set to always; the next test covers the other modes.
+    const { at, move } = setup({ gates: { critic: "always" } });
     at("triage");
     expect(() => move("build", fakeEvidence({ files: { triage: FILES.triage.replace("APPROVE", "NEEDS_INFO") } }))).toThrow(
       /did not APPROVE/,
@@ -107,11 +108,36 @@ describe("RunMachine.transition", () => {
     expect(move("build").state).toBe("build");
   });
 
+  it("does not skip the spec critic unless its gate is always, nor an incomplete issue's refine", () => {
+    const incomplete = fakeEvidence({ files: { triage: FILES.triage.replace("READY", "INCOMPLETE") } });
+    for (const critic of ["auto", "human"] as const) {
+      const { at, move } = setup({ gates: { critic } });
+      at("triage");
+      expect(() => move("build")).toThrow(new RegExp(`spec critic gate is ${critic}, not always`));
+    }
+    const { at, move } = setup({ gates: { critic: "always" } });
+    at("triage");
+    expect(() => move("build", incomplete)).toThrow(/INCOMPLETE/);
+    expect(() => move("critic", incomplete)).toThrow(/INCOMPLETE/);
+    expect(move("refine", incomplete).state).toBe("refine");
+  });
+
   it("only builds once the spec critic accepted", () => {
     const { at, move } = setup();
     at("critic");
     expect(() => move("build", fakeEvidence({ files: { critic: "VERDICT: REVISE\n" } }))).toThrow(/did not ACCEPT/);
     expect(move("build").state).toBe("build");
+  });
+
+  it("does not build on an ACCEPT older than the latest refined spec", () => {
+    const { at, move } = setup();
+    at("critic");
+    const rounds = (critic: number, refine: number): Evidence => ({
+      ...fakeEvidence(),
+      specRound: (file) => (file === "critic.md" ? critic : refine),
+    });
+    expect(() => move("build", rounds(1, 2))).toThrow(/accepted spec round 1, but refine has written round 2 since/);
+    expect(move("build", rounds(2, 2)).state).toBe("build");
   });
 
   it("builds without a critic verdict only when the critic gate is set to always", () => {

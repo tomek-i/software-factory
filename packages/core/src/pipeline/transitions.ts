@@ -64,6 +64,8 @@ export interface Evidence {
   gateFingerprint?(): string;
   /** The run's pull request as GitHub sees it now. */
   pullRequest?(): PullRequestState;
+  /** The latest spec round (spec-N/) that has the file, 0 when none. Without it the critic's round is not checked. */
+  specRound?(file: "refine.md" | "critic.md"): number;
   git: {
     head(): string;
     isClean(): boolean;
@@ -117,11 +119,23 @@ function reviewsClear(evidence: Evidence): string[] {
 /** Evidence each automatic edge must show. Returns problems; empty means allowed. */
 const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
   "triage->refine": ({ evidence }) => triageApproved(evidence),
-  "triage->critic": ({ evidence }) => triageApproved(evidence),
-  "triage->build": ({ evidence }) => triageApproved(evidence),
+  // An INCOMPLETE issue is refined before anyone judges or builds it.
+  "triage->critic": ({ evidence }) => [...triageApproved(evidence), ...triageReady(evidence)],
+  // Skipping the critic is only for a gate set to always.
+  "triage->build": ({ config, evidence }) => [
+    ...triageApproved(evidence),
+    ...triageReady(evidence),
+    ...(config.gates.critic === "always" ? [] : [`the spec critic gate is ${config.gates.critic}, not always`]),
+  ],
   // With the gate set to always no critic runs, so there is no verdict to show.
-  "critic->build": ({ config, evidence }) =>
-    config.gates.critic === "always" || evidence.verdict("critic").header.VERDICT === "ACCEPT" ? [] : ["spec critic did not ACCEPT"],
+  "critic->build": ({ config, evidence }) => {
+    if (config.gates.critic === "always") return [];
+    if (evidence.verdict("critic").header.VERDICT !== "ACCEPT") return ["spec critic did not ACCEPT"];
+    // An ACCEPT of an earlier round says nothing about a spec refine wrote since.
+    const judged = evidence.specRound?.("critic.md") ?? 0;
+    const refined = evidence.specRound?.("refine.md") ?? 0;
+    return judged >= refined ? [] : [`the spec critic accepted spec round ${judged}, but refine has written round ${refined} since`];
+  },
   "critic->refine": ({ run, config, evidence }) => [
     ...(evidence.verdict("critic").header.VERDICT === "REVISE" ? [] : ["spec critic did not ask to REVISE"]),
     ...capProblem(run.critic_rounds, config.loops.max_critic_rounds, "spec critic round"),
@@ -257,6 +271,10 @@ function withLoopData(data: unknown, loop: LoopFailure): unknown {
 
 function triageApproved(evidence: Evidence): string[] {
   return evidence.verdict("triage").header.DECISION === "APPROVE" ? [] : ["triage did not APPROVE"];
+}
+
+function triageReady(evidence: Evidence): string[] {
+  return evidence.verdict("triage").header.READINESS === "READY" ? [] : ["triage rated the issue INCOMPLETE"];
 }
 
 /** Counters bumped when a loop goes round again. Always applied after any caller patch. */

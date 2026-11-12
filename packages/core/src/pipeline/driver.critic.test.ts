@@ -123,7 +123,7 @@ describe("PipelineDriver", () => {
       await driver.drive(run.id);
       const parked = store.getRun(run.id)!;
       expect(parked.waiting_gate).toBe("critic");
-      expect(approveTarget(parked)).toBe("build");
+      expect(approveTarget(parked, "build")).toBe("build");
 
       // Sent back instead, with a fresh round budget: refine starts a new round and gets the comment.
       const machine = new RunMachine(store, factoryConfigSchema.parse({ version: 1 }));
@@ -318,7 +318,7 @@ describe("PipelineDriver", () => {
 
     it("is where approving the triage gate goes", () => {
       expect(approveTarget({ waiting_gate: "triage", parked_from: "triage" }, nextAfterTriage(at("INCOMPLETE"), gates("auto")))).toBe("refine");
-      expect(approveTarget({ waiting_gate: "critic", parked_from: "critic" })).toBe("build");
+      expect(approveTarget({ waiting_gate: "critic", parked_from: "critic" }, "build")).toBe("build");
     });
   });
 });
