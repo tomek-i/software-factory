@@ -4,6 +4,7 @@ import {
   isBlocking,
   isTerminal,
   isTrustedIssue,
+  parseLessons,
   parseVerdict,
   REVIEW_LENSES,
   resolveModel,
@@ -131,6 +132,12 @@ export function refutedFindings(body: string, known: string[] = []): { id: strin
     const match = /^`?(.+?)`?\s*:\s+(.+)$/.exec(item);
     return match ? [{ id: match[1]!, reason: match[2]!.trim() }] : [];
   });
+}
+
+/** One line of run history for an agent: long reasons are cut so one cannot crowd out the rest. */
+function clip(text: string, max = 500): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max)}...` : line;
 }
 
 function escapeRegExp(text: string): string {
@@ -876,10 +883,176 @@ export class PipelineDriver {
     return undefined;
   }
 
-  /** Lessons are not captured yet (#35), so a merged run is done. */
-  private learn(run: Run): StepResult {
-    this.move(run, "done", "lessons are not captured yet");
+  /**
+   * After the merge, a learner looks back at a run that did not go smoothly and proposes lessons,
+   * stored for a human to approve (`factory lessons`); nothing reaches `.factory/lessons.md` here.
+   * The merge has happened, so nothing in this stage may hold the run up: a learner that fails, hits
+   * the usage limit or writes something malformed only means no lessons from this run, with a note.
+   */
+  private async learn(run: Run): Promise<StepResult> {
+    let worth: string[];
+    try {
+      worth = this.learnReasons(run);
+    } catch (err) {
+      return this.skipLessons(run, `could not read the run's history: ${(err as Error).message}`);
+    }
+    // Saves usage: a run that went through cleanly has nothing to teach.
+    if (worth.length === 0) {
+      this.move(run, "done", "nothing to learn: one round, no failed checks or blocking findings, no human stepped in");
+      return undefined;
+    }
+    let turn: TurnResult<"learn">;
+    try {
+      turn = await this.learnerTurn(run, worth);
+    } catch (err) {
+      return this.skipLessons(run, `the learner could not start: ${(err as Error).message}`);
+    }
+    if (this.load(run.id).state !== run.state) return undefined; // cancelled while the learner ran
+    if (turn.status !== "ok") {
+      const { outcome } = turn.agent;
+      // The run is finished, so there is nothing to continue after the reset: this run's lessons are skipped.
+      const why =
+        turn.status === "failed" && outcome.kind === "rate_limited"
+          ? `usage limit reached${outcome.resetsAt ? ` (resets at ${outcome.resetsAt})` : ""}`
+          : this.troubleReason("learner", turn);
+      return this.skipLessons(run, why);
+    }
+    const { store } = this.deps;
+    try {
+      const lessons = parseLessons(turn.verdict.body);
+      // One transaction, so a crash in between never stores the same proposals twice.
+      store.transaction(() => {
+        store.addLessons(run.id, lessons);
+        const reason = lessons.length
+          ? `${lessons.length} lesson${lessons.length > 1 ? "s" : ""} proposed; see \`factory lessons\``
+          : "the learner proposed no lessons";
+        this.move(run, "done", reason, { lessons: lessons.length });
+      });
+    } catch (err) {
+      if (this.load(run.id).state !== run.state) return undefined; // cancelled meanwhile
+      return this.skipLessons(run, `could not store lessons: ${(err as Error).message}`);
+    }
     return undefined;
+  }
+
+  /** Finish a merged run without lessons, saying why. */
+  private skipLessons(run: Run, why: string): StepResult {
+    this.info(run, `warning: no lessons from this run: ${why}`);
+    this.move(run, "done", `lessons skipped: ${why}`, { warning: why });
+    return undefined;
+  }
+
+  /**
+   * Why a merged run is worth the learner's time. Empty for a run that went through in one round
+   * with no failed check, no blocking finding and no human stepping in other than to approve a gate.
+   */
+  private learnReasons(run: Run): string[] {
+    const dir = this.runDir(run);
+    const reasons: string[] = [];
+    if (run.round > 1) reasons.push(`it took ${run.round} rounds`);
+    const failed = (v: ParsedVerdict<"checks">) => (v.header.GATE === "FAIL" ? [] : ["passed"]);
+    for (let round = 1; round <= run.round; round++) {
+      const roundDir = join(dir, `round-${round}`);
+      for (const file of ["checks.md", "resync/checks.md"]) {
+        if (readValid("checks", join(roundDir, file), failed)) reasons.push(`the quality gate failed (round-${round}/${file})`);
+      }
+      for (const lens of REVIEW_LENSES) {
+        if (readReview(roundDir, lens)?.findings.some(isBlocking)) reasons.push(`the ${lens} review had blocking findings (round-${round}/review-${lens}.md)`);
+      }
+    }
+    const events = this.deps.store.listEvents(run.id);
+    for (const [i, event] of events.entries()) {
+      if (event.to_state === "needs_info") reasons.push(`triage asked the author for more information: ${clip(event.reason)}`);
+      if (event.to_state === "needs_human") {
+        if (!event.reason.startsWith("waiting at ")) {
+          reasons.push(`escalated: ${clip(event.reason)}`);
+        } else {
+          // Waiting only because the gate is set to human is routine; a hard rule or the approver
+          // escalating is not.
+          const waited = (event.data as { reasons?: unknown } | null)?.reasons;
+          const why = Array.isArray(waited) ? waited.filter((r): r is string => typeof r === "string") : [];
+          for (const hit of why.filter((r) => r.startsWith("hard rule: "))) reasons.push(`stopped by a ${clip(hit)}`);
+          if (event.from_state === "merge" && this.deps.config.gates.merge === "auto") {
+            const approver = why.filter((r) => !r.startsWith("hard rule") && r !== "gate is set to human");
+            if (approver.length) reasons.push(`the approver escalated: ${clip(approver.join("; "))}`);
+          }
+        }
+      }
+      if (event.from_state !== "needs_human") continue;
+      const gate = (event.data as { gate?: unknown } | null)?.gate;
+      const parkedFrom = events.slice(0, i).findLast((e) => e.to_state === "needs_human")?.from_state ?? null;
+      const approval = typeof gate === "string" && gate !== "escalation" && approveTarget({ waiting_gate: gate as Gate, parked_from: parkedFrom }) === event.to_state;
+      if (!approval) reasons.push(`a human sent the run to ${event.to_state}: ${clip(event.reason.replace(/^human: /, ""))}`);
+    }
+    return reasons;
+  }
+
+  /** The learner reads the run's reports and history and proposes lessons in `learn.md`. */
+  private async learnerTurn(run: Run, worth: string[]): Promise<TurnResult<"learn">> {
+    const dir = this.runDir(run);
+    const issue = this.issueOf(run);
+    const outputFile = verdictPath(dir, "learn", run.round);
+    // The merged branch's worktree is kept after the merge; the repo root will do if it was removed.
+    const cwd = run.worktree_path && existsSync(run.worktree_path) ? run.worktree_path : this.deps.project.repo_path;
+    const rounds = Array.from({ length: run.round }, (_, i) => join(dir, `round-${i + 1}`));
+    const reports = [
+      join(dir, "build.md"),
+      ...rounds.flatMap((roundDir) => [
+        join(roundDir, "checks.md"),
+        ...REVIEW_LENSES.map((lens) => reviewPath(roundDir, lens)),
+        join(roundDir, "verify.md"),
+        join(roundDir, "resync", "conflicts.md"),
+        join(roundDir, "resync", "checks.md"),
+      ]),
+      join(dir, "approval.md"),
+    ].filter((path) => existsSync(path));
+    const { store } = this.deps;
+    const history = store.listEvents(run.id);
+    const events = history.map((e) => `- ${e.from_state ?? "-"} -> ${e.to_state}: ${clip(e.reason)}`);
+    // Where a human sent the run, and their comment: approving a gate and sending work back read alike in the decisions.
+    const human = history
+      .filter((e) => e.from_state === "needs_human")
+      .map((e) => {
+        const gate = (e.data as { gate?: unknown } | null)?.gate;
+        const where = typeof gate === "string" && gate !== "escalation" ? `at the ${gate} gate` : "after an escalation";
+        return `- ${where}, sent the run to ${e.to_state}: ${clip(e.reason.replace(/^human: /, ""))}`;
+      });
+    const files = writeRoleFiles(dir, "learner", rolePrompt("learner", this.deps.read), permissionProfile("learner", { runDirFromCwd: relative(cwd, dir), outputFile }));
+    return runTurn({
+      run: this.deps.runAgent,
+      kind: "learn",
+      outputFile,
+      agent: {
+        ...this.agentBase(run, "learner", cwd),
+        ...files,
+        addDirs: [dir],
+        prompt: renderTask({
+          role: "learner",
+          runId: run.id,
+          runDir: dir,
+          workDir: cwd,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedIssue(this.deps.config, issue),
+          lessons: this.lessons(),
+          branch: run.branch ?? undefined,
+          defaultBranch: this.defaultBranch,
+          sections: [
+            ...this.triageScope(dir),
+            { title: "Why this run is worth a look", body: worth.map((w) => `- ${w}`).join("\n") },
+            {
+              title: "Run history",
+              body: ["Events, oldest first (written by the engine; reasons may quote agents):", ...events, "", "Human decisions:", ...(human.length ? human : ["(none)"])].join("\n"),
+            },
+            { title: "Run files", body: reports.map((path) => `- \`${path}\``).join("\n") },
+          ],
+          instructions: [
+            `PR #${run.pr_number} for issue #${issue.number} has been merged. Look back at how this run got there.`,
+            "Read the run files and the history, then write the output file with the lessons you propose (often none).",
+          ].join("\n"),
+        }),
+      },
+    });
   }
 
   /** The run's PR was merged or closed on GitHub before the factory merged it. */
@@ -1364,6 +1537,8 @@ export class PipelineDriver {
     const current = this.load(runId);
     if (current.state !== state) return undefined; // e.g. cancelled while this step ran
     const message = err instanceof Error ? err.message : String(err);
+    // The PR is merged by the time a run learns, so whatever went wrong there must not hold it up.
+    if (state === "learn") return this.skipLessons(current, `error: ${message.slice(0, 1000)}`);
     this.move(current, "needs_human", `error in ${state}: ${message.slice(0, 1000)}`);
     return undefined;
   }

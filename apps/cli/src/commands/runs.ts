@@ -27,6 +27,7 @@ import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunStat
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
+import { lessonsNote } from "./lessons.js";
 import { reconcileRuns } from "./reconcile.js";
 
 export interface RunDeps {
@@ -319,8 +320,10 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
     ({ store, project, config }) => {
       const reconciled = reconcileRuns(store, project, config, deps);
       const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
+      const lessons = lessonsNote(store, project);
+      const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
-      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.");
+      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.") + footer;
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
       const rows = runs.map((r) => [
         r.id,
@@ -340,7 +343,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
           const [id, issue, state, round, money, waiting] = row as [string, string, string, string, string, string];
           return line(row, [style.detail(id), issue, style.state(runs[n]!.state, state), round, style.detail(money), style.attention(waiting)]);
         }),
-      ].join("\n");
+      ].join("\n") + footer;
     },
     deps.run,
   );

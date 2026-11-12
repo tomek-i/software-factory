@@ -152,4 +152,22 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (project_id, draft_id)
   );
   `,
+  // Lessons the learner proposed after a run. They only reach `.factory/lessons.md` (through a PR)
+  // once a human approves them; pull_request is that PR, comment why a human rejected one.
+  `
+  CREATE TABLE lessons (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    TEXT NOT NULL REFERENCES projects(id),
+    run_id        TEXT NOT NULL REFERENCES runs(id),
+    status        TEXT NOT NULL,
+    observation   TEXT NOT NULL,
+    evidence      TEXT NOT NULL,
+    rule          TEXT NOT NULL,
+    comment       TEXT,
+    pull_request  INTEGER,
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT
+  );
+  CREATE INDEX lessons_project_status ON lessons(project_id, status);
+  `,
 ];

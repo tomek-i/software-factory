@@ -17,6 +17,7 @@ describe("rolePrompt", () => {
     expect(rolePrompt("triage", () => undefined)).toContain("# Role: triage");
     expect(rolePrompt("verifier", () => undefined)).toContain("# Role: verifier");
     expect(rolePrompt("approver", () => undefined)).toContain("# Role: approver");
+    expect(rolePrompt("learner", () => undefined)).toContain("# Role: learner");
     expect(rolePrompt("issue_writer", () => undefined)).toContain("# Role: issue writer");
     const read = (p: string) => (p === ".factory/prompts/builder.md" ? "custom builder" : undefined);
     expect(rolePrompt("builder", read)).toBe("custom builder");
@@ -110,6 +111,14 @@ describe("permissionProfile", () => {
     expect(permissionProfile("reviewer", { runDirFromCwd: "x", outputFile }).permissions.deny).not.toContain("Read(.factory/runs/**)");
     expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
     expect(() => permissionProfile("issue_writer", { runDirFromCwd: "x" })).toThrow(/issue_writer profile needs its output file/);
+  });
+
+  it("gives the learner the same: no shell, and only learn.md to write", () => {
+    const outputFile = join(tempDir(), "learn.md");
+    const { permissions } = permissionProfile("learner", { runDirFromCwd: "../..", outputFile });
+    expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
+    expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+    expect(() => permissionProfile("learner", { runDirFromCwd: "x" })).toThrow(/learner profile needs its output file/);
   });
 
   it("writes absolute rules the way Claude Code matches them", () => {

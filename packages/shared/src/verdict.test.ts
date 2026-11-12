@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseVerdict, VerdictParseError } from "./verdict.js";
+import { isUnprintable, parseLessons, parseVerdict, VerdictParseError } from "./verdict.js";
 
 const finding = (id: string, severity: string) => ({ id, severity, claim: "c", evidence: "e" });
 const block = (items: object[]) => "```json\n" + JSON.stringify(items) + "\n```";
@@ -124,3 +124,44 @@ describe("parseVerdict", () => {
     expect(() => parseVerdict("review", "VERDICT: CHANGES\n\n## Findings\n- bad stuff\n")).toThrow(/json array/);
   });
 });
+
+describe("learner output", () => {
+  const lesson = { observation: "the gate failed twice on lint", evidence: "round-1/checks.md, round-2/checks.md", rule: "Run `pnpm lint` before handing over." };
+  const learn = (count: number | string, lessons: string) => `LESSONS: ${count}\n\n## Summary\n- learned\n\n## Lessons\n${lessons}\n`;
+
+  it("parses no lessons, written as None. or an empty array", () => {
+    expect(parseVerdict("learn", learn(0, "None.")).header).toEqual({ LESSONS: 0 });
+    expect(parseLessons(parseVerdict("learn", learn(0, block([]))).body)).toEqual([]);
+  });
+
+  it("parses proposed lessons", () => {
+    const v = parseVerdict("learn", learn(1, block([lesson])));
+    expect(v.header).toEqual({ LESSONS: 1 });
+    expect(v.summary).toEqual(["learned"]);
+    expect(parseLessons(v.body)).toEqual([lesson]);
+  });
+
+  it("rejects a count that does not match the lessons", () => {
+    expect(() => parseVerdict("learn", learn(2, block([lesson])))).toThrow(/LESSONS: 2 but ## Lessons lists 1/);
+    expect(() => parseVerdict("learn", learn("some", "None."))).toThrow(/whole number/);
+  });
+
+  it("rejects a rule that is not one short line, lessons without evidence, and prose", () => {
+    expect(() => parseVerdict("learn", learn(1, block([{ ...lesson, rule: "one\nand another" }])))).toThrow(/single line/);
+    expect(() => parseVerdict("learn", learn(1, block([{ ...lesson, rule: "x".repeat(301) }])))).toThrow(/lessons\.0\.rule/);
+    expect(() => parseVerdict("learn", learn(1, block([{ ...lesson, evidence: "" }])))).toThrow(/lessons\.0\.evidence/);
+    expect(() => parseVerdict("learn", learn(1, "- always lint"))).toThrow(/json array/);
+    expect(() => parseLessons("## Lessons\n- always lint")).toThrow(VerdictParseError);
+  });
+
+  it("rejects a rule with characters that could hide text from the human approving it", () => {
+    // A terminal escape, a C1 control, the line and paragraph separators, a right-to-left override, an isolate and a mark.
+    for (const code of [0x1b, 0x9b, 0x2028, 0x2029, 0x202e, 0x2066, 0x200f]) {
+      const rule = `Run lint${String.fromCodePoint(code)} first.`;
+      expect(() => parseVerdict("learn", learn(1, block([{ ...lesson, rule }])))).toThrow(/must not contain control/);
+    }
+    expect(isUnprintable(0x41)).toBe(false);
+    expect(isUnprintable(0xe9)).toBe(false);
+  });
+});
+

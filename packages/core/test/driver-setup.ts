@@ -8,7 +8,7 @@ import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
 import type { GithubPort } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
-import { fakeClaude, repoWithRemote, type FakeStep } from "./helpers.js";
+import { fakeClaude, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
 export const TRIAGE = (decision = "APPROVE", extra = "") =>
   `DECISION: ${decision}\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- looks fine\n${extra}`;
@@ -77,6 +77,8 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
 
   const comments: { issue: number; body: string }[] = [];
   const prs: { head: string; base: string; title: string; body: string }[] = [];
+  const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
+  const closedReady = new Set<number>();
   const edits: { number: number; body: string }[] = [];
   // The run's PR as the fake GitHub sees it; a test may merge or close it, or make merging fail.
   const pr: { state: "open" | "merged" | "closed"; draft: boolean; mergeCommit?: string; mergeError?: string; onView?: (count: number) => void } = {
@@ -92,6 +94,14 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
       prs.push(pr);
       return 7;
     },
+    // Only the engine's lessons PR is opened ready for review.
+    // Numbered 8, 9, ... and open until a test says otherwise (`closedReady`).
+    createPullRequest: (pr) => {
+      readyPrs.push(pr);
+      return 7 + readyPrs.length;
+    },
+    findOpenPullRequests: (prefix) =>
+      readyPrs.flatMap((p, i) => (p.head.startsWith(prefix) && !closedReady.has(8 + i) ? [{ number: 8 + i, head: p.head }] : [])),
     updatePullRequest: (number, body) => edits.push({ number, body }),
     pullRequestState: (number) => {
       pr.onView?.(++views);
@@ -124,7 +134,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     events,
     watchMs: 50,
   });
-  return { root, store, project, driver, fake, comments, prs, edits, seen, pr, merges };
+  return { root, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */
@@ -133,3 +143,19 @@ export const reviewConfig = (reviews: string) =>
 const finding = (severity: string) =>
   `## Findings\n\`\`\`json\n[{ "id": "code-1", "severity": "${severity}", "file": "feature.txt", "line": 1, "claim": "it says fixed", "evidence": "line 1" }]\n\`\`\`\n`;
 export const review = (verdict: string, severity?: string) => `VERDICT: ${verdict}\n\n## Summary\n- reviewed\n\n${severity ? finding(severity) : "## Findings\nNone.\n"}`;
+
+/** Learn-stage tests: one review lens, and the merge gate as given (default: always, so the run merges by itself). */
+export const learnConfig = (merge = "always") =>
+  `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  merge: ${merge}\nreviews:\n  always: [code]\n  ui: []\n`;
+export const CODE_PASS: FakeStep = { role: "reviewer-code", output: REVIEW_PASS };
+export const LESSON = {
+  observation: "The builder wrote `broken` first and the feature check failed.",
+  evidence: "round-1/checks.md (feature failed), round-2/checks.md (passed)",
+  rule: "Run `node check.js` before handing over; the gate only passes when feature.txt says fixed.",
+};
+export const learned = (lessons: object[]) =>
+  `LESSONS: ${lessons.length}\n\n## Summary\n- the gate failed once\n\n## Lessons\n\`\`\`json\n${JSON.stringify(lessons, null, 2)}\n\`\`\`\n`;
+/** A run whose first build fails the quality gate, so it takes two rounds before it merges. */
+export const bumpy = (...learner: FakeStep[]): FakeStep[] => [{ output: TRIAGE() }, buildStep("broken"), buildStep("fixed"), CODE_PASS, ...learner.map((s) => ({ role: "learner", ...s }))];
+
+export const lastMove = (store: Store, runId: string) => store.listEvents(runId).at(-1)!;

@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
+import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
 import { runNew, type NewOptions } from "./commands/new.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
@@ -127,6 +128,31 @@ export function buildProgram(): Command {
     .option("--no-run", "only record the decision; continue later with `factory run`")
     .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
       console.log(await runResume(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
+    });
+
+  const lessons = program
+    .command("lessons")
+    .description("list the lessons the learner proposed after runs; approve or reject them")
+    .option("-a, --all", "include approved and rejected lessons")
+    .action((options: { all?: boolean }) => {
+      console.log(runLessons(process.cwd(), options));
+    });
+
+  lessons
+    .command("approve")
+    .description("append lessons to .factory/lessons.md through one pull request")
+    .argument("<ids...>", "lesson ids, e.g. 3 4")
+    .action((ids: string[]) => {
+      console.log(runLessonsApprove(process.cwd(), ids));
+    });
+
+  lessons
+    .command("reject")
+    .description("reject lessons; they are never applied")
+    .argument("<ids...>", "lesson ids")
+    .option("-m, --message <text>", "why (stored with the lesson)")
+    .action((ids: string[], options: { message?: string }) => {
+      console.log(runLessonsReject(process.cwd(), ids, options));
     });
 
   program
