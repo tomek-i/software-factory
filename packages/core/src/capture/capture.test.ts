@@ -178,7 +178,9 @@ import { join } from "node:path";
 const args = process.argv.slice(2);
 const scene = JSON.parse(readFileSync(args[args.indexOf("--scene") + 1], "utf8"));
 const page = await (await fetch(scene.site)).text();
-writeFileSync(join(args[args.indexOf("--out") + 1], "walkthrough.mp4"), JSON.stringify({ beats: scene.beats, page }));
+const video = join(args[args.indexOf("--out") + 1], "walkthrough.mp4");
+writeFileSync(video, JSON.stringify({ beats: scene.beats, page }));
+console.log(JSON.stringify({ ok: true, video }));
 `,
     );
     const outDir = join(tempDir(), "capture");
