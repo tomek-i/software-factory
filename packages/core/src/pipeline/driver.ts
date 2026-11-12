@@ -4,10 +4,12 @@ import {
   isBlocking,
   isTerminal,
   isTrustedAuthor,
+  parseCapturePlan,
   parseVerdict,
   REVIEW_LENSES,
   resolveModel,
   type AgentRole,
+  type CapturePlan,
   type Finding,
   type FactoryConfig,
   type Gate,
@@ -20,12 +22,14 @@ import {
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles, type IssueText, type PromptRole } from "../agents/prompts.js";
 import type { AgentRunner } from "../agents/runner.js";
 import { runTurn, type TurnResult } from "../agents/turn.js";
+import { playwrightCapture, type CapturePort } from "../capture/capture.js";
+import { renderCaptureReport, screenshotsSection, type CaptureOutcome } from "../capture/report.js";
 import type { TrustedReader } from "../config/trusted.js";
 import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { factoryComment, type GithubPort, type PullRequestState } from "../github/port.js";
-import type { Issue, Project, Run, RunEvent, RunPatch, Store } from "../store/store.js";
+import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunEvent, type RunPatch, type Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate, type GateInput } from "./gates.js";
@@ -211,6 +215,8 @@ export interface DriverDeps {
   timeouts?: Partial<Record<PromptRole, number>>;
   /** How often to check for cancellation and renew the lease while a stage runs. */
   watchMs?: number;
+  /** Screenshots, video and their upload; Playwright and GitHub release assets by default. */
+  capture?: CapturePort;
 }
 
 export type DriveOutcome =
@@ -231,6 +237,7 @@ function verdictPath(runDir: string, kind: VerdictKind, round: number): string {
   switch (kind) {
     case "checks":
     case "verify":
+    case "capture":
       return join(runDir, `round-${round}`, `${kind}.md`);
     case "approver":
       return join(runDir, "approval.md");
@@ -282,8 +289,9 @@ function section(body: string, name: string): string | undefined {
 /**
  * The draft PR description from the builder's hand-over: a short brief for the human reviewer first,
  * with the implementation notes (useful to reviewing agents, noisy for people) collapsed below it.
+ * `screenshots` is the capture stage's `## Screenshots` section, `notes` the reviews' notes.
  */
-export function prBody(buildBody: string, issueNumber: number, unsafe = false, notes?: string): string {
+export function prBody(buildBody: string, issueNumber: number, unsafe = false, notes?: string, screenshots?: string): string {
   const parts: string[] = [];
   if (unsafe) {
     parts.push("> [!WARNING]\n> Built with `--unsafe`: hard rules (protected paths, new dependencies, secret files, deletions) were lifted for this run.");
@@ -293,6 +301,7 @@ export function prBody(buildBody: string, issueNumber: number, unsafe = false, n
   const details = section(buildBody, "details");
   if (summary) parts.push(`## What\n${summary}`);
   if (testing) parts.push(`## How it was tested\n${testing}`);
+  if (screenshots) parts.push(screenshots.trim());
   // Blank lines around the content so GitHub renders the markdown inside <details>.
   if (details) parts.push(`<details><summary>Implementation details</summary>\n\n${details}\n\n</details>`);
   if (notes) parts.push(notes.trim());
@@ -308,12 +317,14 @@ export function prBody(buildBody: string, issueNumber: number, unsafe = false, n
 export class PipelineDriver {
   private readonly machine: RunMachine;
   private readonly run: CommandRunner;
+  private readonly capturer: CapturePort;
   /** Aborted when the run being driven is cancelled or this worker loses its lease. */
   private signal?: AbortSignal;
 
   constructor(private readonly deps: DriverDeps) {
     this.machine = new RunMachine(deps.store, deps.config);
     this.run = deps.run ?? runCommand;
+    this.capturer = deps.capture ?? playwrightCapture(deps.project, this.run);
   }
 
   /** Start a run for a queued issue, or return the run already working on it. */
@@ -761,10 +772,165 @@ export class PipelineDriver {
     return undefined;
   }
 
-  /** Screenshots and a walkthrough for UI changes are not automated yet, so capture passes straight on. */
-  private capture(run: Run): StepResult {
-    this.move(run, "pr", "capture (screenshots) is not automated yet");
+  /**
+   * Screenshots (before and after) and a walkthrough video of a UI change, uploaded and shown in the
+   * PR description. A capture agent plans what to shoot; the engine starts the app and drives the
+   * browser. Nothing here fails the run: whatever goes wrong is reported in round-N/capture-report.md
+   * and the PR, and the run goes on to the PR gate. Only a usage limit or a cancel stops it here.
+   */
+  private async capture(run: Run): Promise<StepResult> {
+    const skipped = this.captureSkipped(run);
+    if (skipped) {
+      this.info(run, `capture skipped: ${skipped}`);
+      this.move(run, "pr", `capture skipped: ${skipped}`);
+      return undefined;
+    }
+    const dir = this.runDir(run);
+    const roundDir = join(dir, `round-${run.round}`);
+    const captureDir = join(roundDir, "capture");
+    const worktree = this.worktreeOf(run);
+    // A capture interrupted earlier (usage limit, crash) starts afresh rather than mixing two attempts.
+    rmSync(captureDir, { recursive: true, force: true });
+    mkdirSync(captureDir, { recursive: true });
+
+    const outcome: CaptureOutcome = {};
+    const planned = await this.capturePlan(run, worktree, roundDir);
+    if ("stop" in planned) return planned.stop;
+    if (planned.problem) outcome.problem = planned.problem;
+    else if (!planned.plan) outcome.skipped = planned.skip;
+    else {
+      const ports = run.port_base === null ? [] : Array.from({ length: PORT_BLOCK_SIZE }, (_, i) => run.port_base! + i);
+      try {
+        outcome.result = await this.capturer.capture({
+          runId: run.id,
+          root: this.deps.project.repo_path,
+          worktreePath: worktree.path,
+          defaultBranch: this.defaultBranch,
+          app: { ...this.deps.config.app, start: this.deps.config.app.start! },
+          plan: planned.plan,
+          outDir: captureDir,
+          ports,
+          signal: this.signal,
+        });
+      } catch (err) {
+        outcome.problem = `capture failed: ${(err as Error).message.split("\n")[0]}`;
+      }
+      if (this.load(run.id).state !== run.state) return undefined; // cancelled while the app ran
+      outcome.restored = this.restoreWorktree(worktree);
+      this.uploadMedia(run, outcome);
+    }
+
+    writeFileSync(join(roundDir, "capture-report.md"), renderCaptureReport(outcome));
+    const section = screenshotsSection(outcome, run.id);
+    if (section) writeFileSync(join(captureDir, "screenshots.md"), `${section}\n`);
+    this.updatePrDescription(run);
+    const summary = outcome.skipped
+      ? `no screenshots: ${outcome.skipped}`
+      : outcome.problem || outcome.result?.status !== "captured"
+        ? `screenshots could not be taken: ${outcome.problem ?? outcome.result?.problem}`
+        : `captured ${outcome.result.pages.length} page(s)${outcome.uploadProblem ? "; the upload failed" : ""}`;
+    this.info(run, `capture: ${summary} (round-${run.round}/capture-report.md)`);
+    this.move(run, "pr", `capture: ${summary}`.slice(0, 500));
     return undefined;
+  }
+
+  /** Why the capture stage has nothing to do: the change is not user-visible, or there is no app to start. */
+  private captureSkipped(run: Run): string | undefined {
+    const path = join(this.runDir(run), "triage.md");
+    const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
+    if (!surfaces.includes("ui")) return "triage did not list ui in SURFACES";
+    if (!this.deps.config.app.start) return "app.start is not configured";
+    return undefined;
+  }
+
+  /**
+   * The capture agent's plan, or why there is none. `stop` ends the stage for now (a usage limit, or
+   * the run was cancelled while the agent ran).
+   */
+  private async capturePlan(run: Run, worktree: Worktree, roundDir: string): Promise<{ plan?: CapturePlan; skip?: string; problem?: string } | { stop: StepResult }> {
+    const dir = this.runDir(run);
+    const issue = this.issueOf(run);
+    const outputFile = verdictPath(dir, "capture", run.round);
+    const changeFile = join(roundDir, "change.diff");
+    let base: string;
+    let head: string;
+    try {
+      head = gitEvidence(worktree, this.defaultBranch, this.run).head();
+      base = freshBase(worktree.path, this.defaultBranch, head, this.run);
+      // The reviewers' copy, unless the run got here some other way (e.g. a human's resume).
+      if (!existsSync(changeFile)) writeFileSync(changeFile, changeReport(worktree.path, base, head, this.run));
+    } catch (err) {
+      return { problem: `could not prepare the change for the capture agent: ${(err as Error).message}` };
+    }
+    const files = writeRoleFiles(dir, "capture", rolePrompt("capture", this.deps.read), permissionProfile("capture", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
+    const turn = await runTurn({
+      run: this.deps.runAgent,
+      kind: "capture",
+      outputFile,
+      validate: (verdict) => (verdict.header.CAPTURE === "PLAN" ? parseCapturePlan(verdict.body).problems : []),
+      agent: {
+        ...this.agentBase(run, "capture", worktree.path),
+        ...files,
+        addDirs: [dir],
+        prompt: renderTask({
+          role: "capture",
+          runId: run.id,
+          runDir: dir,
+          workDir: worktree.path,
+          outputFile,
+          issue: this.issueText(issue),
+          trusted: isTrustedAuthor(this.deps.config, issue.author),
+          lessons: this.lessons(),
+          branch: worktree.branch,
+          defaultBranch: this.defaultBranch,
+          sections: this.triageScope(dir),
+          instructions: [
+            `Plan the screenshots and the walkthrough of the change on branch \`${worktree.branch}\`.`,
+            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit: \`${head}\`.`,
+            `The commits and the full diff are in \`${changeFile}\`. Read it and the code you need, then write the output file.`,
+          ].join("\n"),
+        }),
+      },
+    });
+    if (turn.status === "ok") {
+      if (turn.verdict.header.CAPTURE === "SKIP") return { skip: `the capture agent found nothing to show${turn.verdict.summary[0] ? ` (${turn.verdict.summary[0]})` : ""}` };
+      return { plan: parseCapturePlan(turn.verdict.body).plan! };
+    }
+    if (turn.status === "failed" && turn.agent.outcome.kind === "rate_limited") return { stop: this.agentTrouble(run, "capture", turn) };
+    if (this.load(run.id).state !== run.state) return { stop: undefined };
+    return { problem: this.troubleReason("capture agent", turn) };
+  }
+
+  /**
+   * Undo what the app wrote into the worktree (build output that is not ignored, a generated
+   * file): the tree was clean when capture began, and the PR and merge stages need it clean.
+   * Ignored files (node_modules, caches) stay. Returns the paths that were undone.
+   */
+  private restoreWorktree(worktree: Worktree): string[] {
+    const git = (args: string[]) => this.run("git", args, { cwd: worktree.path });
+    const status = git(["status", "--porcelain"]);
+    const changed = status.stdout.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3));
+    if (changed.length === 0) return [];
+    git(["checkout", "--", "."]);
+    git(["clean", "-fdq"]);
+    return changed;
+  }
+
+  /** Upload the screenshots and the video. A failure is noted in the outcome; it never stops the run. */
+  private uploadMedia(run: Run, outcome: CaptureOutcome): void {
+    const result = outcome.result;
+    if (result?.status !== "captured") return;
+    const files = [
+      ...result.pages.flatMap((p) => [...p.after, ...(p.before ?? [])].flatMap((s) => (s.file ? [s.file] : []))),
+      ...(result.walkthrough?.video ? [result.walkthrough.video] : []),
+      ...(result.walkthrough?.screenshots ?? []),
+    ];
+    if (files.length === 0) return;
+    try {
+      outcome.urls = this.capturer.publish(run.id, files);
+    } catch (err) {
+      outcome.uploadProblem = (err as Error).message.split("\n")[0];
+    }
   }
 
   /** The PR gate, then take the draft PR out of draft so it reads as ready for a human's review. */
@@ -1066,14 +1232,32 @@ export class PipelineDriver {
    * and the blocking findings the verifier refuted. Built from build.md each time, so it never stacks.
    */
   private publishReviewNotes(run: Run, reviews: LensReview[], verified: ParsedVerdict<"verify"> | undefined): void {
+    this.updatePrDescription(run, reviewNotes(reviews, verified));
+  }
+
+  /**
+   * Rewrite the PR description from this round's files: build.md, the review notes (worked out from
+   * the round's reviews and verify.md unless given) and the capture stage's screenshots, once it ran.
+   */
+  private updatePrDescription(run: Run, notes?: string): void {
     if (run.pr_number === null) return;
     try {
-      const build = parseVerdict("build", readFileSync(join(this.runDir(run), "build.md"), "utf8"));
-      const notes = reviewNotes(reviews, verified);
-      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, notes));
+      const dir = this.runDir(run);
+      const roundDir = join(dir, `round-${run.round}`);
+      const build = parseVerdict("build", readFileSync(join(dir, "build.md"), "utf8"));
+      if (notes === undefined) {
+        const reviews = this.reviewLenses(run).flatMap((lens) => {
+          const verdict = readReview(roundDir, lens);
+          return verdict ? [{ lens, verdict }] : [];
+        });
+        notes = reviewNotes(reviews, readValid("verify", join(roundDir, "verify.md"), () => []));
+      }
+      const screenshotsFile = join(roundDir, "capture", "screenshots.md");
+      const screenshots = existsSync(screenshotsFile) ? readFileSync(screenshotsFile, "utf8") : undefined;
+      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, notes, screenshots));
     } catch (err) {
-      // The notes are a convenience; the review files hold the same and `factory show` lists them.
-      this.info(run, `could not add the review notes to PR #${run.pr_number}: ${(err as Error).message}`);
+      // A convenience; the review and capture files hold the same and `factory show` lists them.
+      this.info(run, `could not update the description of PR #${run.pr_number}: ${(err as Error).message}`);
     }
   }
 

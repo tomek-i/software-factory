@@ -4,6 +4,7 @@
  */
 import { Store } from "../src/store/store.js";
 import { createAgentRunner } from "../src/agents/runner.js";
+import type { CapturePort } from "../src/capture/capture.js";
 import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
 import type { GithubPort } from "../src/github/port.js";
@@ -50,7 +51,7 @@ if (!ok) {
 process.exit(ok ? 0 : 1);
 `;
 
-export function setup(steps: FakeStep[], options: { author?: string; config?: string } = {}) {
+export function setup(steps: FakeStep[], options: { author?: string; config?: string; capture?: CapturePort } = {}) {
   const config =
     options.config ??
     "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n";
@@ -123,6 +124,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     owner: "test-worker",
     events,
     watchMs: 50,
+    capture: options.capture,
   });
   return { root, store, project, driver, fake, comments, prs, edits, seen, pr, merges };
 }
