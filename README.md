@@ -1,5 +1,7 @@
 # Software Factory
 
+[![CI](https://github.com/tomek-i/software-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/tomek-i/software-factory/actions/workflows/ci.yml) [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
+
 Give it a GitHub issue, or just an idea. Get back a reviewed, tested pull request.
 
 - **You give it:** a GitHub issue, or a free-text idea that `factory new` turns into one.
@@ -513,6 +515,10 @@ packages/core     engine: config, SQLite store, state machine, gates, agent runn
   test/           fake `claude` binary and fixtures: tests never spend real usage
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```
+
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
