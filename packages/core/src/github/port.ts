@@ -86,7 +86,12 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       // gh prints the new issue's URL.
       const out = withBodyFile(body, (file) => gh(["issue", "create", "-R", repo, "--title", title, "--body-file", file]));
       const match = /\/issues\/(\d+)/.exec(out);
-      if (!match) throw new GithubError(`gh issue create returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      if (!match) {
+        // gh succeeded, so the issue probably exists; only its number is unknown.
+        throw new GithubError(
+          `gh issue create returned unexpected output: ${out.slice(0, 200) || "(empty)"}. The issue "${title}" may have been created anyway; check GitHub before trying again.`,
+        );
+      }
       return Number(match[1]);
     },
     addSubIssue(parent, child) {

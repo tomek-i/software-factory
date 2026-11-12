@@ -72,7 +72,7 @@ describe("ghPort", () => {
     expect(calls[0]!.slice(0, -1)).toEqual(["issue", "create", "-R", "o/r", "--title", "Add export", "--body-file"]);
     expect(sent).toBe("## Why\nx\n");
     expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
-    expect(() => ghPort(project, fakeGh("created").run).createIssue({ title: "t", body: "b" })).toThrow(/unexpected output: created/);
+    expect(() => ghPort(project, fakeGh("created").run).createIssue({ title: "t", body: "b" })).toThrow(/unexpected output: created. The issue "t" may have been created anyway; check GitHub/);
   });
 
   it("links a sub-issue by the node ids of both issues", () => {
