@@ -9,7 +9,8 @@ import { isAlive } from "../util/process.js";
 import { launchBrowser } from "./browser.js";
 import { playwrightCapture } from "./capture.js";
 
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
+// Closing Chromium in afterAll can take longer than the default hook timeout on a busy machine.
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT, hookTimeout: GIT_TEST_TIMEOUT });
 
 // Only where Playwright and its Chromium are installed; the driver tests cover the rest with a fake.
 const launched = await launchBrowser();
