@@ -1,24 +1,85 @@
 # Software Factory
 
-An AI software factory that turns GitHub issues (or a free-text idea) into reviewed, tested, demo'd pull requests, driven by headless Claude Code on your own Claude subscription.
+Give it a GitHub issue, or just an idea. Get back a reviewed, tested pull request.
+
+- **You give it:** a GitHub issue, or a free-text idea that `factory new` turns into one.
+- **You get back:** a pull request that passed your checks and several AI reviews. For a UI change it comes with before/after screenshots and a narrated walkthrough video.
+- **It runs on:** headless Claude Code with your own Claude subscription, not API billing.
+- **You stay in charge:** by default it waits for you before it merges.
 
 It runs in two modes on one engine:
 
 - **CLI mode**: install into a single repo and drive it from the terminal.
 - **Web mode** *(planned)*: a local dashboard that manages several repos, syncs GitHub issues both ways and runs issues in parallel.
 
-> Status: early development. `factory new` drafts issues from an idea. A queued issue can run through triage, refine and the spec critic loop, build, the quality gate loop, parallel reviews, the verifier's review loop, screenshots and a walkthrough video of UI changes, re-sync with the default branch and the merge gate to a merged PR (`factory run`), after which a learner proposes lessons for you to approve (`factory lessons`). By default the run waits for you at the `merge` gate.
+> **Status: early development.** What works today:
+>
+> - `factory new` drafts issues from an idea.
+> - `factory run` takes a queued issue all the way to a merged PR (see [Pipeline](#pipeline)).
+> - After the merge, a learner proposes lessons for you to approve (`factory lessons`).
+> - By default the run waits for you at the `merge` gate.
 
 ## Pipeline
 
-```
-issue writer → triage → (refine) → spec critic → build → quality gate ⟲ → parallel reviews ⟲
-            → capture (screenshots + walkthrough) → PR → merge decision → learn
+```mermaid
+flowchart TD
+    idea(["Idea"]) -->|"factory new"| writer["Issue writer"]
+    writer --> triage["Triage"]
+    queued(["Queued issue"]) -->|"factory run"| triage
+    triage -->|"INCOMPLETE"| refine["Refine"]
+    triage -->|"READY"| critic["Spec critic"]
+    refine --> critic
+    critic -->|"REVISE"| refine
+    critic -->|"ACCEPT"| build["Build"]
+    build --> gate["Quality gate"]
+    gate -->|"failed checks"| build
+    gate -->|"pass"| reviews["Parallel reviews"]
+    reviews -->|"changes asked"| verifier["Verifier"]
+    verifier -->|"confirmed findings"| build
+    verifier -->|"all refuted"| capture["Capture"]
+    reviews -->|"clear"| capture
+    capture --> pr["PR"]
+    pr --> resync["Re-sync"]
+    resync -->|"conflict or failed re-check"| build
+    resync --> mergegate["Merge gate"]
+    mergegate --> merge["Merge"]
+    merge --> learn["Learn"]
+    learn --> done(["Done: merged"])
+
+    triage -->|"NEEDS_INFO"| ask{{"Asks the author"}}
+    critic -->|"questions"| ask
+    ask -->|"author answers"| triage
+
+    writer & triage & critic & gate & reviews & pr & mergegate -.-> you{{"Waits for you"}}
+    you -->|"factory reject"| rejected(["Rejected"])
+    you -->|"factory cancel"| cancelled(["Cancelled"])
+    triage -->|"REJECT"| rejected
+    critic -->|"REJECT"| rejected
+
+    classDef human fill:#fde68a,stroke:#b45309,color:#000
+    classDef final fill:#e5e7eb,stroke:#374151,color:#000
+    class ask,you human
+    class done,rejected,cancelled final
 ```
 
-- **Gates** after issue writer, triage, critic, plan, review, PR and merge each have a mode: `always` (pass through), `auto` (the agent decides or escalates with reasons) or `human` (always stop for you).
-- **Loops** (failed checks, confirmed review findings) always go back to the builder, up to a cap, then escalate to you. A loop that fails the same way twice in a row escalates early, so a stuck builder does not use up the cap.
-- **Hard rules** (protected paths, new dependencies, secret/env changes) always escalate to you, whatever the gate mode. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
+Yellow hexagons are where the run stops for a person. Dotted lines show where it can wait for you: a gate in `human` mode, a hard-rule hit, a loop cap or a stall.
+
+- **Stages**: issue writer (only for `factory new`), triage, refine (only for an INCOMPLETE issue), spec critic, build, quality gate, parallel reviews, verifier, capture, PR, re-sync, merge gate, merge, learn.
+- **Gates**: `issue_writer`, `triage`, `critic`, `review`, `pr` and `merge`. Each has a mode:
+  - `always`: pass through.
+  - `auto`: the agent decides, or escalates with reasons.
+  - `human`: always stop for you.
+- **Gate defaults**: `issue_writer: human`, `triage: auto`, `critic: auto`, `review: auto`, `pr: always`, `merge: human`. The config also accepts a `plan` gate (default `always`), but no stage uses it yet.
+- **Loops** always go back to an earlier stage, up to a cap, then escalate to you:
+  - critic REVISE → refine, up to `loops.max_critic_rounds` (default 2);
+  - failed checks → build, up to `loops.max_build_iterations` (default 5);
+  - confirmed review findings → build, up to `loops.max_review_rounds` (default 3);
+  - re-sync conflict or failed re-check → build, which costs a review round.
+- **Stalls**: a loop that fails the same way twice in a row escalates early, so a stuck builder does not use up the cap.
+- **Hard rules** (protected paths, new dependencies, secret/env changes) always escalate to you, whatever the gate mode.
+  - Only a per-run `--unsafe` flag lifts them.
+  - It can never be set in config.
+- **Questions**: triage and the spec critic can ask the issue's author. The run waits in `needs_info` until the author answers.
 - **State changes need evidence**: for example, reviews only start when the commit that passed the quality gate is the branch's current HEAD.
 
 ## Requirements
@@ -26,9 +87,13 @@ issue writer → triage → (refine) → spec critic → build → quality gate 
 - Node.js 22+ and pnpm
 - Git
 - GitHub CLI (`gh`), logged in
-- Claude Code (`claude`), logged in with your subscription. The factory removes `ANTHROPIC_API_KEY` from the agents' environment so runs use your subscription, not API billing.
-- Optional, for screenshots and videos of UI changes: Playwright's Chromium. `pnpm install` installs the `playwright` package (an optional dependency) but never downloads browsers; run `pnpm exec playwright install chromium` once in the factory's checkout. Without it the capture stage is skipped with a note and runs carry on.
-  If the factory's own `playwright` package is missing but the [narrate](https://github.com/tomek-i/narrate-plugin) Claude Code plugin is installed, the plugin's copy is used.
+- Claude Code (`claude`), logged in with your subscription.
+  - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing.
+- Optional, for screenshots and videos of UI changes: Playwright's Chromium.
+  - `pnpm install` installs the `playwright` package (an optional dependency) but never downloads browsers.
+  - Run `pnpm exec playwright install chromium` once in the factory's checkout.
+  - Without it the capture stage is skipped with a note and runs carry on.
+  - If the factory's own `playwright` package is missing but the [narrate](https://github.com/tomek-i/narrate-plugin) Claude Code plugin is installed, the plugin's copy is used.
 - Optional, for a narrated walkthrough: the narrate Claude Code plugin and `ffmpeg` on PATH. See [Narrated walkthrough](#narrated-walkthrough) under the capture stage.
 
 ## Usage
@@ -60,17 +125,43 @@ factory new --approve <draft>        # create a draft on GitHub, sync it and que
 factory new --discard <draft>        # drop a draft
 ```
 
-`factory new` runs an issue writer agent on your idea. It has no shell: it reads the repo and writes only its draft, `.factory/drafts/<draft>/draft.md` (`factory new` adds `.factory/drafts/` to `.gitignore` if it is missing). The draft is an issue with a title, `## Why`, `## What`, `## Acceptance criteria` (checkboxes), `## Scope` and `## Out of scope`, a UI flag and a risk rating. An idea too big for one PR becomes a parent issue plus two or more sub-issues (at most 10), each with the same structure; a sub-issue that needs another first says so with `DEPENDS_ON`, which ends up as `Depends on: #n` in its body. The draft is checked strictly; a malformed one gets one retry, then it is kept for you to fix or discard.
+`factory new` runs an issue writer agent on your idea.
+
+- **Access**: it has no shell. It reads the repo and writes only its draft, `.factory/drafts/<draft>/draft.md`. `factory new` adds `.factory/drafts/` to `.gitignore` if it is missing.
+- **The draft** is an issue with a title, `## Why`, `## What`, `## Acceptance criteria` (checkboxes), `## Scope` and `## Out of scope`, a UI flag and a risk rating.
+- **Big ideas**: an idea too big for one PR becomes a parent issue plus two or more sub-issues (at most 10), each with the same structure.
+- **Dependencies**: a sub-issue that needs another first says so with `DEPENDS_ON`. That ends up as `Depends on: #n` in its body.
+- **Checks**: the draft is checked strictly. A malformed one gets one retry, then it is kept for you to fix or discard.
 
 The `issue_writer` gate then decides:
 
-- `human` (default): the draft is printed and saved, and the command exits. Edit `draft.md` if you like, then `factory new --approve <draft>` creates it; the file is read and checked again first.
-- `auto`: the agent's own `DECISION: PROCEED` creates it straight away; `ESCALATE` waits for you as above, with its reasons.
+- `human` (default): the draft is printed and saved, and the command exits. Edit `draft.md` if you like, then `factory new --approve <draft>` creates it. The file is read and checked again first.
+- `auto`: the agent's own `DECISION: PROCEED` creates it straight away. `ESCALATE` waits for you as above, with its reasons.
 - `always`: created straight away.
 
-With `auto` or `always`, the agent's draft becomes a trusted issue (see [Trusted authors](#trusted-authors)) without anyone reading it first, so later stages treat it as the spec. The issue writer cannot read run folders (`.factory/runs/`), worktrees or other drafts, so text from untrusted issues does not reach it that way, but it does read the repo. Keep the default `human` unless you trust what is in your repo.
+With `auto` or `always`, nobody reads the draft before it becomes an issue:
 
-Creating opens the issues on GitHub (no labels), links each sub-issue to the parent as a real GitHub sub-issue, syncs them into `.factory/factory.db` and queues the buildable ones: the single issue, or the sub-issues (never their parent). It prints the numbers and the `factory run` command to start them. Creating always prints the full draft first. What has been created is recorded in `.factory/factory.db`, so if GitHub fails halfway, `factory new --approve` again only does what is left; an issue whose draft entry you edited after it was created is refused rather than matched up by position. If `gh issue create` succeeds but its output can't be read, the error names the title: check GitHub before approving again, as that issue may exist already. A draft with files that git tracks is refused: `factory new` only writes ignored files, so such a draft came from a commit, possibly someone else's branch. `<draft>` is a draft id or a unique prefix of one.
+- It becomes a trusted issue (see [Trusted authors](#trusted-authors)), so later stages treat it as the spec.
+- The issue writer cannot read run folders (`.factory/runs/`), worktrees or other drafts, so text from untrusted issues does not reach it that way. But it does read the repo.
+- Keep the default `human` unless you trust what is in your repo.
+
+Creating a draft:
+
+- always prints the full draft first;
+- opens the issues on GitHub (no labels);
+- links each sub-issue to the parent as a real GitHub sub-issue;
+- syncs them into `.factory/factory.db`;
+- queues the buildable ones: the single issue, or the sub-issues (never their parent);
+- prints the numbers and the `factory run` command to start them.
+
+If something goes wrong:
+
+- What has been created is recorded in `.factory/factory.db`. If GitHub fails halfway, `factory new --approve` again only does what is left.
+- An issue whose draft entry you edited after it was created is refused, rather than matched up by position.
+- If `gh issue create` succeeds but its output can't be read, the error names the title. Check GitHub before approving again, as that issue may exist already.
+- A draft with files that git tracks is refused. `factory new` only writes ignored files, so such a draft came from a commit, possibly someone else's branch.
+
+`<draft>` is a draft id or a unique prefix of one.
 
 ### Choosing what the factory works on
 
@@ -78,7 +169,7 @@ Work is picked **locally**, never from GitHub labels, so nobody on GitHub can fe
 
 ```sh
 factory sync               # pull open issues from GitHub into .factory/factory.db; finishes runs whose PR was merged or closed
-factory issues             # list them (Q marks queued issues); --queued, --all
+factory issues             # list them (Q marks queued issues); -q/--queued, -a/--all
 factory queue 12 15 18     # queue issues for the factory (fetches unsynced ones)
 factory unqueue 15         # take one back out
 ```
@@ -90,37 +181,143 @@ Issues closed on GitHub drop out of the queue on the next sync.
 ```sh
 factory run 12             # run issue #12 until it needs you (syncs and queues it first if needed); --unsafe lifts hard rules for this run only
 factory run 12 15          # run several issues at once, up to concurrency.max_runs; each line is prefixed [#12], [#15]
-factory status             # active runs: state, round, cost, waiting gate; --all includes finished ones (finishes merged runs first); notes lessons waiting for you
-factory logs 12            # events and agent log excerpts; -f follows a running run
+factory status             # active runs: state, round, cost, waiting gate; -a/--all includes finished ones (finishes merged runs first); notes lessons waiting for you
+factory logs 12            # events and agent log excerpts; -f/--follow follows a running run
 factory show 12            # overview: state, gate, branch, PR, verdict summaries, files in the run folder
 factory show 12 triage     # one file in full: triage, refine and critic (latest spec round), build, checks or capture (latest round), approval, learn, or a path like round-2/checks.md
 factory approve <run>      # let a run waiting at a gate continue and keep running it; -m "why", --no-run to only record it
 factory reject <run> -m "why"   # end a run waiting at a gate
 factory resume <run> --to build -m "why"   # send an escalated run back to a stage and keep running it; --reset-loops, --no-run
-factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept
-factory lessons            # lessons the learner proposed, waiting for you; --all includes approved and rejected ones
+factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept; -m "why" is optional
+factory lessons            # lessons the learner proposed, waiting for you; -a/--all includes approved and rejected ones
 factory lessons approve 3 4        # open one PR that appends these lessons to .factory/lessons.md
 factory lessons reject 5 -m "why"  # never apply this lesson; -m is optional
 ```
 
-`factory run <n>` is enough for a brand-new issue: running it is your decision to work on it, so if the issue isn't queued yet it fetches it fresh from GitHub and queues it, the same as `factory queue <n>`. Closed issues are refused, and an issue by an author outside `trust.authors` still waits for you at triage. Give several numbers to run them side by side in one terminal: at most `concurrency.max_runs` (default 2) run at once and the rest wait their turn. An issue that can't start (closed, not on GitHub) is skipped, the others still run, and the command exits non-zero. Once your usage limit is hit, issues not started yet are left for later. Ctrl+C stops all of them. Approve, resume and reject apply the config on the default branch, like `factory run`, so a local edit cannot change where an approved run goes. `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would; with `--no-run` they only record the decision.
+**Starting a run.** `factory run <n>` is enough for a brand-new issue:
 
-`<run>` is a run id (the issue number, a slug of its title and a short random part, e.g. `49-shorter-builder-summaries-one-dfc238`; runs created before this used `run-49-dfc23835`), a unique prefix of one, or an issue number (`12`) for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
+- Running it is your decision to work on it. If the issue isn't queued yet, it is fetched fresh from GitHub and queued, the same as `factory queue <n>`.
+- Closed issues are refused.
+- An issue by an author outside `trust.authors` still waits for you at triage.
+
+**Several runs at once.** Give several numbers to run them side by side in one terminal:
+
+- At most `concurrency.max_runs` (default 2) run at once. The rest wait their turn.
+- An issue that can't start (closed, not on GitHub) is skipped. The others still run, and the command exits non-zero.
+- Once your usage limit is hit, issues not started yet are left for later.
+- Ctrl+C stops all of them.
+
+**Approve, resume and reject**:
+
+- They apply the config on the default branch, like `factory run`, so a local edit cannot change where an approved run goes.
+- `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would. With `--no-run` they only record the decision.
+
+**Naming a run.** `<run>` is one of:
+
+- a run id: the issue number, a slug of its title and a short random part, e.g. `49-shorter-builder-summaries-one-dfc238`. Runs created before this used `run-49-dfc23835`;
+- a unique prefix of one;
+- an issue number (`12`), for that issue's latest run. `#12` works too, but PowerShell reads `#` as the start of a comment, so quote it there (`'#12'`).
 
 What `factory run` does today:
 
-1. **Triage**: an agent with no shell reads the issue and the code and writes `triage.md` (`APPROVE`, `REJECT` or `NEEDS_INFO`, and `READINESS: READY | INCOMPLETE`). Rejections and questions are posted on the issue. The `triage` gate then decides whether to continue. An approved issue that is INCOMPLETE goes to refine; a READY one skips refine and goes to the spec critic. After the author answers, `factory run` again triages the issue again (run `factory sync` first so it sees an edited issue).
-2. **Refine**: for an INCOMPLETE issue, a refine agent (no shell, read-only repo, writes only its own file) writes what the issue leaves open: acceptance criteria, scope, out of scope and open questions (with the assumption it made for each), in `spec-N/refine.md` with `STATUS: REFINED` (or `BLOCKED` with a reason, which stops the run for you). The engine posts the spec on the issue as one comment marked `<!-- factory:refine -->` and edits that comment in place on later rounds, so the issue shows the current spec rather than every version.
-3. **Spec critic**: a critic agent (no shell, read-only, writes only its own file) checks the issue's claims and acceptance criteria, and the refined spec when there is one, against the actual code, and writes `spec-N/critic.md` with `VERDICT: ACCEPT | REVISE | REJECT`, a `## Summary`, and `## Problems`, `## Questions` and `## Notes`. ACCEPT passes the `critic` gate on to build. The builder gets the refined spec and the critic's notes, and the reviewers, the verifier, the approver and the hard-rule deletion check judge the change against them too. For an issue by an untrusted author the run always waits for you at the `critic` gate before build, whatever the gate mode, and the spec reaches the builder marked as untrusted data. REVISE goes back to refine with the critic's problems, up to `loops.max_critic_rounds` (default 2) critic rounds; at the cap the run waits for you at the `critic` gate, with the open problems and the spec's open questions in the reason: approve the spec as it is, or send it back with `factory resume <run> --to refine -m "…"` (refine gets your comment). REJECT ends the run and posts the critic's problems on the issue. Questions only the issue's author can answer are posted on the issue and the run waits in `needs_info`, as when triage asks: the author's answers change the issue itself, so once they have answered, `factory run` triages it again and the spec starts a new round, with a fresh `loops.max_critic_rounds` budget. Like the approver, the critic only runs in `auto` mode (the default): `gates.critic: always` goes straight to build without a critic turn (a READY issue then goes from triage to build), and `human` waits for you without spending one. Each spec round has its own `spec-N/` folder, and the number only grows, so a later round or a re-triage never overwrites an earlier round's files.
-4. **Build**: a builder agent works in its own worktree (`.worktrees/<run>`, branch `factory/<issue>-<slug>`, created from the latest `origin/<default branch>`) and commits. It cannot push. The engine scans every new commit for secrets (gitleaks if installed, otherwise built-in patterns) and sends the builder back if it finds one, so a leaked key never reaches GitHub. Then the engine pushes the branch (never forced) and opens a **draft** PR that closes the issue. Its description starts with a short brief for you (What, How it was tested), with the builder's implementation notes collapsed underneath.
-5. **Quality gate**: the engine runs your `checks` on the pushed commit, plus the secret scan again. Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment. On failure the builder gets the report and tries again, up to `loops.max_build_iterations`, then the run waits for you. If two rounds in a row fail the same way (same failed checks with the same output and exit code, and the same secret-scan hits, ignoring timings, commit shas and the worktree path), the run stops before the cap and waits for you.
-6. **Reviews**: on a pass, reviewer agents look at the commit the gate passed, all at the same time, each through one lens: `reviews.always` (default code, security, docs) every time, plus `reviews.ui` (default ux, ui) when triage listed `ui` in SURFACES. Each lens has its own model and effort (`models.reviews`). They read the change from `round-N/change.diff` and the code around it, and write `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit. Only critical and major findings count against a change; minor ones and nits never hold the run up. If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
-7. **Verifier**: when a lens asks for changes, a verifier agent (no shell, by default a different model from the reviewers) checks every critical and major finding against the code and writes `round-N/verify.md`: `VERDICT: CONFIRMED` with the findings that hold, and a `## Refuted` line with the reason for each one that doesn't. The engine rejects a verdict that skips a finding or judges one twice. Confirmed findings go back to the builder, which gets them in its next turn; that costs a review round (`loops.max_review_rounds`), and the change goes through the quality gate and all reviews again. Refuted findings never loop: if the verifier refutes them all, the review counts as clear. If the verifier confirms the same findings two rounds in a row, or the cap is reached, the run waits for you at the `review` gate: approve it as is, or send it back with `factory resume <run> --to build -m "…"` (the builder gets the confirmed findings and your comment).
-8. **Review gate**: with clear reviews and the default `gates.review: auto`, the run goes on. It waits for you when a hard rule is hit or the gate is `human`, with each lens's verdict in the reason, e.g. `reviews: code CHANGES (1 blocking), security PASS, docs PASS; the verifier refuted all 1 blocking findings`; approving it moves the run on. The draft PR's description gets a **Review notes** section listing the minor findings and nits per lens and the refuted findings with the verifier's reason, for you to judge, plus any confirmed findings still open when the run stopped at a stall or the cap. `factory show <run>` lists each review's summary and blocking findings, and the verifier's confirmed findings. If the branch trips a hard rule, the reason lists each hit, for example `protected path (infra/**): infra/main.tf` or `new dependency in package.json: left-pad`. They are read from the git diff of the checked commit against where the branch left the default branch, fetched fresh from GitHub (so a builder cannot move the base): changes under protected paths; new dependencies or a dependency pointed at a new source (git, URL, `npm:` alias, override, Go `replace`) in package.json, .csproj/Directory.Packages.props, requirements*.txt, pyproject.toml, Pipfile or go.mod; any lockfile change; changes to package-source config such as `.npmrc`, `pnpm-workspace.yaml`, `NuGet.Config`, `Directory.Build.props` or `.gitmodules`; `.env*`, key, certificate and `.tfvars` files; and deleted files the issue and triage don't name by their path (a rename counts as a deletion). A run started with `--unsafe` still lists them, marked as lifted, and its PR description opens with a warning. Protected paths in `hard_rules.paths` are repo-relative globs using only `*`, `**` and `?`; anything else is rejected when the config loads.
+1. **Triage**: an agent with no shell reads the issue and the code.
+   - It writes `triage.md`: `APPROVE`, `REJECT` or `NEEDS_INFO`, and `READINESS: READY | INCOMPLETE`.
+   - Rejections and questions are posted on the issue.
+   - The `triage` gate then decides whether to continue.
+   - An approved issue that is INCOMPLETE goes to refine. A READY one skips refine and goes to the spec critic.
+   - After the author answers, `factory run` triages the issue again. Run `factory sync` first so it sees an edited issue.
+2. **Refine**: for an INCOMPLETE issue, a refine agent writes what the issue leaves open.
+   - It has no shell, a read-only repo, and writes only its own file.
+   - It writes acceptance criteria, scope, out of scope and open questions (with the assumption it made for each) in `spec-N/refine.md`, with `STATUS: REFINED`.
+   - `BLOCKED` with a reason stops the run for you.
+   - The engine posts the spec on the issue as one comment marked `<!-- factory:refine -->`. It edits that comment in place on later rounds, so the issue shows the current spec rather than every version.
+3. **Spec critic**: a critic agent checks the issue's claims and acceptance criteria against the actual code, and the refined spec when there is one.
+   - It has no shell, is read-only, and writes only its own file.
+   - It writes `spec-N/critic.md` with `VERDICT: ACCEPT | REVISE | REJECT`, a `## Summary`, and `## Problems`, `## Questions` and `## Notes`.
+   - **ACCEPT** passes the `critic` gate on to build.
+     - The builder gets the refined spec and the critic's notes.
+     - The reviewers, the verifier, the approver and the hard-rule deletion check judge the change against them too.
+   - **Untrusted author**: the run always waits for you at the `critic` gate before build, whatever the gate mode. The spec reaches the builder marked as untrusted data.
+   - **REVISE** goes back to refine with the critic's problems, up to `loops.max_critic_rounds` (default 2) critic rounds.
+     - At the cap the run waits for you at the `critic` gate, with the open problems and the spec's open questions in the reason.
+     - Approve the spec as it is, or send it back with `factory resume <run> --to refine -m "…"`. Refine gets your comment.
+   - **REJECT** ends the run and posts the critic's problems on the issue.
+   - **Questions** only the issue's author can answer are posted on the issue, and the run waits in `needs_info`, as when triage asks.
+     - The author's answers change the issue itself. Once they have answered, `factory run` triages it again.
+     - The spec then starts a new round, with a fresh `loops.max_critic_rounds` budget.
+   - **Gate modes**: like the approver, the critic only runs in `auto` mode (the default).
+     - `gates.critic: always` goes straight to build without a critic turn. A READY issue then goes from triage to build.
+     - `human` waits for you without spending one.
+   - Each spec round has its own `spec-N/` folder. The number only grows, so a later round or a re-triage never overwrites an earlier round's files.
+4. **Build**: a builder agent works in its own worktree and commits.
+   - The worktree is `.worktrees/<run>`, on branch `factory/<issue>-<slug>`, created from the latest `origin/<default branch>`.
+   - It cannot push.
+   - The engine scans every new commit for secrets (gitleaks if installed, otherwise built-in patterns). If it finds one, it sends the builder back, so a leaked key never reaches GitHub.
+   - Then the engine pushes the branch (never forced) and opens a **draft** PR that closes the issue.
+   - The PR description starts with a short brief for you (What, How it was tested), with the builder's implementation notes collapsed underneath.
+5. **Quality gate**: the engine runs your `checks` on the pushed commit, plus the secret scan again.
+   - Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment.
+   - On failure the builder gets the report and tries again, up to `loops.max_build_iterations`. Then the run waits for you.
+   - If two rounds in a row fail the same way, the run stops before the cap and waits for you. "The same way" means the same failed checks with the same output and exit code, and the same secret-scan hits, ignoring timings, commit shas and the worktree path.
+6. **Reviews**: on a pass, reviewer agents look at the commit the gate passed, all at the same time, each through one lens.
+   - `reviews.always` (default code, security, docs) run every time.
+   - `reviews.ui` (default ux, ui) also run when triage listed `ui` in SURFACES.
+   - Each lens has its own model and effort (`models.reviews`).
+   - They read the change from `round-N/change.diff` and the code around it.
+   - Each writes `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit.
+   - Only critical and major findings count against a change. Minor ones and nits never hold the run up.
+   - If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
+7. **Verifier**: when a lens asks for changes, a verifier agent checks every critical and major finding against the code.
+   - It has no shell, and by default it uses a different model from the reviewers.
+   - It writes `round-N/verify.md`: `VERDICT: CONFIRMED` with the findings that hold, and a `## Refuted` line with the reason for each one that doesn't.
+   - The engine rejects a verdict that skips a finding or judges one twice.
+   - **Confirmed** findings go back to the builder, which gets them in its next turn.
+     - That costs a review round (`loops.max_review_rounds`).
+     - The change goes through the quality gate and all reviews again.
+   - **Refuted** findings never loop. If the verifier refutes them all, the review counts as clear.
+   - If the verifier confirms the same findings two rounds in a row, or the cap is reached, the run waits for you at the `review` gate.
+     - Approve it as is, or send it back with `factory resume <run> --to build -m "…"`.
+     - The builder gets the confirmed findings and your comment.
+8. **Review gate**: with clear reviews and the default `gates.review: auto`, the run goes on.
+   - It waits for you when a hard rule is hit or the gate is `human`. Approving it moves the run on.
+   - The reason has each lens's verdict, e.g. `reviews: code CHANGES (1 blocking), security PASS, docs PASS; the verifier refuted all 1 blocking findings`.
+   - The draft PR's description gets a **Review notes** section, for you to judge:
+     - the minor findings and nits per lens;
+     - the refuted findings, with the verifier's reason;
+     - any confirmed findings still open when the run stopped at a stall or the cap.
+   - `factory show <run>` lists each review's summary and blocking findings, and the verifier's confirmed findings.
+   - **Hard-rule hits** are listed in the reason, for example `protected path (infra/**): infra/main.tf` or `new dependency in package.json: left-pad`.
+   - They are read from the git diff of the checked commit against where the branch left the default branch. That point is fetched fresh from GitHub, so a builder cannot move the base. The hard rules are:
+     - changes under protected paths;
+     - new dependencies, or a dependency pointed at a new source (git, URL, `npm:` alias, override, Go `replace`), in package.json, .csproj/Directory.Packages.props, requirements*.txt, pyproject.toml, Pipfile or go.mod;
+     - any lockfile change;
+     - changes to package-source config such as `.npmrc`, `pnpm-workspace.yaml`, `NuGet.Config`, `Directory.Build.props` or `.gitmodules`;
+     - `.env*`, key, certificate and `.tfvars` files;
+     - deleted files the issue and triage don't name by their path (a rename counts as a deletion).
+   - A run started with `--unsafe` still lists them, marked as lifted, and its PR description opens with a warning.
+   - Protected paths in `hard_rules.paths` are repo-relative globs using only `*`, `**` and `?`. Anything else is rejected when the config loads.
 9. **Capture and PR**: for a user-visible change (triage listed `ui` in SURFACES) of an app with `app.start` configured, the engine shows the change in the PR. Otherwise capture passes straight on, with an info line saying why.
-   - A capture agent (no shell, writes only `round-N/capture.md`) reads the issue, the triage scope and `round-N/change.diff`, and writes a plan: the pages to shoot (at most 10), each marked `new` (the change adds it) or `existing` (it changes), plus an optional walkthrough drawn from the acceptance criteria. The walkthrough is a fixed list of declarative steps (`goto` a path, `click` a selector or text, `fill` a selector, `wait`, `screenshot`), validated by the engine and run by it; nothing an agent writes is ever run as code. Every path must be on the app's own origin, and the browser never leaves it: requests to other origins are blocked, a redirect to another origin is stopped before it is followed, and a page or step that still ends up elsewhere is not shot. If the walkthrough leaves the app, it stops there and its video is discarded, as it may show a page outside the app.
-   - Capture only starts the app on a clean worktree. If the worktree has uncommitted changes (for example your own edits in a run you resumed), the stage says so and goes on without screenshots, leaving them alone.
-   - The engine starts `app.start` in the run's worktree on a free port (from the run's port block) passed in `app.port_env`. The app gets a minimal environment, not yours: only what a shell, Node and package managers need (`PATH`, `SystemRoot`, `HOME`/`USERPROFILE`, `TEMP`, `APPDATA`, `LANG`, `NODE_ENV` and the like), the port, `BROWSER=none`, and the variables named in `app.env`; tokens (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are refused even there. Its pages are published, so nothing they render should come from your environment. The engine waits up to `app.ready_timeout_sec` for `app.url` to answer. Playwright shoots every page at 1440 and 390 px wide and records console errors, page errors, failed requests and 4xx/5xx responses, then records the walkthrough as `walkthrough.webm` (WebM, since MP4 would need ffmpeg). For `existing` pages it does the same in a temporary worktree of the freshly fetched `origin/<default branch>` (removed again afterwards) for the before shots; `new` pages get none, and the report says so. Errors only the change's version has are reported as new. Each server's whole process tree is killed when it is done with, also on errors, timeouts, cancels and when the factory exits. The factory does not install dependencies for the app: put the install step in `app.start` if it needs one (e.g. `npm ci && npm run dev`), since the before worktree is a fresh checkout. Anything the app writes into the run's worktree that git does not ignore is undone, so the branch stays clean.
+   - **The plan.** A capture agent (no shell, writes only `round-N/capture.md`) reads the issue, the triage scope and `round-N/change.diff`. It writes a plan:
+     - the pages to shoot (at most 10), each marked `new` (the change adds it) or `existing` (it changes);
+     - an optional walkthrough drawn from the acceptance criteria.
+   - **The walkthrough** is a fixed list of declarative steps: `goto` a path, `click` a selector or text, `fill` a selector, `wait`, `screenshot`.
+     - The engine validates and runs it. Nothing an agent writes is ever run as code.
+     - Every path must be on the app's own origin, and the browser never leaves it. Requests to other origins are blocked, and a redirect to another origin is stopped before it is followed.
+     - A page or step that still ends up elsewhere is not shot.
+     - If the walkthrough leaves the app, it stops there and its video is discarded, as it may show a page outside the app.
+   - **Clean worktree only.** Capture only starts the app on a clean worktree. If the worktree has uncommitted changes (for example your own edits in a run you resumed), the stage says so and goes on without screenshots, leaving them alone.
+   - **Starting the app.** The engine starts `app.start` in the run's worktree on a free port (from the run's port block), passed in `app.port_env`.
+     - The app gets a minimal environment, not yours: only what a shell, Node and package managers need (`PATH`, `SystemRoot`, `HOME`/`USERPROFILE`, `TEMP`, `APPDATA`, `LANG`, `NODE_ENV` and the like), the port, `BROWSER=none`, and the variables named in `app.env`.
+     - Tokens (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are refused even there.
+     - Its pages are published, so nothing they render should come from your environment.
+     - The engine waits up to `app.ready_timeout_sec` for `app.url` to answer.
+     - The factory does not install dependencies for the app. Put the install step in `app.start` if it needs one (e.g. `npm ci && npm run dev`), since the before worktree is a fresh checkout.
+   - **Shooting.** Playwright shoots every page at 1440 and 390 px wide.
+     - It records console errors, page errors, failed requests and 4xx/5xx responses.
+     - Then it records the walkthrough as `walkthrough.webm` (WebM, since MP4 would need ffmpeg).
+   - **Before shots.** For `existing` pages it does the same in a temporary worktree of the freshly fetched `origin/<default branch>`, removed again afterwards. `new` pages get none, and the report says so.
+     - Errors only the change's version has are reported as new.
+   - **Cleaning up.** Each server's whole process tree is killed when it is done with, also on errors, timeouts, cancels and when the factory exits. Anything the app writes into the run's worktree that git does not ignore is undone, so the branch stays clean.
    - <a id="narrated-walkthrough"></a>**Narrated walkthrough.** The capture agent can give walkthrough steps a `say`: one spoken sentence, at most 300 characters, one line.
      - With at least one `say`, the narrate plugin (0.24.0 or newer) installed and `ffmpeg` on PATH, the engine records the walkthrough again with a voice, as `walkthrough-narrated.mp4`.
      - It calls the plugin's own CLI (`bin/narrate.mjs render`) as a plain command, never as a plugin inside an agent: agents run without plugins or MCP servers.
@@ -130,32 +327,126 @@ What `factory run` does today:
      - The CLI gets the app's minimal environment plus `PLAYWRIGHT_BROWSERS_PATH`, `NARRATE_HOME`, `NARRATE_GEMINI_API_KEY` and `NARRATE_ELEVENLABS_API_KEY`. Voice and keys otherwise come from narrate's own settings (`~/.narrate/settings.json`, set up with `/narrate-setup`; default the OS voice); a key in a custom `apiKeyEnv` variable is not passed.
      - It runs in `round-N/capture/narrate/` (the scene, narrate's own `narrate.log`, and its progress output in `cli-output.log`). The engine reads the video from narrate's `--json` result, which also refuses a video without a voice. It is stopped with its whole process tree after 10 minutes, on a cancel or when the factory exits, and never fails the run.
      - The PR links the narrated video instead of the silent one, and only that one is uploaded. Without the plugin the silent video is used and nothing is said about it; a narration that was tried and failed is noted in the PR and the report.
-   - The media is uploaded as assets of a **draft** GitHub release, `factory-media-<run>`, and never committed: it lives in the run folder (`round-N/capture/`) and on GitHub. The PR description gets a `## Screenshots` section with a before/after table, the video link and the new errors, above the review notes. A draft creates no git tag, fires no `release` or tag workflows and notifies no one; the factory never publishes it. The catch: a draft's assets are only served to people with push access to the repo, signed in to GitHub. That is who reviews the factory's PRs; anyone else (and email notifications) sees broken images. `factory reject` and `factory cancel` delete the run's release (or print the `gh release delete` command if that fails); a merged run keeps it, since its PR links to it. A run that ends because its PR was closed on GitHub keeps it too: delete it with `gh release delete factory-media-<run> --yes`.
-   - Nothing here fails the run: when the app does not start, Playwright or its browser is missing, a walkthrough step fails, the agent's plan is unusable or the upload fails, `round-N/capture-report.md` and the PR description say why (for example "Screenshots could not be taken: …") and the run goes on. The PR gets only the first line of a problem; the app's log and the full error stay in the report (`factory show <run> capture`). Only a usage limit or a cancel stops it here; after a usage limit, the next `factory run` captures again.
+   - **Where the media goes.** It is uploaded as assets of a **draft** GitHub release, `factory-media-<run>`, and never committed.
+     - It lives in the run folder (`round-N/capture/`) and on GitHub.
+     - The PR description gets a `## Screenshots` section with a before/after table, the video link and the new errors, above the review notes.
+     - A draft creates no git tag, fires no `release` or tag workflows and notifies no one. The factory never publishes it.
+     - The catch: a draft's assets are only served to people with push access to the repo, signed in to GitHub. That is who reviews the factory's PRs. Anyone else (and email notifications) sees broken images.
+     - `factory reject` and `factory cancel` delete the run's release, or print the `gh release delete` command if that fails.
+     - A merged run keeps it, since its PR links to it. A run that ends because its PR was closed on GitHub keeps it too: delete it with `gh release delete factory-media-<run> --yes`.
+   - **Nothing here fails the run.** When the app does not start, Playwright or its browser is missing, a walkthrough step fails, the agent's plan is unusable or the upload fails:
+     - `round-N/capture-report.md` and the PR description say why (for example "Screenshots could not be taken: …") and the run goes on.
+     - The PR gets only the first line of a problem. The app's log and the full error stay in the report (`factory show <run> capture`).
+     - Only a usage limit or a cancel stops it here. After a usage limit, the next `factory run` captures again.
 
    The `pr` gate (default `always`) then takes the draft PR out of draft.
-10. **Re-sync and merge gate**: the engine merges the latest `origin/<default branch>` into the branch. A conflict is undone and goes back to the builder with the conflicting files (`round-N/resync/conflicts.md`); that costs a review round. If the merge brought anything in, the quality gate runs again on the merge commit (`round-N/resync/checks.md`), and a failure goes back to the builder with the report. Then the `merge` gate decides (default `human`: it always waits for you). `factory approve` approves the commit that was waiting: the approval holds while only re-syncs of the default branch land on top of it, and any new commit from the builder needs a fresh one. In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`: `DECISION: PROCEED`, or `ESCALATE` with its reasons (product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, low confidence). Hard-rule hits need you at the merge gate too, whatever its mode.
-11. **Merge**: the engine merges the PR with a merge commit (`gh pr merge --merge --match-head-commit <sha>`), so GitHub only merges the commit that passed the gate. If GitHub refuses (branch protection, required checks still running), the run waits for you with GitHub's message. Its worktree and branch are kept.
-12. **Learn**: after the merge, a learner agent (no shell, writes only `learn.md`) looks back at the run: the builder's report, the checks of failed rounds, the reviews and the verifier's judgements, re-sync conflicts, the approver's decision, escalation reasons and your decisions and comments. It writes `learn.md` with `LESSONS: <n>` and, for each lesson, an observation, the evidence (files and rounds) and a one-line rule for `.factory/lessons.md`. It is told to propose only rules that would plausibly have prevented a real failure or loop in that run, so zero lessons is a normal outcome. The proposals are stored as `proposed` and nothing is applied until you approve them (see [Lessons](#lessons)). A run that went through in one round, with no failed check, no blocking finding, no hard-rule stop, no escalation by the approver and nobody stepping in other than to approve a gate, has nothing to teach, so the learner is not started for it (saving usage). The merge has already happened, so the learner never holds a run up: if it fails, writes something malformed twice, hits your usage limit, or anything else goes wrong while learning (even storing the lessons), the run is still `done`, its lessons are skipped, and the reason (`lessons skipped: …`) is in the run's events. A run that ends any other way (rejected, cancelled, or merged by hand on GitHub and picked up by `factory status`/`sync`) does not go through the learner.
+10. **Re-sync and merge gate**: the engine merges the latest `origin/<default branch>` into the branch.
+    - A conflict is undone and goes back to the builder with the conflicting files (`round-N/resync/conflicts.md`).
+    - If the merge brought anything in, the quality gate runs again on the merge commit (`round-N/resync/checks.md`). A failure goes back to the builder with the report.
+    - Both cost a review round.
+    - Then the `merge` gate decides. The default is `human`: it always waits for you.
+    - `factory approve` approves the commit that was waiting. The approval holds while only re-syncs of the default branch land on top of it. Any new commit from the builder needs a fresh one.
+    - In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`: `DECISION: PROCEED`, or `ESCALATE` with its reasons (product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, low confidence).
+    - Hard-rule hits need you at the merge gate too, whatever its mode.
+11. **Merge**: the engine merges the PR with a merge commit (`gh pr merge --merge --match-head-commit <sha>`), so GitHub only merges the commit that passed the gate.
+    - If GitHub refuses (branch protection, required checks still running), the run waits for you with GitHub's message.
+    - Its worktree and branch are kept.
+12. **Learn**: after the merge, a learner agent (no shell, writes only `learn.md`) looks back at the run.
+    - It reads the builder's report, the checks of failed rounds, the reviews and the verifier's judgements, re-sync conflicts, the approver's decision, escalation reasons and your decisions and comments.
+    - It writes `learn.md` with `LESSONS: <n>`. For each lesson: an observation, the evidence (files and rounds) and a one-line rule for `.factory/lessons.md`.
+    - It is told to propose only rules that would plausibly have prevented a real failure or loop in that run, so zero lessons is a normal outcome.
+    - The proposals are stored as `proposed`. Nothing is applied until you approve them (see [Lessons](#lessons)).
+    - **Skipped when there is nothing to teach**, to save usage: a run that went through in one round, with no failed check, no blocking finding, no hard-rule stop, no escalation by the approver and nobody stepping in other than to approve a gate.
+    - **It never holds a run up.** The merge has already happened. If the learner fails, writes something malformed twice, hits your usage limit, or anything else goes wrong while learning (even storing the lessons), the run is still `done`. Its lessons are skipped, and the reason (`lessons skipped: …`) is in the run's events.
+    - A run that ends any other way (rejected, cancelled, or merged by hand on GitHub and picked up by `factory status`/`sync`) does not go through the learner.
 
-You can also merge or close the PR yourself on GitHub at any point. The next `factory status`, `factory run` or `factory sync` sees it and marks the run `done`, with a `merge` decision holding the merge commit, or `cancelled` when the PR was closed without merging. You don't need `factory cancel`. Runs without a PR, or with an open one, are left alone, and if GitHub can't be reached the command prints a warning and carries on.
+**Merging or closing on GitHub.** You can also merge or close the PR yourself on GitHub at any point.
 
-When a run escalates (agent failed, builder blocked, loop cap reached, loop stalled), `factory run` tells you why; a stall names both rounds, for example `stalled: quality gate failed the same way in rounds 2 and 3 (see round-2/checks.md and round-3/checks.md)`. A round is one pass through the quality gate (and the reviews after it); round numbers keep counting after a resume, so earlier rounds' files are never overwritten. Send it on with `factory resume` or stop it with `factory cancel`. After a resume, stall detection starts afresh (with or without `--reset-loops`): only two more identical failures in a row stop the run again. If your Claude usage limit is hit, the run stops where it is; run `factory run` again after the reset and it continues the same agent session. A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
+- The next `factory status`, `factory run` or `factory sync` sees it.
+- A merged PR marks the run `done`, with a `merge` decision holding the merge commit.
+- A PR closed without merging marks it `cancelled`. You don't need `factory cancel`.
+- Runs without a PR, or with an open one, are left alone.
+- If GitHub can't be reached, the command prints a warning and carries on.
 
-Run artifacts (issue, triage, `spec-N/refine.md` and `spec-N/critic.md`, build report, `round-N/checks.md` and `checks.log`, `round-N/change.diff`, `round-N/review-<lens>.md`, `round-N/verify.md`, `round-N/capture.md`, `round-N/capture-report.md` and the screenshots, video and app logs in `round-N/capture/`, `round-N/resync/`, `approval.md` and `approval.diff`, `learn.md`, agent prompts, permission profiles and full stream logs) are in `.factory/runs/<run>/`. `factory show <run>` summarises them and `factory show <run> <file>` prints one; when a run waits at a gate, `factory run` names the file to read, for example `factory show <run> critic` at the `critic` gate.
+**When a run escalates** (agent failed, builder blocked, loop cap reached, loop stalled), `factory run` tells you why.
 
-**What steers the agents is read from the default branch.** `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`, not from your working copy, so a checked-out branch cannot change its own checks, trust list, gates or prompts. Commit and push config changes before they take effect.
+- A stall names both rounds, for example `stalled: quality gate failed the same way in rounds 2 and 3 (see round-2/checks.md and round-3/checks.md)`.
+- A round is one pass through the quality gate (and the reviews after it). Round numbers keep counting after a resume, so earlier rounds' files are never overwritten.
+- Send it on with `factory resume` or stop it with `factory cancel`.
+- After a resume, stall detection starts afresh (with or without `--reset-loops`): only two more identical failures in a row stop the run again.
+- If your Claude usage limit is hit, the run stops where it is. Run `factory run` again after the reset and it continues the same agent session.
+- A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
 
-**Agent permissions.** Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`), and ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`) so nothing outside the profile applies to an agent reading issue text. Triage can read the repo and write only its run folder. Refine and the spec critic have no shell either and can write only their own file in `spec-N/` (prompts `.factory/prompts/refine.md` and `critic.md`), so the critic cannot rewrite the spec it judges. Agent text the factory posts on an issue (the spec, the critic's problems and questions) has its `@mentions` in backticks, so it never notifies anyone. Reviewers have no shell: the engine writes the commits and the full diff to `round-N/change.diff` for them (with external diff programs and textconv switched off), and each reviewer can write only its own review file, so one lens cannot change another's verdict; their prompt is `.factory/prompts/reviewer.md` plus `review-<lens>.md`. The verifier gets the same: no shell, the same change file, and only `verify.md` to write (prompt `.factory/prompts/verifier.md`). So does the approver, with only `approval.md` to write (prompt `.factory/prompts/approver.md`), and the issue writer, with only its `draft.md` to write and no access to `.factory/runs/`, `.worktrees/` or other drafts (prompt `.factory/prompts/issue_writer.md`), and the learner, with only `learn.md` to write (prompt `.factory/prompts/learner.md`), and the capture agent, with only `capture.md` to write (prompt `.factory/prompts/capture.md`); the engine, not the agent, runs the app and the browser. The builder can edit and use Bash but is denied `git push`, `gh pr`, `gh api` and edits to `.factory/`. Bash deny rules are prefix matches, so also protect your default branch on GitHub.
+**Run artifacts** are in `.factory/runs/<run>/`:
+
+- issue, triage, `spec-N/refine.md` and `spec-N/critic.md`, build report;
+- `round-N/checks.md` and `checks.log`, `round-N/change.diff`, `round-N/review-<lens>.md`, `round-N/verify.md`;
+- `round-N/capture.md`, `round-N/capture-report.md`, and the screenshots, video and app logs in `round-N/capture/`;
+- `round-N/resync/`, `approval.md` and `approval.diff`, `learn.md`;
+- agent prompts, permission profiles and full stream logs.
+
+`factory show <run>` summarises them and `factory show <run> <file>` prints one. When a run waits at a gate, `factory run` names the file to read, for example `factory show <run> critic` at the `critic` gate.
+
+**What steers the agents is read from the default branch.**
+
+- `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`, not from your working copy.
+- So a checked-out branch cannot change its own checks, trust list, gates or prompts.
+- Commit and push config changes before they take effect.
+
+**Agent permissions.**
+
+- Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`).
+- They ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`), so nothing outside the profile applies to an agent reading issue text.
+- Agent text the factory posts on an issue (the spec, the critic's problems and questions) has its `@mentions` in backticks, so it never notifies anyone.
+- The engine, not an agent, runs the app and the browser.
+- Bash deny rules are prefix matches, so also protect your default branch on GitHub.
+
+What each role may do:
+
+| Role | Shell | Writes | Prompt |
+|---|---|---|---|
+| Triage | no | only its run folder | |
+| Refine | no | only its own file in `spec-N/` | `.factory/prompts/refine.md` |
+| Spec critic | no | only its own file in `spec-N/`, so it cannot rewrite the spec it judges | `.factory/prompts/critic.md` |
+| Reviewers | no | only their own review file, so one lens cannot change another's verdict | `.factory/prompts/reviewer.md` plus `review-<lens>.md` |
+| Verifier | no | only `verify.md` | `.factory/prompts/verifier.md` |
+| Approver | no | only `approval.md` | `.factory/prompts/approver.md` |
+| Issue writer | no | only its `draft.md`; no access to `.factory/runs/`, `.worktrees/` or other drafts | `.factory/prompts/issue_writer.md` |
+| Learner | no | only `learn.md` | `.factory/prompts/learner.md` |
+| Capture | no | only `capture.md` | `.factory/prompts/capture.md` |
+| Builder | yes | edits and Bash, but denied `git push`, `gh pr`, `gh api` and edits to `.factory/` | |
+
+- Triage can read the repo.
+- Reviewers, the verifier and the approver read the change from files the engine writes. For reviewers and the verifier that is `round-N/change.diff`, with the commits and the full diff, written with external diff programs and textconv switched off.
 
 ### Lessons
 
-`.factory/lessons.md` is put in front of every agent's task as "Lessons from earlier runs". After a run with something to learn from, the learner proposes lessons, and `factory status` says when some are waiting (`3 lessons waiting: factory lessons`). `factory lessons` lists each one with its id, the run it came from, the rule, what went wrong and the evidence.
+`.factory/lessons.md` is put in front of every agent's task as "Lessons from earlier runs".
 
-- `factory lessons approve <id...>` opens **one PR** for all the lessons you name: the engine (not an agent) creates `factory/lessons-<timestamp>` from the freshly fetched `origin/<default branch>` in a temporary worktree (removed afterwards, your working copy is not touched), appends each rule as a `- ` line to `.factory/lessons.md`, commits, pushes and opens a ready-for-review PR listing each lesson and its run. While a lessons PR is still open, later approvals go onto its branch and update its description instead, because two PRs that both append to the end of the file would conflict. The lessons are marked approved, with the PR number, only once they are on the PR; if a PR cannot be opened, the pushed branch is deleted and nothing is approved. Because agents read lessons from the default branch, an approved lesson takes effect when you merge that PR.
-- The lessons commit runs your repository's own commit hooks and signing; they are never skipped. A hook that needs something a fresh worktree lacks (husky without `node_modules`, say), or signing that cannot run without a prompt, refuses the commit: `factory lessons approve` then says a commit hook or signing refused it, and the lessons stay proposed. Each git command there is stopped after 5 minutes.
-- A rule must be one line of at most 300 characters without control or text-direction characters, and `factory lessons` shows any such character in a lesson as `[U+XXXX]` rather than printing it.
-- `factory lessons reject <id...> -m "why"` marks them rejected; they are kept with your reason and never applied.
+- After a run with something to learn from, the learner proposes lessons.
+- `factory status` says when some are waiting (`3 lessons waiting: factory lessons`).
+- `factory lessons` lists each one with its id, the run it came from, the rule, what went wrong and the evidence.
+
+`factory lessons approve <id...>` opens **one PR** for all the lessons you name:
+
+- The engine (not an agent) creates `factory/lessons-<timestamp>` from the freshly fetched `origin/<default branch>` in a temporary worktree. It is removed afterwards, and your working copy is not touched.
+- It appends each rule as a `- ` line to `.factory/lessons.md`, commits, pushes and opens a ready-for-review PR listing each lesson and its run.
+- While a lessons PR is still open, later approvals go onto its branch and update its description instead. Two PRs that both append to the end of the file would conflict.
+- The lessons are marked approved, with the PR number, only once they are on the PR. If a PR cannot be opened, the pushed branch is deleted and nothing is approved.
+- Because agents read lessons from the default branch, an approved lesson takes effect when you merge that PR.
+
+Commit hooks and signing:
+
+- The lessons commit runs your repository's own commit hooks and signing. They are never skipped.
+- A hook that needs something a fresh worktree lacks (husky without `node_modules`, say), or signing that cannot run without a prompt, refuses the commit. `factory lessons approve` then says a commit hook or signing refused it, and the lessons stay proposed.
+- Each git command there is stopped after 5 minutes.
+
+Rules for a lesson:
+
+- A rule must be one line of at most 300 characters, without control or text-direction characters.
+- `factory lessons` shows any such character in a lesson as `[U+XXXX]` rather than printing it.
+
+`factory lessons reject <id...> -m "why"` marks them rejected. They are kept with your reason and never applied.
 
 ### Trusted authors
 
@@ -168,10 +459,19 @@ trust:
 ```
 
 - **Trusted** issues and comments are treated as the spec.
-- **Untrusted** ones (e.g. strangers on a public repo) can still be queued, but their text is handled as untrusted data and triage always waits for your approval before anything is built. `factory issues` marks them `(untrusted)`.
-- **Issues the factory created** with `factory new` are trusted, whoever the gh login is: they were written from your own idea and approved by you (or by the gate you configured). The factory records this locally when it creates them, so a later `factory sync` never clears it and nobody on GitHub can set it. Comments on them by others are still judged by their own author.
+- **Untrusted** ones (e.g. strangers on a public repo) can still be queued, but:
+  - their text is handled as untrusted data;
+  - triage always waits for your approval before anything is built;
+  - `factory issues` marks them `(untrusted)`.
+- **Issues the factory created** with `factory new` are trusted, whoever the gh login is.
+  - They were written from your own idea and approved by you (or by the gate you configured).
+  - The factory records this locally when it creates them, so a later `factory sync` never clears it and nobody on GitHub can set it.
+  - Comments on them by others are still judged by their own author.
 
-**Status labels (optional).** With `github.status_labels: true`, the factory mirrors run status onto the issue (`factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human`, `factory:unsafe`). They are display-only and never read as input. Run `factory init` again after enabling them to create the labels.
+**Status labels (optional).** With `github.status_labels: true`, the factory mirrors run status onto the issue (`factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human`, `factory:unsafe`).
+
+- They are display-only and never read as input.
+- Run `factory init` again after enabling them to create the labels.
 
 ## Configuration
 
@@ -179,15 +479,17 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 
 | Key | Purpose |
 |---|---|
+| `project` | `name` and `default_branch` (default `main`), the branch the factory builds from and reads its config from |
 | `checks` | Commands that must all pass before reviews start |
 | `app` | How to start the app for screenshots and videos: `start` (a shell command run in the worktree; unset means no capture), `url` (must contain `{port}`, which is filled in; default `http://localhost:{port}`), `port_env` (the variable that carries the port, default `PORT`), `ready_timeout_sec` (how long `url` may take to answer, default 180), `narrate` (`auto`, `off` or a path to narrate.mjs, see [Narrated walkthrough](#narrated-walkthrough)) and `env` (names of variables to pass from your environment to the app, which otherwise gets only a minimal one; tokens are never passed) |
-| `gates` | `always` / `auto` / `human` per gate |
+| `gates` | `always` / `auto` / `human` per gate (see [Pipeline](#pipeline) for the defaults) |
 | `hard_rules` | Paths and triggers that always escalate to a human |
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
 | `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH |
+| `concurrency` | `max_runs`: how many runs `factory run` drives at once (default 2) |
 | `trust` | Whose issues and comments count as the spec |
-| `github` | Optional status labels, sync interval, daily start limit |
+| `github` | Optional status labels (`status_labels`, `label_prefix`). `poll_interval_sec` and `max_starts_per_day` are accepted but not used yet |
 
 ## Development
 
@@ -199,7 +501,7 @@ pnpm build       # tsc -b
 pnpm factory init   # run the CLI from source
 ```
 
-The capture tests that drive a real browser run only where Playwright's Chromium is installed (`pnpm exec playwright install chromium`) and are skipped otherwise. Set `FACTORY_REQUIRE_BROWSER=1` (for example in CI) to make a missing browser fail the tests instead.
+The capture tests that drive a real browser run only where Playwright's Chromium is installed (`pnpm exec playwright install chromium`). They are skipped otherwise. Set `FACTORY_REQUIRE_BROWSER=1` (for example in CI) to make a missing browser fail the tests instead.
 
 Layout:
 
