@@ -71,7 +71,7 @@ describe("PipelineDriver", () => {
         expect(edits.at(-1)!.body).toContain(
           "**Refuted by the verifier**\n- code major: it says fixed (feature.txt:1)\n  Refuted: the check accepts exactly that",
         );
-        expect(approveTarget(store.getRun(run.id)!)).toBe("capture");
+        expect(approveTarget(store.getRun(run.id)!, "build")).toBe("capture");
       });
 
       it("gives the verifier no shell and only verify.md to write", async () => {
@@ -150,7 +150,7 @@ describe("PipelineDriver", () => {
         const parked = store.getRun(run.id)!;
         expect(parked).toMatchObject({ state: "needs_human", parked_from: "review", waiting_gate: "review", review_rounds: 1 });
         // A human may approve it as is, and the PR lists what is still open.
-        expect(approveTarget(parked)).toBe("capture");
+        expect(approveTarget(parked, "build")).toBe("capture");
         expect(store.listEvents(run.id).at(-1)!.data).toMatchObject({ stalled: "reviews", rounds: [1, 2] });
         expect(edits.at(-1)!.body).toContain("**Confirmed by the verifier, not fixed**\n- major: it says fixed (feature.txt:1)");
       });

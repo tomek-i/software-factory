@@ -136,6 +136,41 @@ describe("ghPort", () => {
     expect(() => ghPort({ ...project, github_repo: null })).toThrow(/no GitHub repository/);
   });
 
+  it("finds the latest of its own comments that starts with a marker, by its REST id", () => {
+    const comment = (body: string, id: number, viewerDidAuthor = true) => ({ body, viewerDidAuthor, url: `https://github.com/o/r/issues/3#issuecomment-${id}` });
+    const { calls, run } = fakeGh(
+      JSON.stringify({
+        comments: [
+          comment("<!-- factory:refine -->\nold", 11),
+          comment("<!-- factory:refine -->\nnewer", 12),
+          comment("<!-- factory:refine -->\nsomeone else pasted the marker", 13, false),
+          comment("quoting <!-- factory:refine --> later on", 14),
+        ],
+      }),
+    );
+    expect(ghPort(project, run).findComment(3, "<!-- factory:refine -->")).toBe(12);
+    expect(calls[0]).toEqual(["issue", "view", "3", "-R", "o/r", "--json", "comments"]);
+    expect(ghPort(project, fakeGh(JSON.stringify({ comments: [] })).run).findComment(3, "<!-- factory:refine -->")).toBeUndefined();
+    expect(() => ghPort(project, fakeGh("nope").run).findComment(3, "x")).toThrow(/unexpected output/);
+    const noId = fakeGh(JSON.stringify({ comments: [{ body: "x", viewerDidAuthor: true, url: "https://github.com/o/r/issues/3" }] }));
+    expect(() => ghPort(project, noId.run).findComment(3, "x")).toThrow(/without its id/);
+  });
+
+  it("edits a comment through the API, sending the body from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(/^body=@(.+)$/.exec(args[5]!)![1]!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).editComment(12, "new text");
+    expect(calls[0]).toEqual(["api", "-X", "PATCH", "repos/o/r/issues/comments/12", "-F", expect.stringMatching(/^body=@/), "--silent"]);
+    expect(sent).toBe("new text");
+    expect(existsSync(calls[0]![5]!.slice("body=@".length))).toBe(false);
+    expect(() => ghPort(project, fakeGh("", 1).run).editComment(12, "x")).toThrow(/gh api -X failed: boom/);
+  });
+
   it("marks factory comments", () => {
     expect(factoryComment("run-1-a", "triage-reject", "  nope  ")).toBe("<!-- factory:run-1-a:triage-reject -->\nnope\n");
   });

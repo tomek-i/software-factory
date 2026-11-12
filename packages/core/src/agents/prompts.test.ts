@@ -17,6 +17,8 @@ describe("rolePrompt", () => {
     expect(rolePrompt("triage", () => undefined)).toContain("# Role: triage");
     expect(rolePrompt("verifier", () => undefined)).toContain("# Role: verifier");
     expect(rolePrompt("approver", () => undefined)).toContain("# Role: approver");
+    expect(rolePrompt("refine", () => undefined)).toContain("# Role: refine");
+    expect(rolePrompt("critic", () => undefined)).toContain("# Role: spec critic");
     expect(rolePrompt("learner", () => undefined)).toContain("# Role: learner");
     expect(rolePrompt("issue_writer", () => undefined)).toContain("# Role: issue writer");
     const read = (p: string) => (p === ".factory/prompts/builder.md" ? "custom builder" : undefined);
@@ -119,6 +121,19 @@ describe("permissionProfile", () => {
     expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch"]));
     expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
     expect(() => permissionProfile("learner", { runDirFromCwd: "x" })).toThrow(/learner profile needs its output file/);
+  });
+
+  it("gives refine and the spec critic the same: no shell, and only their own spec file to write", () => {
+    for (const [role, file] of [
+      ["refine", "refine.md"],
+      ["critic", "critic.md"],
+    ] as const) {
+      const outputFile = join(tempDir(), "spec-1", file);
+      const { permissions } = permissionProfile(role, { runDirFromCwd: ".factory/runs/run-1", outputFile });
+      expect(permissions.deny).toEqual(expect.arrayContaining(["Bash", "PowerShell", "WebFetch", "WebSearch"]));
+      expect(permissions.allow).toEqual(["Read", "Grep", "Glob", `Edit(${absoluteRule(outputFile)})`]);
+      expect(() => permissionProfile(role, { runDirFromCwd: "x" })).toThrow(new RegExp(`${role} profile needs its output file`));
+    }
   });
 
   it("writes absolute rules the way Claude Code matches them", () => {

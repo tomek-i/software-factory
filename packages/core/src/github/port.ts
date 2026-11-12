@@ -19,6 +19,14 @@ export interface PullRequestState {
 /** What the pipeline needs from GitHub. Faked in tests. */
 export interface GithubPort {
   commentOnIssue(issueNumber: number, body: string): void;
+  /**
+   * The id of the latest comment on the issue that starts with `marker` and was written by the
+   * account the factory runs as. Anyone can paste a marker into a comment of their own, so only the
+   * factory's own comments count.
+   */
+  findComment(issueNumber: number, marker: string): number | undefined;
+  /** Replace a comment's body. */
+  editComment(commentId: number, body: string): void;
   /** The open pull request whose head is this branch, if any. */
   findPullRequest(branch: string): number | undefined;
   /** Open pull requests whose head branch starts with `prefix`, e.g. `factory/lessons-`. */
@@ -103,6 +111,35 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     },
     commentOnIssue(issueNumber, body) {
       gh(["issue", "comment", String(issueNumber), "-R", repo, "--body", body]);
+    },
+    findComment(issueNumber, marker) {
+      const out = gh(["issue", "view", String(issueNumber), "-R", repo, "--json", "comments"]);
+      let comments: { body?: unknown; url?: unknown; viewerDidAuthor?: unknown }[];
+      try {
+        const parsed = JSON.parse(out) as { comments?: unknown };
+        if (!Array.isArray(parsed.comments)) throw new Error("no comments");
+        comments = parsed.comments as typeof comments;
+      } catch {
+        throw new GithubError(`gh issue view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      const mine = comments.filter((c) => c.viewerDidAuthor === true && typeof c.body === "string" && c.body.trimStart().startsWith(marker));
+      const url = mine.at(-1)?.url;
+      if (url === undefined) return undefined;
+      // gh only gives the GraphQL node id; the REST id the edit needs is in the comment's URL.
+      const id = typeof url === "string" ? /#issuecomment-(\d+)$/.exec(url)?.[1] : undefined;
+      if (!id) throw new GithubError(`gh issue view returned a comment without its id: ${String(url).slice(0, 200)}`);
+      return Number(id);
+    },
+    editComment(commentId, body) {
+      // From a file, like a PR description: a long comment can exceed the Windows command-line limit.
+      const dir = mkdtempSync(join(tmpdir(), "factory-comment-"));
+      try {
+        const file = join(dir, "body.md");
+        writeFileSync(file, body);
+        gh(["api", "-X", "PATCH", `repos/${repo}/issues/comments/${commentId}`, "-F", `body=@${file}`, "--silent"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     },
     findPullRequest(branch) {
       const out = gh(["pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number", "--limit", "1"]);

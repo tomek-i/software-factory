@@ -1,10 +1,11 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Store } from "@factory/core";
 import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
-import { runApprove, runReject, runStatus } from "./runs.js";
+import { runApprove, runReject, runResume, runStatus } from "./runs.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -70,6 +71,47 @@ describe("approve / reject / cancel", () => {
     await run();
     expect(runReject(dir, "#12", { message: "not now" })).toContain("Rejected");
     expect(runStatus(dir, { all: true }, { github })).toMatch(/rejected/);
+  });
+
+  it("approves an incomplete issue at triage into refine, and the critic gate into build", async () => {
+    const incomplete = TRIAGE.replace("READINESS: READY", "READINESS: INCOMPLETE");
+    const refined = { role: "refine", output: "STATUS: REFINED\n\n## Summary\n- spec\n\n## Acceptance criteria\n- [ ] feature.txt exists\n" };
+    const { run, queue, dir, deps, printed, fake } = setup([{ output: incomplete }, refined, BUILD, ...reviewsPass()], "triage: human\n  critic: human");
+    queue();
+    await run();
+
+    const waiting = await runApprove(dir, "12", { message: "go" }, deps);
+    expect(waiting).toMatch(/is waiting at the critic gate: waiting at critic gate: gate is set to human/);
+    expect(waiting).toMatch(/^See it with: `factory show run-12-\w+ critic`\.$/m);
+    expect(printed.some((l) => /^Approved the triage gate of run-12-\w+; it moves to refine\.$/.test(l))).toBe(true);
+
+    expect(await runApprove(dir, "12", { message: "spec is fine" }, deps)).toMatch(/waiting at the review gate/);
+    expect(printed.some((l) => /^Approved the critic gate of run-12-\w+; it moves to build\.$/.test(l))).toBe(true);
+    expect(fake.calls().map((c) => c.role).slice(0, 3)).toEqual(["triage", "refine", "builder"]);
+    expect(fake.calls().find((c) => c.role === "builder")!.stdin).toContain("feature.txt exists");
+  });
+
+  it("routes an approval by the default branch's config, not a local edit of it", async () => {
+    const { run, queue, dir, root } = setup([{ output: TRIAGE }], "triage: human\n  critic: auto");
+    queue();
+    await run();
+    // A local copy that would skip the critic, never committed: the approval must not follow it.
+    const file = join(root, ".factory", "config.yaml");
+    writeFileSync(file, readFileSync(file, "utf8").replace("critic: auto", "critic: always"));
+
+    expect(await runApprove(dir, "12", { message: "go", run: false })).toContain("it moves to critic.");
+  });
+
+  it("resumes a run at the critic gate back to refine", async () => {
+    const incomplete = TRIAGE.replace("READINESS: READY", "READINESS: INCOMPLETE");
+    const refined = { role: "refine", output: "STATUS: REFINED\n\n## Summary\n- spec\n" };
+    const { run, queue, dir, deps, fake } = setup([{ output: incomplete }, refined, refined], "critic: human");
+    queue();
+    await run();
+
+    expect(await runResume(dir, "12", { to: "refine", message: "name the file" }, deps)).toMatch(/is waiting at the critic gate/);
+    expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "refine"]);
+    expect(fake.calls()[2]!.stdin).toContain("name the file");
   });
 
   it("explains unknown run references", async () => {

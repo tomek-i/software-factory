@@ -31,7 +31,7 @@ describe("PipelineDriver learn stage", () => {
     const run = driver.startRun(12);
     await driver.drive(run.id);
     const parked = store.getRun(run.id)!;
-    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, approveTarget(parked)!, {
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, approveTarget(parked, "build")!, {
       comment: "ship it",
       commitSha: waitingCommit(store.listEvents(run.id)),
     });
@@ -86,7 +86,7 @@ describe("PipelineDriver learn stage", () => {
     await driver.drive(run.id);
     machine.resume(run.id, "build", { comment: "use a named constant" });
     await driver.drive(run.id);
-    machine.resume(run.id, approveTarget(store.getRun(run.id)!)!, { comment: "fine now" });
+    machine.resume(run.id, approveTarget(store.getRun(run.id)!, "build")!, { comment: "fine now" });
 
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
     const learner = fake.calls().find((c) => c.role === "learner")!;
@@ -123,7 +123,7 @@ describe("PipelineDriver learn stage", () => {
     const run = driver.startRun(12);
     const machine = new RunMachine(store, factoryConfigSchema.parse({ version: 1 }));
     await driver.drive(run.id); // waits at the review gate
-    machine.resume(run.id, approveTarget(store.getRun(run.id)!)!, { comment: "infra change is intended" });
+    machine.resume(run.id, approveTarget(store.getRun(run.id)!, "build")!, { comment: "infra change is intended" });
     await driver.drive(run.id); // waits at the merge gate
     machine.resume(run.id, "merge", { comment: "go", commitSha: waitingCommit(store.listEvents(run.id)) });
 

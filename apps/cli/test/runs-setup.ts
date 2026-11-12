@@ -31,6 +31,8 @@ export const readyPrs: { head: string; base: string; title: string; body: string
 export const prEdits: { number: number; body: string }[] = [];
 export const github: GithubPort = {
   commentOnIssue: () => undefined,
+  findComment: () => undefined,
+  editComment: () => undefined,
   findPullRequest: () => undefined,
   createDraftPullRequest: () => 7,
   // Numbered 8, 9, ...; open unless prStates says otherwise.
@@ -56,7 +58,9 @@ export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "
   merged.length = 0;
   readyPrs.length = 0;
   prEdits.length = 0;
-  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n  review: human\n  ${gates}\n${extraConfig}`;
+  // Unless `gates` sets it, the spec critic passes straight through, so a READY issue goes from triage to build.
+  const critic = /\bcritic:/.test(gates) ? "" : "  critic: always\n";
+  const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n${critic}  review: human\n  ${gates}\n${extraConfig}`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n.worktrees/\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
   const store = new Store(join(root, ".factory", "factory.db"));

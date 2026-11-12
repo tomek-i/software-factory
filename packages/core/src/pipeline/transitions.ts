@@ -17,10 +17,11 @@ import { findingsFingerprint } from "./fingerprint.js";
  */
 const FORWARD: Partial<Record<RunState, readonly RunState[]>> = {
   intake: ["triage"],
-  // triage -> build skips refine and the spec critic, which do not exist yet (phase 3).
+  // triage -> build skips the spec critic when its gate is set to always.
   triage: ["refine", "critic", "build", "rejected", "needs_info"],
   refine: ["critic", "needs_info"],
-  critic: ["refine", "build", "rejected"],
+  // needs_info: the critic has questions only the issue's author can answer.
+  critic: ["refine", "build", "rejected", "needs_info"],
   build: ["gate"],
   gate: ["review", "build"],
   review: ["build", "capture"],
@@ -63,6 +64,8 @@ export interface Evidence {
   gateFingerprint?(): string;
   /** The run's pull request as GitHub sees it now. */
   pullRequest?(): PullRequestState;
+  /** The latest spec round (spec-N/) that has the file, 0 when none. Without it the critic's round is not checked. */
+  specRound?(file: "refine.md" | "critic.md"): number;
   git: {
     head(): string;
     isClean(): boolean;
@@ -116,10 +119,23 @@ function reviewsClear(evidence: Evidence): string[] {
 /** Evidence each automatic edge must show. Returns problems; empty means allowed. */
 const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
   "triage->refine": ({ evidence }) => triageApproved(evidence),
-  "triage->critic": ({ evidence }) => triageApproved(evidence),
-  "triage->build": ({ evidence }) => triageApproved(evidence),
-  "critic->build": ({ evidence }) =>
-    evidence.verdict("critic").header.VERDICT === "ACCEPT" ? [] : ["spec critic did not ACCEPT"],
+  // An INCOMPLETE issue is refined before anyone judges or builds it.
+  "triage->critic": ({ evidence }) => [...triageApproved(evidence), ...triageReady(evidence)],
+  // Skipping the critic is only for a gate set to always.
+  "triage->build": ({ config, evidence }) => [
+    ...triageApproved(evidence),
+    ...triageReady(evidence),
+    ...(config.gates.critic === "always" ? [] : [`the spec critic gate is ${config.gates.critic}, not always`]),
+  ],
+  // With the gate set to always no critic runs, so there is no verdict to show.
+  "critic->build": ({ config, evidence }) => {
+    if (config.gates.critic === "always") return [];
+    if (evidence.verdict("critic").header.VERDICT !== "ACCEPT") return ["spec critic did not ACCEPT"];
+    // An ACCEPT of an earlier round says nothing about a spec refine wrote since.
+    const judged = evidence.specRound?.("critic.md") ?? 0;
+    const refined = evidence.specRound?.("refine.md") ?? 0;
+    return judged >= refined ? [] : [`the spec critic accepted spec round ${judged}, but refine has written round ${refined} since`];
+  },
   "critic->refine": ({ run, config, evidence }) => [
     ...(evidence.verdict("critic").header.VERDICT === "REVISE" ? [] : ["spec critic did not ask to REVISE"]),
     ...capProblem(run.critic_rounds, config.loops.max_critic_rounds, "spec critic round"),
@@ -257,12 +273,18 @@ function triageApproved(evidence: Evidence): string[] {
   return evidence.verdict("triage").header.DECISION === "APPROVE" ? [] : ["triage did not APPROVE"];
 }
 
+function triageReady(evidence: Evidence): string[] {
+  return evidence.verdict("triage").header.READINESS === "READY" ? [] : ["triage rated the issue INCOMPLETE"];
+}
+
 /** Counters bumped when a loop goes round again. Always applied after any caller patch. */
 function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
   if (to === "gate") return { round: run.round + 1 };
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
   if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
+  // The author answered: triage reads a changed issue, so its spec gets a fresh round budget.
+  if (from === "needs_info" && to === "triage") return { critic_rounds: 0 };
   return {};
 }
 

@@ -50,10 +50,21 @@ if (!ok) {
 process.exit(ok ? 0 : 1);
 `;
 
+/**
+ * Most driver tests are about what happens after the spec is settled, so their configs pass the spec
+ * critic gate straight through (`critic: always`) unless they set it themselves; with that, a READY
+ * issue goes from triage to build as it did before the critic existed.
+ */
+export function passCritic(config: string): string {
+  if (/^[ \t]+critic:/m.test(config)) return config;
+  return /^gates:[ \t]*$/m.test(config) ? config.replace(/^gates:[ \t]*$/m, "gates:\n  critic: always") : `${config.trimEnd()}\ngates:\n  critic: always\n`;
+}
+
 export function setup(steps: FakeStep[], options: { author?: string; config?: string } = {}) {
-  const config =
+  const config = passCritic(
     options.config ??
-    "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n";
+      "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n",
+  );
   const { root } = repoWithRemote({
     "README.md": "# demo\n",
     "check.js": CHECK_JS,
@@ -75,7 +86,8 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
   });
   store.setQueued(project.id, 12, true);
 
-  const comments: { issue: number; body: string }[] = [];
+  // Every comment the factory posted, with its current body; `id` is what findComment/editComment use.
+  const comments: { issue: number; body: string; id: number; edits: number }[] = [];
   const prs: { head: string; base: string; title: string; body: string }[] = [];
   const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
   const closedReady = new Set<number>();
@@ -88,7 +100,14 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
   let views = 0;
   const merges: { number: number; head: string }[] = [];
   const github: GithubPort = {
-    commentOnIssue: (issue, body) => comments.push({ issue, body }),
+    commentOnIssue: (issue, body) => comments.push({ issue, body, id: 100 + comments.length, edits: 0 }),
+    findComment: (issue, marker) => comments.findLast((c) => c.issue === issue && c.body.startsWith(marker))?.id,
+    editComment: (id, body) => {
+      const comment = comments.find((c) => c.id === id);
+      if (!comment) throw new Error(`no comment ${id}`);
+      comment.body = body;
+      comment.edits++;
+    },
     findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
     createDraftPullRequest: (pr) => {
       prs.push(pr);

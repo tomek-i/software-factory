@@ -208,11 +208,38 @@ describe("factory show <run> <file>", () => {
     const { dir } = setup({ "triage.md": TRIAGE });
     expect(() => runShow(dir, "16", "checks")).toThrow(/No round has a checks\.md yet[\s\S]*triage\.md/);
   });
+
+  it("summarises the latest spec round's refine.md and critic.md, and shows each by its short name", () => {
+    const refine = (n: number) => `STATUS: REFINED\n\n## Summary\n- spec ${n}\n\n## Acceptance criteria\n- [ ] criterion ${n}\n`;
+    const { dir } = setup({
+      "triage.md": TRIAGE,
+      "spec-1/refine.md": refine(1),
+      "spec-1/critic.md": "VERDICT: REVISE\n\n## Summary\n- not yet\n\n## Problems\n- criterion 1 is vague\n",
+      "spec-2/refine.md": refine(2),
+      "spec-2/critic.md": "VERDICT: ACCEPT\n\n## Summary\n- holds now\n",
+      "spec-10/refine.md": refine(10),
+    });
+
+    const text = runShow(dir, "16");
+    expect(text).toContain("spec-10/refine.md (STATUS: REFINED)\n  - spec 10");
+    expect(text).toContain("spec-2/critic.md (VERDICT: ACCEPT)\n  - holds now");
+    expect(text).not.toContain("not yet");
+    expect(text.indexOf("triage.md (")).toBeLessThan(text.indexOf("spec-10/refine.md ("));
+    expect(runShow(dir, "16", "refine")).toContain("criterion 10");
+    expect(runShow(dir, "16", "critic")).toContain("VERDICT: ACCEPT");
+    expect(runShow(dir, "16", "spec-1/critic.md")).toContain("criterion 1 is vague");
+  });
+
+  it("explains when no spec round has a file yet", () => {
+    const { dir } = setup({ "triage.md": TRIAGE });
+    expect(() => runShow(dir, "16", "critic")).toThrow(/No spec round has a critic\.md yet[\s\S]*triage\.md/);
+  });
 });
 
 describe("showHint", () => {
   it("names the verdict file each gate is about", () => {
     expect(showHint({ id: "run-1-a", waiting_gate: "triage" })).toBe("See it with: `factory show run-1-a triage`.");
+    expect(showHint({ id: "run-1-a", waiting_gate: "critic" })).toBe("See it with: `factory show run-1-a critic`.");
     // Several lenses write reviews, so the review gate points at the overview, which lists them.
     expect(showHint({ id: "run-1-a", waiting_gate: "review" })).toBe("See it with: `factory show run-1-a`.");
     expect(showHint({ id: "run-1-a", waiting_gate: "plan" })).toBe("See it with: `factory show run-1-a`.");

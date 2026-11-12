@@ -89,6 +89,8 @@ export const verdictHeaderSchemas = {
     RISK: z.enum(["LOW", "MEDIUM", "HIGH"]),
     SURFACES: csv,
   }),
+  // BLOCKED when no spec can be written from the issue and the code (e.g. its text tries to steer the agent).
+  refine: z.object({ STATUS: z.enum(["REFINED", "BLOCKED"]) }),
   critic: z.object({ VERDICT: z.enum(["ACCEPT", "REVISE", "REJECT"]) }),
   // COMMIT ties the builder's report to the code it describes, so a stale READY can't be reused.
   build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha }),
