@@ -1,6 +1,8 @@
 # Contributor License Agreement
 
-Thank you for contributing to Software Factory (the "Project"), owned by tomek-i (the "Owner").
+Version 1.0, 2026-11-13. A later version applies only to contributions made after you sign it.
+
+Thank you for contributing to Software Factory (the "Project"), owned by the holder of the GitHub account tomek-i, together with their successors and assigns (the "Owner").
 
 The Project is offered under the [PolyForm Noncommercial License 1.0.0](LICENSE), and the Owner also sells commercial licenses. To do both with code that includes your contribution, the Owner needs the rights below. By signing (commenting the sentence the CLA bot asks for on your pull request), you agree to these terms for every contribution you submit to the Project, now or later.
 
