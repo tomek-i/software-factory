@@ -265,6 +265,14 @@ describe("RunMachine.transition", () => {
     expect(() => move("refine", revise)).toThrow(/critic round cap/);
   });
 
+  it("gives the spec a fresh critic round budget once the author answered", () => {
+    const { at, move, store, run } = setup({ loops: { max_critic_rounds: 2 } });
+    at("critic", { critic_rounds: 1 });
+    expect(move("needs_info").critic_rounds).toBe(1);
+    expect(move("triage").critic_rounds).toBe(0);
+    expect(store.getRun(run.id)!.build_iterations).toBe(0);
+  });
+
   it("starts a new round each time the run enters the gate, and never resets it", () => {
     const { store, machine, run, move } = setup({ loops: { max_build_iterations: 5 } });
     const failed = fakeEvidence({ files: { checks: `GATE: FAIL

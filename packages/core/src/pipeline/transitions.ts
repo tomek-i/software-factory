@@ -283,6 +283,8 @@ function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
   if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
+  // The author answered: triage reads a changed issue, so its spec gets a fresh round budget.
+  if (from === "needs_info" && to === "triage") return { critic_rounds: 0 };
   return {};
 }
 
