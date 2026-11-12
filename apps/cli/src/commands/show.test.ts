@@ -3,7 +3,9 @@ import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { findRepoRoot, runDirOf, Store } from "@factory/core";
 import { GIT_TEST_TIMEOUT, repoWithRemote } from "../../../../packages/core/test/helpers.js";
+import { ESC, strip } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
+import { createStyle, styleFor } from "../style.js";
 import { showHint } from "./runs.js";
 import { runShow } from "./show.js";
 
@@ -252,6 +254,77 @@ describe("factory show <run> <file>", () => {
     expect(() => runShow(dir, "16", "critic")).toThrow(/No spec round has a critic\.md yet[\s\S]*triage\.md/);
   });
 });
+
+describe("colour", () => {
+  const colour = createStyle(true);
+
+  it("colours the overview by meaning, and stripping the codes gives exactly the plain text", () => {
+    const { dir, runId, runDir } = setup(
+      {
+        "triage.md": TRIAGE,
+        "spec-1/critic.md": "VERDICT: REVISE\n\n## Summary\n- not yet\n",
+        "build.md": BUILD,
+        "round-1/checks.md": checks("PASS", "one"),
+        "round-1/review-code.md":
+          'VERDICT: CHANGES\n\n## Summary\n- one real bug\n\n## Findings\n```json\n[{ "id": "x-1", "severity": "major", "file": "src/a.ts", "line": 3, "claim": "breaks", "evidence": "a()" }]\n```\n',
+        "round-1/review-security.md": "VERDICT: MAYBE\n",
+        "round-1/capture-report.md": "# Capture\n\n## Summary\n- one page\n",
+        "learn.md": 'LESSONS: 1\n\n## Summary\n- lint\n\n## Lessons\n```json\n[{ "observation": "lint failed", "evidence": "round-1/checks.md", "rule": "Run lint first." }]\n```\n',
+      },
+      { branch: "factory/16-show", pr_number: 7, waiting_gate: "review" },
+    );
+
+    const text = runShow(dir, "16", undefined, { style: colour });
+
+    expect(text).toContain(`Run ${colour.detail(runId)}`);
+    expect(text).toContain(`state:   ${colour.state("intake")}`);
+    expect(text).toContain(`waiting: ${colour.attention("review gate")}`);
+    expect(text).toContain(`branch:  ${colour.detail("factory/16-show")}`);
+    expect(text).toContain(`PR:      ${colour.detail("#7")}`);
+    expect(text).toContain(`${colour.title("triage.md")} (DECISION: ${colour.verdict("APPROVE")})`);
+    expect(text).toContain(`${colour.title("spec-1/critic.md")} (VERDICT: ${colour.verdict("REVISE")})`);
+    expect(text).toContain(`${colour.title("round-1/review-code.md")} (VERDICT: ${colour.verdict("CHANGES")})`);
+    expect(text).toMatch(new RegExp(`${escape(colour.title("round-1/review-security.md"))} \\(could not be parsed: `));
+    expect(text).toContain(`\n${colour.title("round-1/capture-report.md")}\n`);
+    // An unknown value, such as the learner's count, stays plain.
+    expect(text).toContain(`${colour.title("learn.md")} (LESSONS: 1)`);
+    expect(text).toContain(`Files in ${colour.detail(runDir)}:`);
+    expect(text).toContain(`  ${colour.detail("build.md")}\n`);
+    // Green, red and yellow verdict values.
+    expect(colour.verdict("APPROVE")).toContain(`${ESC}32m`);
+    expect(colour.verdict("CHANGES")).toContain(`${ESC}31m`);
+    expect(colour.verdict("REVISE")).toContain(`${ESC}33m`);
+
+    expect(strip(text)).toBe(runShow(dir, "16"));
+  });
+
+  it("dims the run folder when it does not exist yet", () => {
+    const { dir, runDir } = setup({});
+    const text = runShow(dir, "16", undefined, { style: colour });
+    expect(text).toContain(`No files yet: ${colour.detail(runDir)} does not exist.`);
+    expect(strip(text)).toBe(runShow(dir, "16"));
+  });
+
+  it("never colours a file, even with colour forced on", () => {
+    const { dir } = setup({ "triage.md": TRIAGE, "round-1/checks.md": checks("FAIL", "one") });
+    expect(runShow(dir, "16", "triage", { style: colour })).toBe(TRIAGE);
+    expect(runShow(dir, "16", "round-1/checks.md", { style: colour })).toBe(checks("FAIL", "one"));
+  });
+
+  it("gives plain output with NO_COLOR, TERM=dumb or a pipe", () => {
+    const { dir } = setup({ "triage.md": TRIAGE, "build.md": BUILD }, { waiting_gate: "triage" });
+    for (const style of [styleFor({ isTTY: true }, { NO_COLOR: "1" }), styleFor({ isTTY: true }, { TERM: "dumb" }), styleFor({ isTTY: false }, {})]) {
+      const text = runShow(dir, "16", undefined, { style });
+      expect(text).not.toContain(ESC);
+      expect(text).toBe(runShow(dir, "16"));
+    }
+  });
+});
+
+/** `text` as a literal in a regular expression. */
+function escape(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 describe("showHint", () => {
   it("names the verdict file each gate is about", () => {

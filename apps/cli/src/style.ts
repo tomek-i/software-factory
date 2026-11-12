@@ -22,6 +22,10 @@ export interface Style {
   transition(text: string): string;
   /** What to do next, such as the approve/reject commands for a waiting run. */
   hint(text: string): string;
+  /** A verdict header value such as `APPROVE` or `FAIL`, coloured by meaning. Unknown values stay plain. */
+  verdict(value: string, text?: string): string;
+  /** The title of a section, such as the verdict file it summarises. */
+  title(text: string): string;
 }
 
 type Format = Parameters<typeof styleText>[0];
@@ -61,6 +65,29 @@ export const AGENT_FORMAT: Record<AgentRunStatus, Format> = {
   cancelled: QUIET,
 };
 
+/**
+ * Verdict header values (from `@factory/shared`'s verdict schemas) by meaning: the stage went
+ * through, it stopped or found blocking problems, or it waits on a person or another round.
+ */
+export const VERDICT_FORMAT: Readonly<Record<string, Format>> = {
+  APPROVE: GOOD,
+  REFINED: GOOD,
+  ACCEPT: GOOD,
+  READY: GOOD,
+  PASS: GOOD,
+  NONE_CONFIRMED: GOOD,
+  PROCEED: GOOD,
+  REJECT: BAD,
+  BLOCKED: BAD,
+  FAIL: BAD,
+  CHANGES: BAD,
+  CONFIRMED: BAD,
+  NEEDS_INFO: WAITING,
+  INCOMPLETE: WAITING,
+  REVISE: WAITING,
+  ESCALATE: WAITING,
+};
+
 export function createStyle(enabled: boolean): Style {
   // Empty text stays empty, so padding and trimming around a styled cell work as on plain text.
   // validateStream is off because colourEnabled already decided; that also makes Node versions
@@ -75,6 +102,8 @@ export function createStyle(enabled: boolean): Style {
     attention: (text) => paint(WAITING, text),
     transition: (text) => paint("bold", text),
     hint: (text) => paint("bold", text),
+    verdict: (value, text = value) => paint(Object.hasOwn(VERDICT_FORMAT, value) ? VERDICT_FORMAT[value] : undefined, text),
+    title: (text) => paint("bold", text),
   };
 }
 

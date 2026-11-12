@@ -1,9 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
-import { refutedFindings, runDirOf, type CommandRunner, type Run } from "@factory/core";
+import { refutedFindings, runDirOf, type Run } from "@factory/core";
 import { isBlocking, parseVerdict, VerdictParseError, type VerdictKind } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
-import { findRun } from "./runs.js";
+import { plain, type Style } from "../style.js";
+import { findRun, type RunDeps } from "./runs.js";
 
 /** Verdict files the overview summarises, with the header that says the most about each. */
 const VERDICTS: { kind: VerdictKind; key: string; path: (files: string[]) => string | undefined }[] = [
@@ -44,8 +45,8 @@ function latestChecks(files: string[]): string | undefined {
   return latestRoundFile(files, "round", "checks.md");
 }
 
-function fileList(files: string[]): string {
-  return files.length ? files.map((f) => `  ${f}`).join("\n") : "  (none)";
+function fileList(files: string[], style: Style = plain): string {
+  return files.length ? files.map((f) => `  ${style.detail(f)}`).join("\n") : "  (none)";
 }
 
 /**
@@ -87,19 +88,23 @@ function resolveInRunDir(runDir: string, file: string, files: string[]): string 
   return normalised;
 }
 
-function overview(run: Run, issueTitle: string | undefined, runDir: string, files: string[]): string {
-  const lines = [`Run ${run.id}`, `  state:   ${run.state}`];
-  if (run.waiting_gate) lines.push(`  waiting: ${run.waiting_gate} gate`);
+function overview(run: Run, issueTitle: string | undefined, runDir: string, files: string[], style: Style): string {
+  const lines = [`Run ${style.detail(run.id)}`, `  state:   ${style.state(run.state)}`];
+  if (run.waiting_gate) lines.push(`  waiting: ${style.attention(`${run.waiting_gate} gate`)}`);
   lines.push(
     `  issue:   ${run.issue_number ? `#${run.issue_number} ${issueTitle ?? run.title}` : `- ${run.title}`}`,
-    `  branch:  ${run.branch ?? "-"}`,
-    `  PR:      ${run.pr_number ? `#${run.pr_number}` : "-"}`,
+    `  branch:  ${run.branch ? style.detail(run.branch) : "-"}`,
+    `  PR:      ${run.pr_number ? style.detail(`#${run.pr_number}`) : "-"}`,
   );
 
   if (!existsSync(runDir)) {
-    lines.push("", `No files yet: ${runDir} does not exist.`);
+    lines.push("", `No files yet: ${style.detail(runDir)} does not exist.`);
     return lines.join("\n");
   }
+
+  /** `path (KEY: VALUE)`: the path is the section's title, and the value is coloured by meaning. */
+  const heading = (path: string, key: string, value: string) => `${style.title(path)} (${key}: ${style.verdict(value)})`;
+  const unparsed = (path: string, err: VerdictParseError) => `${style.title(path)} (could not be parsed: ${err.problems[0] ?? err.message})`;
 
   /** A verdict file's header value and summary, when the file exists. */
   const summarise = (path: string | undefined, kind: VerdictKind, key: string) => {
@@ -107,11 +112,11 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
     lines.push("");
     try {
       const verdict = parseVerdict(kind, readFileSync(join(runDir, path), "utf8"));
-      lines.push(`${path} (${key}: ${String((verdict.header as Record<string, unknown>)[key])})`);
+      lines.push(heading(path, key, String((verdict.header as Record<string, unknown>)[key])));
       lines.push(...(verdict.summary.length ? verdict.summary.map((s) => `  - ${s}`) : ["  (no summary)"]));
     } catch (err) {
       if (!(err instanceof VerdictParseError)) throw err;
-      lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
+      lines.push(unparsed(path, err));
     }
   };
   const checks = latestChecks(files);
@@ -126,7 +131,7 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
     try {
       const kind = path.endsWith("/verify.md") ? "verify" : "review";
       const verdict = parseVerdict(kind, readFileSync(join(runDir, path), "utf8"));
-      lines.push(`${path} (VERDICT: ${verdict.header.VERDICT})`);
+      lines.push(heading(path, "VERDICT", verdict.header.VERDICT));
       lines.push(...(verdict.summary.length ? verdict.summary.map((s) => `  - ${s}`) : ["  (no summary)"]));
       for (const f of verdict.findings.filter(isBlocking)) {
         lines.push(`  ${f.severity}: ${f.claim}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`);
@@ -135,7 +140,7 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
       if (refuted) lines.push(`  refuted: ${refuted}`);
     } catch (err) {
       if (!(err instanceof VerdictParseError)) throw err;
-      lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
+      lines.push(unparsed(path, err));
     }
   }
 
@@ -145,7 +150,7 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
     const text = readFileSync(join(runDir, capture), "utf8");
     const summary = /^## Summary\s*$([\s\S]*?)(?=^#{1,3}\s|(?![\s\S]))/m.exec(text)?.[1] ?? "";
     const items = summary.split(/\r?\n/).flatMap((l) => /^[-*]\s+(.+)$/.exec(l.trim())?.[1] ?? []);
-    lines.push("", capture, ...(items.length ? items.map((s) => `  - ${s}`) : ["  (no summary)"]));
+    lines.push("", style.title(capture), ...(items.length ? items.map((s) => `  - ${s}`) : ["  (no summary)"]));
   }
 
   // The merge stage: the quality gate again after merging the default branch in, and the approver's call.
@@ -154,12 +159,16 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
   // After the merge: what the learner made of the run (its lessons wait in `factory lessons`).
   summarise("learn.md", "learn", "LESSONS");
 
-  lines.push("", `Files in ${runDir}:`, fileList(files), "", `Show one with \`factory show ${run.id} <file>\`, e.g. \`factory show ${run.id} triage\`.`);
+  lines.push("", `Files in ${style.detail(runDir)}:`, fileList(files, style), "", `Show one with \`factory show ${run.id} <file>\`, e.g. \`factory show ${run.id} triage\`.`);
   return lines.join("\n");
 }
 
-/** `factory show <run> [file]`: a run's overview, or one file from its run folder. Read-only. */
-export function runShow(cwd: string, ref: string, file?: string, run?: CommandRunner): string {
+/**
+ * `factory show <run> [file]`: a run's overview, or one file from its run folder. Read-only. Only
+ * the overview is styled; a file comes back exactly as it is on disk.
+ */
+export function runShow(cwd: string, ref: string, file?: string, deps: Pick<RunDeps, "run" | "style"> = {}): string {
+  const style = deps.style ?? plain;
   return withProject(
     cwd,
     ({ store, project }) => {
@@ -168,7 +177,7 @@ export function runShow(cwd: string, ref: string, file?: string, run?: CommandRu
       const files = listFiles(runDir);
       if (file === undefined) {
         const issue = target.issue_number ? store.getIssue(project.id, target.issue_number) : undefined;
-        return overview(target, issue?.title, runDir, files);
+        return overview(target, issue?.title, runDir, files, style);
       }
 
       const path = resolveInRunDir(runDir, file, files);
@@ -176,8 +185,9 @@ export function runShow(cwd: string, ref: string, file?: string, run?: CommandRu
       if (!existsSync(full) || !statSync(full).isFile()) {
         throw new CliError(`No file "${path}" in the run folder of ${target.id}. Files there:\n${fileList(files)}`);
       }
+      // The raw file, never styled: it may be piped or copied.
       return readFileSync(full, "utf8");
     },
-    run,
+    deps.run,
   );
 }

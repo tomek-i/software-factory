@@ -1,7 +1,7 @@
 import { styleText } from "node:util";
 import { describe, expect, it } from "vitest";
 import { RUN_STATES } from "@factory/shared";
-import { AGENT_FORMAT, colourEnabled, createStyle, plain, STATE_FORMAT, styleFor } from "./style.js";
+import { AGENT_FORMAT, colourEnabled, createStyle, plain, STATE_FORMAT, styleFor, VERDICT_FORMAT } from "./style.js";
 
 const AGENT_STATUSES = ["running", "ok", "error", "rate_limited", "cancelled"] as const;
 const paint = (format: Parameters<typeof styleText>[0], text: string) => styleText(format, text, { validateStream: false });
@@ -25,6 +25,14 @@ describe("colour scheme", () => {
     expect(AGENT_FORMAT).toEqual({ running: "cyan", ok: "green", error: "red", rate_limited: "yellow", cancelled: "dim" });
   });
 
+  it("maps every verdict header value by meaning", () => {
+    const by = (format: string) => Object.keys(VERDICT_FORMAT).filter((v) => VERDICT_FORMAT[v] === format).sort();
+    expect(by("green")).toEqual(["ACCEPT", "APPROVE", "NONE_CONFIRMED", "PASS", "PROCEED", "READY", "REFINED"]);
+    expect(by("red")).toEqual(["BLOCKED", "CHANGES", "CONFIRMED", "FAIL", "REJECT"]);
+    expect(by("yellow")).toEqual(["ESCALATE", "INCOMPLETE", "NEEDS_INFO", "REVISE"]);
+    expect(Object.keys(VERDICT_FORMAT)).toHaveLength(16);
+  });
+
   it("styles text by what it is when colour is on", () => {
     const style = createStyle(true);
     expect(style.state("done")).toBe(paint("green", "done"));
@@ -39,6 +47,13 @@ describe("colour scheme", () => {
     expect(style.attention("review")).toBe(paint("yellow", "review"));
     expect(style.transition("-> build: go")).toBe(paint("bold", "-> build: go"));
     expect(style.hint("Approve with ...")).toBe(paint("bold", "Approve with ..."));
+    expect(style.verdict("PASS")).toBe(paint("green", "PASS"));
+    expect(style.verdict("FAIL")).toBe(paint("red", "FAIL"));
+    expect(style.verdict("NEEDS_INFO")).toBe(paint("yellow", "NEEDS_INFO"));
+    expect(style.verdict("READY", "ready")).toBe(paint("green", "ready"));
+    expect(style.verdict("1")).toBe("1");
+    expect(style.verdict("toString")).toBe("toString");
+    expect(style.title("triage.md")).toBe(paint("bold", "triage.md"));
     // Styling only wraps the text: without the codes it is unchanged.
     expect(style.transition(`-> ${style.state("build")}: go`).replace(ANSI, "")).toBe("-> build: go");
     // Empty text stays empty, so padding and trimming still work.
@@ -54,6 +69,8 @@ describe("colour scheme", () => {
       expect(style.attention("(untrusted)")).toBe("(untrusted)");
       expect(style.transition("-> build: go")).toBe("-> build: go");
       expect(style.hint("Approve")).toBe("Approve");
+      for (const value of Object.keys(VERDICT_FORMAT)) expect(style.verdict(value)).toBe(value);
+      expect(style.title("triage.md")).toBe("triage.md");
     }
   });
 });
