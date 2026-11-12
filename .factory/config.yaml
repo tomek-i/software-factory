@@ -30,11 +30,11 @@ app:
 # Gate modes: always (pass through) | auto (agent decides or escalates) | human (always stop for you)
 gates:
   issue_writer: human
-  triage: human
-  critic: human
-  plan: human
-  review: human
-  pr: human
+  triage: auto
+  critic: auto
+  plan: always
+  review: auto
+  pr: always
   merge: human
 
 # Changes matching hard rules always come to you, whatever the gate mode.
