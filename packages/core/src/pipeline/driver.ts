@@ -368,6 +368,14 @@ function section(body: string, name: string): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
+/** A Summary bullet longer than this is worth a note: it becomes a hard-to-scan line in the PR. */
+const LONG_SUMMARY_BULLET = 200;
+
+/** How many of the hand-over's Summary bullets are longer than {@link LONG_SUMMARY_BULLET}. */
+function longSummaryBullets(buildBody: string): number {
+  return bullets(section(buildBody, "summary")).filter((b) => b.length > LONG_SUMMARY_BULLET).length;
+}
+
 /**
  * The draft PR description from the builder's hand-over: a short brief for the human reviewer first,
  * with the implementation notes (useful to reviewing agents, noisy for people) collapsed below it.
@@ -854,6 +862,8 @@ export class PipelineDriver {
       const blocker = section(turn.verdict.body, "blocker") ?? "the builder reported BLOCKED without details";
       return this.escalate(run, `builder is blocked: ${blocker}`);
     }
+    const long = longSummaryBullets(turn.verdict.body);
+    if (long > 0) this.info(run, `note: ${long} Summary bullet(s) longer than ${LONG_SUMMARY_BULLET} characters; the PR's What section may be hard to scan`);
     const pr = this.publish(worktree, issue, turn.verdict.body, run.unsafe);
     this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.round + 1, git), {
       pr_number: pr,

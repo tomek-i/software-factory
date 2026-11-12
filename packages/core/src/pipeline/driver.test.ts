@@ -158,6 +158,25 @@ describe("PipelineDriver", () => {
     const published = git(root, "log", "-p", "origin/factory/12-add-the-feature");
     expect(published).not.toContain(FAKE_AWS_KEY);
   });
+
+  it("notes a very long Summary bullet without holding up the hand-over", async () => {
+    const notes = (seen: { type: string; message?: string }[]) => seen.flatMap((e) => (e.type === "info" && e.message?.includes("Summary bullet") ? [e.message] : []));
+    const long = `- ${"word ".repeat(50).trim()}`;
+    for (const [summary, expected] of [
+      [`${long}\n- short one`, ["note: 1 Summary bullet(s) longer than 200 characters; the PR's What section may be hard to scan"]],
+      ["- short one\n- another short one", []],
+    ] as const) {
+      const { driver, store, fake, seen } = setup([{ output: TRIAGE() }, buildStep("fixed", `STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n${summary}\n`), ...reviewsPass()]);
+      const run = driver.startRun(12);
+
+      await driver.drive(run.id);
+
+      expect(notes(seen)).toEqual(expected);
+      // One builder turn: the note never sends the hand-over back, and the run still reaches the gate.
+      expect(fake.calls().filter((c) => c.role === "builder")).toHaveLength(1);
+      expect(store.listEvents(run.id).map((e) => e.to_state)).toContain("gate");
+    }
+  });
 });
 
 describe("prBody", () => {
