@@ -120,7 +120,7 @@ async function narrate(request: CaptureRequest, baseUrl: string, walkthrough: Wa
   const cli = findNarrate(request.app.narrate);
   if (!cli) {
     // Without the plugin the silent video is the normal case; only a configured path that is wrong is news.
-    if (request.app.narrate !== "off" && request.app.narrate !== "auto") walkthrough.narrationProblem = `narrate was not found at ${request.app.narrate}`;
+    if (request.app.narrate !== "off" && request.app.narrate !== "auto") walkthrough.narrationProblem = "narrate was not found at the path in app.narrate";
     return;
   }
   if (walkthrough.problem || !walkthrough.video) {

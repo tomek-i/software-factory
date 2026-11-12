@@ -1,11 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createServer } from "node:http";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { walkthroughStepSchema, type WalkthroughStep } from "@factory/shared";
 import { tempDir } from "../../test/helpers.js";
 import type { CommandRunner } from "../util/exec.js";
 import { isAlive } from "../util/process.js";
-import { findNarrate, narrationScene, renderNarrated, type NarrationScene } from "./narrate.js";
+import { findNarrate, narrateEnv, narrationScene, renderNarrated, type NarrationScene } from "./narrate.js";
+import { chromiumInstalled } from "./browser.js";
+import { runCommand } from "../util/exec.js";
 
 /** A plugin cache with narrate at these versions, each with a bin/narrate.mjs. */
 function pluginCache(versions: string[], marketplace = "narrate-marketplace"): string {
@@ -29,11 +32,13 @@ describe("findNarrate", () => {
     expect(findNarrate("off", pluginCache(["1.0.0"]))).toBeUndefined();
   });
 
-  it("uses a configured path only when it exists", () => {
+  it("uses a configured path only when it exists, made absolute", () => {
     const file = join(tempDir("narrate-path-"), "narrate.mjs");
     expect(findNarrate(file)).toBeUndefined();
     writeFileSync(file, "");
     expect(findNarrate(file)).toBe(file);
+    // narrate runs from its own folder, so a path relative to the factory's must not stay relative.
+    expect(findNarrate(relative(process.cwd(), file))).toBe(file);
   });
 });
 
@@ -74,6 +79,20 @@ describe("narrationScene", () => {
         { id: "beat-2", say: "Saving shows a confirmation.", do: [{ action: "click", selector: "button[type=submit]" }, { action: "wait", ms: 500 }] },
       ],
     });
+  });
+});
+
+describe("narrationScene fill values", () => {
+  it("escapes narrate's ${NAME} expansion, so a value is typed as written", () => {
+    const scene = narrationScene([walkthroughStepSchema.parse({ action: "fill", selector: "#q", value: "${USERPROFILE} and $${X}", say: "Typing." })], "http://127.0.0.1:1/");
+    expect(scene!.beats[0]!.do).toEqual([{ action: "fill", selector: "#q", text: "$${USERPROFILE} and $$${X}" }]);
+  });
+});
+
+describe("narrateEnv", () => {
+  it("keeps what narrate needs and never the factory's tokens", () => {
+    const env = narrateEnv({ PATH: "p", NARRATE_HOME: "h", NARRATE_ELEVENLABS_API_KEY: "k", PLAYWRIGHT_BROWSERS_PATH: "b", GH_TOKEN: "t", ANTHROPIC_API_KEY: "a", AWS_SECRET_ACCESS_KEY: "s" });
+    expect(env).toEqual({ PATH: "p", NARRATE_HOME: "h", NARRATE_ELEVENLABS_API_KEY: "k", PLAYWRIGHT_BROWSERS_PATH: "b" });
   });
 });
 
@@ -136,10 +155,10 @@ describe("renderNarrated", () => {
   it("says why there is no video", async () => {
     const outDir = tempDir("narrate-out-");
     expect(await renderNarrated({ narrate: fakeNarrate("ok"), scene, outDir, run: ffmpeg(false) })).toEqual({ problem: "ffmpeg is not on PATH; narrate needs it to add the voice" });
-    expect(await renderNarrated({ narrate: fakeNarrate("fail"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate failed (exit 1); see narrate/narrate.log" });
-    expect(readFileSync(join(outDir, "narrate", "narrate.log"), "utf8")).toContain("boom");
+    expect(await renderNarrated({ narrate: fakeNarrate("fail"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate failed (exit 1); see narrate/narrate.log and narrate/cli-output.log" });
+    expect(readFileSync(join(outDir, "narrate", "cli-output.log"), "utf8")).toContain("boom");
     expect(await renderNarrated({ narrate: fakeNarrate("none"), scene, outDir, run: ffmpeg(true) })).toEqual({
-      problem: "narrate finished without writing a video; see narrate/narrate.log",
+      problem: "narrate finished without writing a video; see narrate/narrate.log and narrate/cli-output.log",
     });
   });
 
@@ -157,4 +176,38 @@ describe("renderNarrated", () => {
       expect(isAlive(pid)).toBe(false);
     }
   }, 30_000);
+});
+
+// Against the real plugin, where it is installed with ffmpeg and Chromium, with narrate's silent
+// "mock" voice (no TTS key, no cost): catches a scene that narrate's own schema no longer accepts.
+const realNarrate = findNarrate("auto");
+const canRender = realNarrate !== undefined && runCommand("ffmpeg", ["-version"], { cwd: process.cwd() }).code === 0 && (await chromiumInstalled());
+
+describe.skipIf(!canRender)("renderNarrated with the real narrate plugin", () => {
+  it("renders the engine's scene, with a fill value that looks like a variable typed as written", async () => {
+    const server = createServer((_, res) => {
+      res.setHeader("content-type", "text/html");
+      res.end('<html><body><h1>Home</h1><input id="q"><button id="go">Go</button></body></html>');
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const home = tempDir("narrate-settings-");
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ tts: { provider: "mock" } }));
+    const before = process.env.NARRATE_HOME;
+    process.env.NARRATE_HOME = home;
+    try {
+      const steps = [
+        { action: "goto", path: "/", say: "The home page." },
+        // Unset on purpose: unescaped, narrate would refuse the scene.
+        { action: "fill", selector: "#q", value: "${FACTORY_NARRATE_TEST_UNSET}" },
+        { action: "click", text: "go", say: "Go." },
+      ].map((s) => walkthroughStepSchema.parse(s));
+      const outDir = tempDir("narrate-real-");
+      const result = await renderNarrated({ narrate: realNarrate!, scene: narrationScene(steps, `http://127.0.0.1:${(server.address() as { port: number }).port}/`)!, outDir });
+      expect(result, readFileSync(join(outDir, "narrate", "cli-output.log"), "utf8")).toEqual({ video: join(outDir, "walkthrough-narrated.mp4") });
+    } finally {
+      if (before === undefined) delete process.env.NARRATE_HOME;
+      else process.env.NARRATE_HOME = before;
+      server.close();
+    }
+  }, 300_000);
 });
