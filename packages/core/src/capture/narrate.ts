@@ -170,7 +170,8 @@ export async function renderNarrated(request: NarrateRequest): Promise<{ video: 
   }
   if (exit.code === null) return { problem: request.signal?.aborted ? "narration was cancelled" : "narrate took too long and was stopped" };
   const result = renderResult(exit.stdout);
-  if (!result) return { problem: `narrate gave no result (exit ${exit.code}); it needs narrate 0.24.0 or newer, see narrate/cli-output.log` };
+  // Also what a narrate older than 0.24.0 (without --json) ends in.
+  if (!result) return { problem: `narrate gave no result (exit ${exit.code}; it needs 0.24.0 or newer); see narrate/cli-output.log` };
   // The PR shows only the first line, so narrate's own message (which can name local paths) goes on the next.
   if (!result.ok) return { problem: `narrate failed while ${STAGES[result.stage ?? ""] ?? "rendering"}; see narrate/narrate.log\n${String(result.error ?? "").slice(0, 2000)}` };
   const ext = typeof result.video === "string" ? extname(result.video).slice(1) : "";
@@ -262,8 +263,15 @@ function spawnAndWait(cmd: string, args: string[], cwd: string, log: number, tim
       done();
       reject(err);
     });
-    // "close", not "exit": stdout may still hold the result line when the process exits.
+    // "close", not "exit": stdout may still hold the result line when the process exits. A leftover
+    // process holding the pipe (which a kill on Windows cannot find once narrate is gone) must not
+    // keep "close" from ever coming, so the pipe is dropped shortly after the exit.
+    let grace: NodeJS.Timeout | undefined;
+    child.on("exit", () => {
+      grace = setTimeout(() => child.stdout?.destroy(), 2000);
+    });
     child.on("close", (code) => {
+      clearTimeout(grace);
       done();
       resolve({ code: stopped ? null : code, stdout });
     });

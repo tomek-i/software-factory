@@ -111,7 +111,7 @@ describe("the walkthrough step schema", () => {
  * render, `old` prints what a narrate without --json would, `gone` reports a video it did not write,
  * `hang` never ends (after writing its pid). It always records its arguments and environment.
  */
-function fakeNarrate(mode: "ok" | "fail" | "old" | "gone" | "hang"): string {
+function fakeNarrate(mode: "ok" | "fail" | "old" | "gone" | "hang" | "noisy" | "mov" | "nostage"): string {
   const dir = tempDir("fake-narrate-");
   writeFileSync(join(dir, "mode.txt"), mode);
   const script = join(dir, "narrate.mjs");
@@ -134,6 +134,16 @@ if (mode === "fail") {
   process.exit(1);
 }
 if (mode === "old") { console.error("error: unknown option '--untrusted'"); process.exit(1); }
+if (mode === "noisy") {
+  writeFileSync(join(out, "walkthrough.webm"), "v");
+  process.stdout.write("a stray line\\n" + JSON.stringify({ video: "not the result" }) + "\\n");
+  const line = JSON.stringify({ ok: true, video: join(out, "walkthrough.webm") });
+  process.stdout.write(line.slice(0, 10));
+  await new Promise((r) => setTimeout(r, 100));
+  process.stdout.write(line.slice(10) + "\\n{not json\\n");
+}
+if (mode === "mov") { writeFileSync(join(out, "walkthrough.mov"), "v"); console.log(JSON.stringify({ ok: true, video: join(out, "walkthrough.mov") })); }
+if (mode === "nostage") { console.log(JSON.stringify({ ok: false, error: "crash" })); process.exit(1); }
 if (mode === "gone") console.log(JSON.stringify({ ok: true, video: join(out, "walkthrough.mp4") }));
 if (mode === "hang") { writeFileSync(join(here, "pid.txt"), String(process.pid)); setInterval(() => {}, 1000); }
 `,
@@ -185,10 +195,17 @@ describe("renderNarrated", () => {
       problem: "narrate failed while recording the browser; see narrate/narrate.log\nthe page left http://127.0.0.1:1 for https://elsewhere.test (C:\\Users\\me)",
     });
     expect(await renderNarrated({ narrate: fakeNarrate("old"), scene, outDir, run: ffmpeg(true) })).toEqual({
-      problem: "narrate gave no result (exit 1); it needs narrate 0.24.0 or newer, see narrate/cli-output.log",
+      problem: "narrate gave no result (exit 1; it needs 0.24.0 or newer); see narrate/cli-output.log",
     });
     expect(readFileSync(join(outDir, "narrate", "cli-output.log"), "utf8")).toContain("unknown option");
+    expect(await renderNarrated({ narrate: fakeNarrate("nostage"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate failed while rendering; see narrate/narrate.log\ncrash" });
+    expect(await renderNarrated({ narrate: fakeNarrate("mov"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate reported a video that is not there; see narrate/narrate.log" });
     expect(await renderNarrated({ narrate: fakeNarrate("gone"), scene, outDir, run: ffmpeg(true) })).toEqual({ problem: "narrate reported a video that is not there; see narrate/narrate.log" });
+  });
+
+  it("finds the result among other output, even when it arrives in pieces", async () => {
+    const outDir = tempDir("narrate-out-");
+    expect(await renderNarrated({ narrate: fakeNarrate("noisy"), scene, outDir, run: ffmpeg(true) })).toEqual({ video: join(outDir, "walkthrough-narrated.webm") });
   });
 
   it("stops a render that takes too long, or is cancelled, and leaves nothing running", async () => {
