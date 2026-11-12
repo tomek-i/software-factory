@@ -41,10 +41,10 @@ Then:
 
 ```
 ## Summary
-- 2 to 4 short bullets for a human reviewer: what changed and why, in plain words.
+- 2 to 4 bullets, one short line each: what changed for the user or the system.
 
 ## Testing
-- 1 to 3 bullets: which tests you added and which checks pass.
+- 1 to 3 one-line bullets: which tests you added and which checks pass.
 
 ## Details
 - Implementation notes for reviewers and agents: files, functions, edge cases, decisions.
@@ -52,8 +52,19 @@ Then:
 ## Blocker          (only for BLOCKED: what stops you and what a human must decide)
 ```
 
-The pull request shows Summary and Testing first and Details collapsed, so keep Summary readable at
-a glance: no file paths, function names or long explanations there; those belong in Details.
+The pull request shows Summary and Testing first and Details collapsed, so a reviewer should take
+in Summary at a glance. Aim for about 15 words or fewer per Summary bullet. Say what changed, not
+how: no file paths, function names or explanations there; those belong in Details.
+
+For example, a good Summary bullet:
+
+> - Runs that fail the same check twice now stop and ask a human.
+
+A too-long one, which belongs in Details:
+
+> - Added a fingerprint of the failed checks in `fingerprint.ts` that the driver compares between
+>   gate rounds, so that when two rounds fail in the same way the run is escalated instead of
+>   looping, because before this it kept rebuilding until the iteration limit.
 
 Use BLOCKED when you cannot finish without a human decision (missing information, a product
 decision, a required change to a protected area). Do not guess on product decisions.
