@@ -1,11 +1,13 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "./helpers.js";
 
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
-const same = (a: string, b: string) => expect(resolve(a).replace(/\\/g, "/").toLowerCase()).toBe(resolve(b).replace(/\\/g, "/").toLowerCase());
+// realpath: Windows can name one folder by its short 8.3 name (RUNNER~1) or its long one.
+const real = (p: string) => realpathSync.native(resolve(p)).replace(/\\/g, "/").toLowerCase();
+const same = (a: string, b: string) => expect(real(a)).toBe(real(b));
 
 describe("repoWithRemote", () => {
   it("gives every call its own repo whose origin is its own remote.git", () => {
