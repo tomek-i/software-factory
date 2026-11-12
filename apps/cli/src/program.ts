@@ -95,7 +95,7 @@ export function buildProgram(): Command {
     .argument("<run>", "run id, id prefix, or issue number")
     .argument("[file]", "file in the run folder, e.g. round-2/checks.md, or triage, build, checks (latest round)")
     .action((ref: string, file: string | undefined) => {
-      const text = runShow(process.cwd(), ref, file);
+      const text = runShow(process.cwd(), ref, file, { style: styleFor(process.stdout) });
       process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
     });
 
