@@ -40,9 +40,25 @@ export interface GithubPort {
   pullRequestState(number: number): PullRequestState;
   /** Take a draft PR out of draft. */
   markReady(number: number): void;
-  /** Merge with a merge commit, only if the PR's head is still `head` (the commit that passed). */
-  mergePullRequest(number: number, head: string): void;
+  /**
+   * Merge with `method` (a merge commit by default), only if the PR's head is still `head` (the
+   * commit that passed). A squash commit is titled after the PR, as `<title> (#<n>)`.
+   */
+  mergePullRequest(number: number, head: string, method?: MergeMethod): void;
+  /** The status checks branch protection requires on the PR's head; empty when none are required. */
+  requiredChecks(number: number): RequiredCheck[];
 }
+
+export type MergeMethod = "merge" | "squash" | "rebase";
+
+export interface RequiredCheck {
+  name: string;
+  /** gh's grouping of the check's state. */
+  bucket: "pass" | "fail" | "pending" | "skipping" | "cancel";
+  link?: string;
+}
+
+const CHECK_BUCKETS: readonly RequiredCheck["bucket"][] = ["pass", "fail", "pending", "skipping", "cancel"];
 
 /**
  * What `factory new` needs from GitHub to open the issues it drafted. Kept apart from GithubPort:
@@ -196,8 +212,41 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     markReady(number) {
       gh(["pr", "ready", String(number), "-R", repo]);
     },
-    mergePullRequest(number, head) {
-      gh(["pr", "merge", String(number), "-R", repo, "--merge", "--match-head-commit", head]);
+    mergePullRequest(number, head, method = "merge") {
+      const args = ["pr", "merge", String(number), "-R", repo, `--${method}`, "--match-head-commit", head];
+      if (method === "squash") {
+        // The PR title, so a conventional-commit title becomes the commit on the default branch.
+        const out = gh(["pr", "view", String(number), "-R", repo, "--json", "title"]);
+        let title: unknown;
+        try {
+          title = (JSON.parse(out) as { title?: unknown }).title;
+        } catch {
+          throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+        }
+        if (typeof title !== "string" || !title.trim()) throw new GithubError(`gh pr view returned no title for #${number}`);
+        args.push("--subject", `${title.trim()} (#${number})`);
+      }
+      gh(args);
+    },
+    requiredChecks(number) {
+      const args = ["pr", "checks", String(number), "-R", repo, "--required", "--json", "name,bucket,link"];
+      // A commit with no checks at all, or none that are required, is an error to gh, not an empty list.
+      // (Without --json gh also exits 1 for a failed check and 8 for a pending one, so stdout is read whatever the code.)
+      const result = run("gh", args, { cwd: project.repo_path });
+      if (result.code !== 0 && /no (required )?checks reported/i.test(result.stderr)) return [];
+      let checks: unknown;
+      try {
+        checks = JSON.parse(result.stdout);
+        if (!Array.isArray(checks)) throw new Error("not a list");
+      } catch {
+        throw new GithubError(`gh pr checks failed: ${result.stderr.trim() || result.stdout.slice(0, 200) || "unknown error"}`);
+      }
+      return checks.map((c: { name?: unknown; bucket?: unknown; link?: unknown }) => {
+        if (typeof c.name !== "string" || !CHECK_BUCKETS.includes(c.bucket as RequiredCheck["bucket"])) {
+          throw new GithubError(`gh pr checks returned unexpected output: ${JSON.stringify(c).slice(0, 200)}`);
+        }
+        return { name: c.name, bucket: c.bucket as RequiredCheck["bucket"], ...(typeof c.link === "string" && c.link ? { link: c.link } : {}) };
+      });
     },
     updatePullRequest(number, body) {
       withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));

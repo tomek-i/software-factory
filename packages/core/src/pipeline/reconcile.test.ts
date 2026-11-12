@@ -22,6 +22,7 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>) {
     updatePullRequest: () => undefined,
     markReady: () => undefined,
     mergePullRequest: () => undefined,
+    requiredChecks: () => [],
     pullRequestState: (number) => {
       asked.push(number);
       const pr = prs[number];

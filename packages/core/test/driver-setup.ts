@@ -7,9 +7,9 @@ import { createAgentRunner } from "../src/agents/runner.js";
 import type { CapturePort } from "../src/capture/capture.js";
 import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
-import type { GithubPort } from "../src/github/port.js";
+import type { GithubPort, MergeMethod, RequiredCheck } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
-import { fakeClaude, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
+import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
 export const TRIAGE = (decision = "APPROVE", extra = "") =>
   `DECISION: ${decision}\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- looks fine\n${extra}`;
@@ -66,7 +66,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     options.config ??
       "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n",
   );
-  const { root } = repoWithRemote({
+  const { root, remote } = repoWithRemote({
     "README.md": "# demo\n",
     "check.js": CHECK_JS,
     ".gitignore": ".factory/runs/\n.worktrees/\n",
@@ -94,12 +94,24 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
   const closedReady = new Set<number>();
   const edits: { number: number; body: string }[] = [];
   // The run's PR as the fake GitHub sees it; a test may merge or close it, or make merging fail.
-  const pr: { state: "open" | "merged" | "closed"; draft: boolean; mergeCommit?: string; mergeError?: string; onView?: (count: number) => void } = {
+  // `checks`: what each look at the required checks returns, in turn; the last one repeats. None by default.
+  const pr: {
+    state: "open" | "merged" | "closed";
+    draft: boolean;
+    mergeCommit?: string;
+    mergeError?: string;
+    onView?: (count: number) => void;
+    checks?: RequiredCheck[][];
+    checksError?: string;
+    /** The PR's head as GitHub reports it; by default what the run's branch has on the remote. */
+    head?: string;
+  } = {
     state: "open",
     draft: true,
   };
   let views = 0;
-  const merges: { number: number; head: string }[] = [];
+  const merges: { number: number; head: string; method?: MergeMethod }[] = [];
+  let checkViews = 0;
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body, id: 100 + comments.length, edits: 0 }),
     findComment: (issue, marker) => comments.findLast((c) => c.issue === issue && c.body.startsWith(marker))?.id,
@@ -125,15 +137,21 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     updatePullRequest: (number, body) => edits.push({ number, body }),
     pullRequestState: (number) => {
       pr.onView?.(++views);
-      return { number, state: pr.state, draft: pr.draft, head: "", ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
+      const head = pr.head ?? (prs[0] ? git(remote, "rev-parse", `refs/heads/${prs[0].head}`) : "");
+      return { number, state: pr.state, draft: pr.draft, head, ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
     },
     markReady: () => {
       pr.draft = false;
     },
-    mergePullRequest: (number, head) => {
+    requiredChecks: () => {
+      if (pr.checksError) throw new Error(pr.checksError);
+      const all = pr.checks ?? [[]];
+      return all[Math.min(checkViews++, all.length - 1)]!;
+    },
+    mergePullRequest: (number, head, method) => {
       if (pr.mergeError) throw new Error(pr.mergeError);
       if (pr.draft) throw new Error("a draft PR cannot be merged");
-      merges.push({ number, head });
+      merges.push({ number, head, ...(method && method !== "merge" ? { method } : {}) });
       pr.state = "merged";
       pr.mergeCommit = "e".repeat(40);
     },
@@ -153,6 +171,8 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     owner: "test-worker",
     events,
     watchMs: 50,
+    checksPollMs: 20,
+    checksGraceMs: 200,
     capture: options.capture,
   });
   return { root, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges };

@@ -46,6 +46,7 @@ export const github: GithubPort = {
     prEdits.push({ number, body });
   },
   markReady: () => undefined,
+  requiredChecks: () => [],
   mergePullRequest: (number, head) => {
     merged.push({ number, head });
     prStates.set(number, { number, state: "merged", draft: false, head, mergeCommit: "e".repeat(40) });

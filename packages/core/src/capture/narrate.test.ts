@@ -119,7 +119,9 @@ function fakeNarrate(mode: "ok" | "fail" | "old" | "gone" | "hang" | "noisy" | "
     script,
     `import { readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-const here = dirname(new URL(import.meta.url).pathname.replace(/^\\/([A-Za-z]:)/, "$1"));
+import { fileURLToPath } from "node:url";
+// Not the URL's pathname: that keeps the ~ of a short Windows path (RUNNER~1) as %7E.
+const here = dirname(fileURLToPath(import.meta.url));
 const mode = readFileSync(join(here, "mode.txt"), "utf8");
 const args = process.argv.slice(2);
 writeFileSync(join(here, "seen.json"), JSON.stringify({ args, cwd: process.cwd(), env: process.env }));

@@ -88,7 +88,7 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 
 - Node.js 22+ and pnpm
 - Git
-- GitHub CLI (`gh`), logged in
+- GitHub CLI (`gh`) 2.50 or newer, logged in
 - Claude Code (`claude`), logged in with your subscription.
   - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing.
 - Optional, for screenshots and videos of UI changes: Playwright's Chromium.
@@ -350,8 +350,12 @@ What `factory run` does today:
     - `factory approve` approves the commit that was waiting. The approval holds while only re-syncs of the default branch land on top of it. Any new commit from the builder needs a fresh one.
     - In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`: `DECISION: PROCEED`, or `ESCALATE` with its reasons (product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, low confidence).
     - Hard-rule hits need you at the merge gate too, whatever its mode.
-11. **Merge**: the engine merges the PR with a merge commit (`gh pr merge --merge --match-head-commit <sha>`), so GitHub only merges the commit that passed the gate.
-    - If GitHub refuses (branch protection, required checks still running), the run waits for you with GitHub's message.
+11. **Merge**: the engine merges the PR with `merge.method` (default a merge commit; `squash` titles the commit after the PR, `rebase` rebases), always with `--match-head-commit <sha>`, so GitHub only merges the commit that passed the gate.
+    - If branch protection requires status checks, it first waits for them (`gh pr checks --required`), looking every 30 seconds. A failed check, or one still running after `merge.checks_timeout_min` (default 30), stops for you with the check's name and link.
+    - Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required, as GitHub reports a new commit's checks only once CI picks it up.
+    - `factory run` prints that it is waiting and for which checks; `factory status` shows the run in `merge`.
+    - A commit pushed to the PR while it waits is never merged: `--match-head-commit` makes GitHub refuse.
+    - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
     - Its worktree and branch are kept.
 12. **Learn**: after the merge, a learner agent (no shell, writes only `learn.md`) looks back at the run.
     - It reads the builder's report, the checks of failed rounds, the reviews and the verifier's judgements, re-sync conflicts, the approver's decision, escalation reasons and your decisions and comments.
@@ -486,6 +490,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `app` | How to start the app for screenshots and videos: `start` (a shell command run in the worktree; unset means no capture), `url` (must contain `{port}`, which is filled in; default `http://localhost:{port}`), `port_env` (the variable that carries the port, default `PORT`), `ready_timeout_sec` (how long `url` may take to answer, default 180), `narrate` (`auto`, `off` or a path to narrate.mjs, see [Narrated walkthrough](#narrated-walkthrough)) and `env` (names of variables to pass from your environment to the app, which otherwise gets only a minimal one; tokens are never passed) |
 | `gates` | `always` / `auto` / `human` per gate (see [Pipeline](#pipeline) for the defaults) |
 | `hard_rules` | Paths and triggers that always escalate to a human |
+| `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
 | `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH |
