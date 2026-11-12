@@ -21,6 +21,8 @@ export interface GithubPort {
   commentOnIssue(issueNumber: number, body: string): void;
   /** The open pull request whose head is this branch, if any. */
   findPullRequest(branch: string): number | undefined;
+  /** Open pull requests whose head branch starts with `prefix`, e.g. `factory/lessons-`. */
+  findOpenPullRequests(prefix: string): { number: number; head: string }[];
   /** Open a draft PR and return its number. */
   createDraftPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
   /** Open a PR that is ready for review (not a draft) and return its number. */
@@ -71,6 +73,20 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
         throw new GithubError(`gh pr list returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       }
       return prs[0]?.number;
+    },
+    findOpenPullRequests(prefix) {
+      // `--head` only matches a whole branch name, so the prefix is matched here.
+      const out = gh(["pr", "list", "-R", repo, "--state", "open", "--json", "number,headRefName", "--limit", "200"]);
+      let prs: { number?: unknown; headRefName?: unknown }[];
+      try {
+        prs = JSON.parse(out) as typeof prs;
+        if (!Array.isArray(prs)) throw new Error("not a list");
+      } catch {
+        throw new GithubError(`gh pr list returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      return prs.flatMap((pr) =>
+        typeof pr.number === "number" && typeof pr.headRefName === "string" && pr.headRefName.startsWith(prefix) ? [{ number: pr.number, head: pr.headRefName }] : [],
+      );
     },
     createDraftPullRequest({ head, base, title, body }) {
       // gh prints the new PR's URL.

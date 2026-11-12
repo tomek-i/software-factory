@@ -24,6 +24,13 @@ describe("ghPort", () => {
     expect(calls[0]).toEqual(["pr", "create", "-R", "o/r", "--draft", "--head", "factory/1-x", "--base", "main", "--title", "T", "--body", "B"]);
   });
 
+  it("finds open PRs by the start of their branch name", () => {
+    const list = fakeGh(JSON.stringify([{ number: 5, headRefName: "factory/lessons-1" }, { number: 6, headRefName: "factory/12-x" }]));
+    expect(ghPort(project, list.run).findOpenPullRequests("factory/lessons-")).toEqual([{ number: 5, head: "factory/lessons-1" }]);
+    expect(list.calls[0]).toEqual(["pr", "list", "-R", "o/r", "--state", "open", "--json", "number,headRefName", "--limit", "200"]);
+    expect(() => ghPort(project, fakeGh("{}").run).findOpenPullRequests("x")).toThrow(/unexpected output/);
+  });
+
   it("opens a ready (non-draft) PR with its description from a file, which it removes afterwards", () => {
     let sent = "";
     const calls: string[][] = [];

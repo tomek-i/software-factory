@@ -1,4 +1,5 @@
-import { ghPort, publishLessons, type CommandRunner, type GithubPort, type Project, type StoredLesson, type Store } from "@factory/core";
+import { ghPort, publishLessons, type CommandRunner, type PublishedLessons, type GithubPort, type Project, type StoredLesson, type Store } from "@factory/core";
+import { isUnprintable } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 
 export interface LessonDeps {
@@ -31,19 +32,31 @@ function proposedLessons(store: Store, project: Project, ids: number[]): StoredL
   return lessons;
 }
 
+/**
+ * Text written by an agent, made safe to print: whitespace runs become one space, and control and
+ * invisible-direction characters are shown as `[U+001B]`, so a terminal escape cannot hide or reorder
+ * what the human approving a lesson reads.
+ */
+export function printable(text: string): string {
+  return Array.from(text.replace(/\s+/g, " ").trim(), (ch) => {
+    const code = ch.codePointAt(0)!;
+    return isUnprintable(code) ? `[U+${code.toString(16).toUpperCase().padStart(4, "0")}]` : ch;
+  }).join("");
+}
+
 function describeLesson(store: Store, lesson: StoredLesson): string {
   const issue = store.getRun(lesson.run_id)?.issue_number;
   const status =
     lesson.status === "approved" && lesson.pull_request !== null
       ? `approved (PR #${lesson.pull_request})`
       : lesson.status === "rejected" && lesson.comment
-        ? `rejected: ${lesson.comment}`
+        ? `rejected: ${printable(lesson.comment)}`
         : lesson.status;
   return [
     `${lesson.id}  ${status}  ${lesson.run_id}${issue ? ` (#${issue})` : ""}`,
-    `    rule:      ${lesson.rule}`,
-    `    observed:  ${lesson.observation.replace(/\s+/g, " ").trim()}`,
-    `    evidence:  ${lesson.evidence.replace(/\s+/g, " ").trim()}`,
+    `    rule:      ${printable(lesson.rule)}`,
+    `    observed:  ${printable(lesson.observation)}`,
+    `    evidence:  ${printable(lesson.evidence)}`,
   ].join("\n");
 }
 
@@ -65,8 +78,9 @@ export function runLessons(cwd: string, options: { all?: boolean } = {}, run?: C
 }
 
 /**
- * `factory lessons approve <id...>`: open one PR that appends these lessons to `.factory/lessons.md`.
- * They are marked approved only once the PR exists, and agents see them once it is merged.
+ * `factory lessons approve <id...>`: one PR that appends these lessons to `.factory/lessons.md` (the
+ * lessons PR still open, if there is one). They are marked approved only once they are on that PR,
+ * and agents see them once it is merged.
  */
 export function runLessonsApprove(cwd: string, values: string[], deps: LessonDeps = {}): string {
   const ids = parseIds(values);
@@ -75,29 +89,39 @@ export function runLessonsApprove(cwd: string, values: string[], deps: LessonDep
     ({ store, project, config }) => {
       const lessons = proposedLessons(store, project, ids);
       const defaultBranch = config.project.default_branch;
-      let published: { branch: string; number: number };
+      const withIssue = (l: StoredLesson) => ({ ...l, issue_number: store.getRun(l.run_id)?.issue_number });
+      let published: PublishedLessons;
       try {
         published = publishLessons({
           root: project.repo_path,
           defaultBranch,
-          lessons: lessons.map((l) => ({ ...l, issue_number: store.getRun(l.run_id)?.issue_number })),
+          lessons: lessons.map(withIssue),
           github: deps.github ?? ghPort(project, deps.run),
+          inPullRequest: (number) =>
+            store
+              .listLessons({ project_id: project.id, status: "approved" })
+              .filter((l) => l.pull_request === number)
+              .map(withIssue),
           run: deps.run,
           now: deps.now,
         });
       } catch (err) {
-        throw new CliError(`Could not open the lessons PR; nothing was approved: ${(err as Error).message}`);
+        throw new CliError(`Could not publish the lessons; nothing was approved: ${(err as Error).message}`);
       }
       try {
         store.decideLessons(ids, "approved", { pull_request: published.number });
       } catch (err) {
-        throw new CliError(`Opened PR #${published.number}, but could not record the approval: ${(err as Error).message}`);
+        throw new CliError(`Pushed the lessons to PR #${published.number}, but could not record the approval: ${(err as Error).message}`);
       }
       const url = project.github_repo ? ` https://github.com/${project.github_repo}/pull/${published.number}` : "";
       const which = ids.length === 1 ? `lesson ${ids[0]}` : `lessons ${ids.join(", ")}`;
+      const them = ids.length === 1 ? "it" : "them";
       return [
-        `Approved ${which}. PR #${published.number} adds ${ids.length === 1 ? "it" : "them"} to .factory/lessons.md:${url}`,
+        published.addedToOpen
+          ? `Approved ${which}. Added ${them} to the open lessons PR #${published.number}:${url}`
+          : `Approved ${which}. PR #${published.number} adds ${them} to .factory/lessons.md:${url}`,
         `Agents read lessons from ${defaultBranch}, so ${ids.length === 1 ? "it applies" : "they apply"} to runs that start after the PR is merged.`,
+        ...(published.warning ? [`Warning: ${published.warning}`] : []),
       ].join("\n");
     },
     deps.run,

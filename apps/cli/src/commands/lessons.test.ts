@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GithubPort } from "@factory/core";
 import { git, GIT_TEST_TIMEOUT } from "../../../../packages/core/test/helpers.js";
-import { github, readyPrs, setup } from "../../test/runs-setup.js";
+import { github, prEdits, readyPrs, setup } from "../../test/runs-setup.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./lessons.js";
 import { runStatus } from "./runs.js";
 
@@ -60,13 +60,13 @@ describe("factory lessons", () => {
       ].join("\n"),
     );
     expect(readyPrs).toHaveLength(1);
-    expect(readyPrs[0]).toMatchObject({ head: "factory/lessons-20261112-090507", base: "main", title: "chore(factory): add 2 approved lessons" });
+    expect(readyPrs[0]).toMatchObject({ head: "factory/lessons-20261112-090507-000", base: "main", title: "chore(factory): add 2 approved lessons" });
     expect(readyPrs[0]!.body).toContain(`- **Run lint first.**\n  From run \`${runId}\` (#12), lesson ${ids[0]}: The gate failed on lint.`);
     expect(readyPrs[0]!.body).toContain("- **Use pnpm, not npm.**");
     expect(readyPrs[0]!.body).not.toContain("Not this one.");
 
     git(root, "fetch", "-q", "origin");
-    expect(git(root, "show", "origin/factory/lessons-20261112-090507:.factory/lessons.md")).toMatch(/\n- Run lint first\.\n- Use pnpm, not npm\.$/);
+    expect(git(root, "show", "origin/factory/lessons-20261112-090507-000:.factory/lessons.md")).toMatch(/\n- Run lint first\.\n- Use pnpm, not npm\.$/);
     expect(git(root, "rev-parse", "origin/main")).toBe(mainBefore);
     expect(git(root, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
     expect(git(root, "status", "--porcelain")).toBe("");
@@ -90,10 +90,48 @@ describe("factory lessons", () => {
       },
     };
 
-    expect(() => runLessonsApprove(dir, [String(ids[0])], { github: offline })).toThrow(/Could not open the lessons PR; nothing was approved: gh: not logged in/);
+    expect(() => runLessonsApprove(dir, [String(ids[0])], { github: offline })).toThrow(/Could not publish the lessons; nothing was approved: gh: not logged in/);
     const store = db();
     expect(store.getLesson(ids[0]!)!.status).toBe("proposed");
     store.close();
+  });
+
+  it("adds later approvals to the lessons PR that is still open, and lists every lesson in its description", () => {
+    const { dir, root, ids, db } = withLessons("Run lint first.", "Use pnpm, not npm.");
+    runLessonsApprove(dir, [String(ids[0])], { github });
+
+    expect(runLessonsApprove(dir, [String(ids[1])], { github })).toMatch(/^Approved lesson \d+\. Added it to the open lessons PR #8: https:\/\/github\.com\/o\/r\/pull\/8\n/);
+    expect(readyPrs).toHaveLength(1);
+    expect(prEdits).toHaveLength(1);
+    expect(prEdits[0]).toMatchObject({ number: 8, body: expect.stringContaining("Adds 2 lessons") });
+    expect(prEdits[0]!.body).toContain("- **Run lint first.**");
+    expect(prEdits[0]!.body).toContain("- **Use pnpm, not npm.**");
+    git(root, "fetch", "-q", "origin");
+    expect(git(root, "show", `origin/${readyPrs[0]!.head}:.factory/lessons.md`)).toMatch(/\n- Run lint first\.\n- Use pnpm, not npm\.$/);
+    const store = db();
+    expect(store.listLessons({ project_id: store.listProjects()[0]!.id }).map((l) => [l.status, l.pull_request])).toEqual([
+      ["approved", 8],
+      ["approved", 8],
+    ]);
+    store.close();
+  });
+
+  it("shows control and text-direction characters in a lesson instead of printing them", () => {
+    const esc = String.fromCodePoint(0x1b);
+    const rlo = String.fromCodePoint(0x202e);
+    const { dir, db } = setup([]);
+    const store = db();
+    const run = store.createRun({ project_id: store.listProjects()[0]!.id, title: "t", issue_number: 12 });
+    // The schema refuses these in a rule; stored text is escaped on output all the same.
+    store.addLessons(run.id, [{ observation: `ok${esc}[2Khidden`, evidence: `a${rlo}b`, rule: `Run${esc}[8m secret` }]);
+    store.close();
+
+    const out = runLessons(dir);
+    expect(out).toContain("rule:      Run[U+001B][8m secret");
+    expect(out).toContain("observed:  ok[U+001B][2Khidden");
+    expect(out).toContain("evidence:  a[U+202E]b");
+    expect(out).not.toContain(esc);
+    expect(out).not.toContain(rlo);
   });
 
   it("rejects lessons with an optional reason, and refuses ids that are unknown or already decided", () => {

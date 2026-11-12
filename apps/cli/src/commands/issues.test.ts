@@ -102,6 +102,7 @@ describe("issue commands", () => {
       findPullRequest: () => undefined,
       createDraftPullRequest: () => 1,
       createPullRequest: () => 1,
+      findOpenPullRequests: () => [],
       updatePullRequest: () => undefined,
     markReady: () => undefined,
     mergePullRequest: () => undefined,
