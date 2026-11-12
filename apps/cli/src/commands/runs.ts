@@ -23,7 +23,7 @@ import {
   type Run,
   type Store,
 } from "@factory/core";
-import { isTerminal, isTrustedAuthor, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
@@ -61,7 +61,7 @@ export function findRun(store: Store, project: Project, ref: string): Run {
   throw new CliError(matches.length ? `"${ref}" matches several runs; use more of the id.` : `No run "${ref}". See \`factory status\`.`);
 }
 
-function formatEvent(event: FactoryEvent, style: Style): string | undefined {
+export function formatEvent(event: FactoryEvent, style: Style): string | undefined {
   switch (event.type) {
     case "run:state":
       return style.transition(`-> ${style.state(event.to)}: ${event.reason}`);
@@ -135,7 +135,7 @@ function ensureQueued(store: Store, project: Project, config: FactoryConfig, num
   if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
   store.setQueued(project.id, number, true);
   print(`Queued #${number} ${issue.title}`);
-  if (!isTrustedAuthor(config, issue.author)) print(UNTRUSTED_NOTE);
+  if (!isTrustedIssue(config, issue)) print(UNTRUSTED_NOTE);
   return store.getIssue(project.id, number)!;
 }
 

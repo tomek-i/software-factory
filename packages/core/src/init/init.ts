@@ -8,7 +8,7 @@ import { findRepoRoot, githubLogin, githubRepoOf } from "../util/git.js";
 import { detectProject, type Detection } from "./detect.js";
 import { renderConfig } from "./template.js";
 
-export const GITIGNORE_ENTRIES = [".factory/runs/", ".factory/factory.db*", ".worktrees/"];
+export const GITIGNORE_ENTRIES = [".factory/runs/", ".factory/factory.db*", ".worktrees/", ".factory/drafts/"];
 
 export interface InitOptions {
   cwd: string;

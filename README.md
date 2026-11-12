@@ -7,7 +7,7 @@ It runs in two modes on one engine:
 - **CLI mode**: install into a single repo and drive it from the terminal.
 - **Web mode** *(planned)*: a local dashboard that manages several repos, syncs GitHub issues both ways and runs issues in parallel.
 
-> Status: early development. A queued issue can run through triage, build, the quality gate loop, parallel reviews, the verifier's review loop, re-sync with the default branch and the merge gate to a merged PR (`factory run`). Refine, spec critic, capture (screenshots) and learning lessons are not automated yet. By default the run waits for you at the `merge` gate.
+> Status: early development. `factory new` drafts issues from an idea. A queued issue can run through triage, build, the quality gate loop, parallel reviews, the verifier's review loop, re-sync with the default branch and the merge gate to a merged PR (`factory run`). Refine, spec critic, capture (screenshots) and learning lessons are not automated yet. By default the run waits for you at the `merge` gate.
 
 ## Pipeline
 
@@ -42,11 +42,32 @@ node <path-to-this-repo>/apps/cli/dist/main.js init
 
 - detects your stack (Node, .NET, Python, Go) and writes `.factory/config.yaml` with check commands. Review and commit it.
 - writes `.factory/lessons.md`, which agents read before every run.
-- adds runtime state (`.factory/runs/`, `.factory/factory.db*`, `.worktrees/`) to `.gitignore`.
+- adds runtime state (`.factory/runs/`, `.factory/factory.db*`, `.worktrees/`, `.factory/drafts/`) to `.gitignore`.
 - registers the project in `.factory/factory.db`.
 - creates GitHub status labels only if you enabled `github.status_labels` (off by default; see below).
 
 It is safe to re-run. An existing config is never overwritten.
+
+### Writing issues from an idea
+
+```sh
+factory new "export orders as CSV"   # draft an issue from an idea
+factory new --list                   # drafts waiting for you
+factory new --approve <draft>        # create a draft on GitHub, sync it and queue it
+factory new --discard <draft>        # drop a draft
+```
+
+`factory new` runs an issue writer agent on your idea. It has no shell: it reads the repo and writes only its draft, `.factory/drafts/<draft>/draft.md` (`factory new` adds `.factory/drafts/` to `.gitignore` if it is missing). The draft is an issue with a title, `## Why`, `## What`, `## Acceptance criteria` (checkboxes), `## Scope` and `## Out of scope`, a UI flag and a risk rating. An idea too big for one PR becomes a parent issue plus two or more sub-issues (at most 10), each with the same structure; a sub-issue that needs another first says so with `DEPENDS_ON`, which ends up as `Depends on: #n` in its body. The draft is checked strictly; a malformed one gets one retry, then it is kept for you to fix or discard.
+
+The `issue_writer` gate then decides:
+
+- `human` (default): the draft is printed and saved, and the command exits. Edit `draft.md` if you like, then `factory new --approve <draft>` creates it; the file is read and checked again first.
+- `auto`: the agent's own `DECISION: PROCEED` creates it straight away; `ESCALATE` waits for you as above, with its reasons.
+- `always`: created straight away.
+
+With `auto` or `always`, the agent's draft becomes a trusted issue (see [Trusted authors](#trusted-authors)) without anyone reading it first, so later stages treat it as the spec. The issue writer cannot read run folders (`.factory/runs/`), worktrees or other drafts, so text from untrusted issues does not reach it that way, but it does read the repo. Keep the default `human` unless you trust what is in your repo.
+
+Creating opens the issues on GitHub (no labels), links each sub-issue to the parent as a real GitHub sub-issue, syncs them into `.factory/factory.db` and queues the buildable ones: the single issue, or the sub-issues (never their parent). It prints the numbers and the `factory run` command to start them. Creating always prints the full draft first. What has been created is recorded in `.factory/factory.db`, so if GitHub fails halfway, `factory new --approve` again only does what is left; an issue whose draft entry you edited after it was created is refused rather than matched up by position. If `gh issue create` succeeds but its output can't be read, the error names the title: check GitHub before approving again, as that issue may exist already. A draft with files that git tracks is refused: `factory new` only writes ignored files, so such a draft came from a commit, possibly someone else's branch. `<draft>` is a draft id or a unique prefix of one.
 
 ### Choosing what the factory works on
 
@@ -100,7 +121,7 @@ Run artifacts (issue, triage, build report, `round-N/checks.md` and `checks.log`
 
 **What steers the agents is read from the default branch.** `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`, not from your working copy, so a checked-out branch cannot change its own checks, trust list, gates or prompts. Commit and push config changes before they take effect.
 
-**Agent permissions.** Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`), and ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`) so nothing outside the profile applies to an agent reading issue text. Triage can read the repo and write only its run folder. Reviewers have no shell: the engine writes the commits and the full diff to `round-N/change.diff` for them (with external diff programs and textconv switched off), and each reviewer can write only its own review file, so one lens cannot change another's verdict; their prompt is `.factory/prompts/reviewer.md` plus `review-<lens>.md`. The verifier gets the same: no shell, the same change file, and only `verify.md` to write (prompt `.factory/prompts/verifier.md`). So does the approver, with only `approval.md` to write (prompt `.factory/prompts/approver.md`). The builder can edit and use Bash but is denied `git push`, `gh pr`, `gh api` and edits to `.factory/`. Bash deny rules are prefix matches, so also protect your default branch on GitHub.
+**Agent permissions.** Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`), and ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`) so nothing outside the profile applies to an agent reading issue text. Triage can read the repo and write only its run folder. Reviewers have no shell: the engine writes the commits and the full diff to `round-N/change.diff` for them (with external diff programs and textconv switched off), and each reviewer can write only its own review file, so one lens cannot change another's verdict; their prompt is `.factory/prompts/reviewer.md` plus `review-<lens>.md`. The verifier gets the same: no shell, the same change file, and only `verify.md` to write (prompt `.factory/prompts/verifier.md`). So does the approver, with only `approval.md` to write (prompt `.factory/prompts/approver.md`), and the issue writer, with only its `draft.md` to write and no access to `.factory/runs/`, `.worktrees/` or other drafts (prompt `.factory/prompts/issue_writer.md`). The builder can edit and use Bash but is denied `git push`, `gh pr`, `gh api` and edits to `.factory/`. Bash deny rules are prefix matches, so also protect your default branch on GitHub.
 
 ### Trusted authors
 
@@ -114,6 +135,7 @@ trust:
 
 - **Trusted** issues and comments are treated as the spec.
 - **Untrusted** ones (e.g. strangers on a public repo) can still be queued, but their text is handled as untrusted data and triage always waits for your approval before anything is built. `factory issues` marks them `(untrusted)`.
+- **Issues the factory created** with `factory new` are trusted, whoever the gh login is: they were written from your own idea and approved by you (or by the gate you configured). The factory records this locally when it creates them, so a later `factory sync` never clears it and nobody on GitHub can set it. Comments on them by others are still judged by their own author.
 
 **Status labels (optional).** With `github.status_labels: true`, the factory mirrors run status onto the issue (`factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human`, `factory:unsafe`). They are display-only and never read as input. Run `factory init` again after enabling them to create the labels.
 
