@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseLessons, parseVerdict, VerdictParseError } from "./verdict.js";
+import { isUnprintable, parseLessons, parseVerdict, VerdictParseError } from "./verdict.js";
 
 const finding = (id: string, severity: string) => ({ id, severity, claim: "c", evidence: "e" });
 const block = (items: object[]) => "```json\n" + JSON.stringify(items) + "\n```";
@@ -152,6 +152,16 @@ describe("learner output", () => {
     expect(() => parseVerdict("learn", learn(1, block([{ ...lesson, evidence: "" }])))).toThrow(/lessons\.0\.evidence/);
     expect(() => parseVerdict("learn", learn(1, "- always lint"))).toThrow(/json array/);
     expect(() => parseLessons("## Lessons\n- always lint")).toThrow(VerdictParseError);
+  });
+
+  it("rejects a rule with characters that could hide text from the human approving it", () => {
+    // A terminal escape, a C1 control, the line and paragraph separators, a right-to-left override, an isolate and a mark.
+    for (const code of [0x1b, 0x9b, 0x2028, 0x2029, 0x202e, 0x2066, 0x200f]) {
+      const rule = `Run lint${String.fromCodePoint(code)} first.`;
+      expect(() => parseVerdict("learn", learn(1, block([{ ...lesson, rule }])))).toThrow(/must not contain control/);
+    }
+    expect(isUnprintable(0x41)).toBe(false);
+    expect(isUnprintable(0xe9)).toBe(false);
   });
 });
 

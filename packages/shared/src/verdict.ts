@@ -46,9 +46,29 @@ export const lessonSchema = z.object({
     .trim()
     .min(1)
     .max(300)
-    .refine((r) => !/[\r\n]/.test(r), { message: "must be a single line" }),
+    .refine((r) => !/[\r\n]/.test(r), { message: "must be a single line" })
+    .refine((r) => !Array.from(r).some((ch) => isUnprintable(ch.codePointAt(0)!)), {
+      message: "must not contain control, line-separator or text-direction characters",
+    }),
 });
 export type Lesson = z.infer<typeof lessonSchema>;
+
+/**
+ * Code points that can hide or reorder text in a terminal or a rendered file: C0 and C1 controls
+ * (including escape sequences), the line and paragraph separators, and the bidi marks, embeddings,
+ * overrides and isolates. Numbers rather than a regex, so the ranges read the same everywhere.
+ */
+const UNPRINTABLE: [number, number][] = [
+  [0x0000, 0x001f],
+  [0x007f, 0x009f],
+  [0x200e, 0x200f],
+  [0x2028, 0x202e],
+  [0x2066, 0x2069],
+];
+
+export function isUnprintable(code: number): boolean {
+  return UNPRINTABLE.some(([from, to]) => code >= from && code <= to);
+}
 
 const csv = z
   .string()
