@@ -86,7 +86,7 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 
 ## Requirements
 
-- Node.js 22+ and pnpm
+- Node.js 22.12+ and pnpm
 - Git
 - GitHub CLI (`gh`) 2.50 or newer, logged in
 - Claude Code (`claude`), logged in with your subscription.
