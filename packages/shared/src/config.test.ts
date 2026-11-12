@@ -19,6 +19,13 @@ describe("isTrustedAuthor", () => {
 });
 
 describe("factoryConfigSchema", () => {
+  it("wants {port} in app.url, and passes no extra env to the app by default", () => {
+    const app = factoryConfigSchema.parse({ version: 1 }).app;
+    expect(app).toMatchObject({ url: "http://localhost:{port}", port_env: "PORT", ready_timeout_sec: 180, env: [] });
+    expect(factoryConfigSchema.safeParse({ version: 1, app: { url: "http://localhost:3000" } }).success).toBe(false);
+    expect(factoryConfigSchema.parse({ version: 1, app: { url: "http://127.0.0.1:{port}/app", env: ["DATABASE_URL"] } }).app.env).toEqual(["DATABASE_URL"]);
+  });
+
   it("fills safe defaults from a minimal config", () => {
     const config = factoryConfigSchema.parse({ version: 1 });
 

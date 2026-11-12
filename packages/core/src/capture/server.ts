@@ -2,7 +2,6 @@ import { createWriteStream, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname } from "node:path";
 import { execa, type ResultPromise } from "execa";
-import { withoutVars } from "../agents/runner.js";
 import { CHECK_ENV_DENYLIST } from "../gate/gate.js";
 import { isAlive, killTree } from "../util/process.js";
 
@@ -47,6 +46,8 @@ export interface StartAppOptions {
   port: number;
   /** `app.port_env`: the variable that carries the port. */
   portEnv: string;
+  /** `app.env`: further variables to pass through from the factory's environment. */
+  passEnv?: string[];
   url: string;
   /** Server output goes here, for the report when it does not come up. */
   logFile: string;
@@ -60,13 +61,76 @@ export interface AppServer {
   url: string;
   /** The shell's pid; stopping kills its whole tree. */
   pid: number;
-  /** Kill the server and everything it started, and wait until the shell is gone. Safe to call twice. */
+  /** Kill the server and everything it started, and wait until the shell is gone. A second call waits for the first. */
   stop(): Promise<void>;
 }
 
-/** Servers started by this process and not stopped yet, killed when the process exits. */
+/**
+ * What the app gets from the factory's environment: only what a shell, Node and package managers
+ * need to run, plus the names in `app.env`. An allowlist, not the checks' denylist: the app's pages
+ * are screenshotted and published, so nothing it renders may come from the user's environment.
+ */
+export const APP_ENV_ALLOWLIST = [
+  "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "SystemDrive",
+  "windir",
+  "ComSpec",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "LANG",
+  "NODE_ENV",
+];
+
+/** The app's environment: the allowlist plus `passEnv`, never a token, then the port. */
+export function appEnv(env: NodeJS.ProcessEnv, portEnv: string, port: number, passEnv: string[] = []): NodeJS.ProcessEnv {
+  const denied = new Set(CHECK_ENV_DENYLIST.map((n) => n.toUpperCase()));
+  const wanted = new Set([...APP_ENV_ALLOWLIST, ...passEnv].map((n) => n.toUpperCase()).filter((n) => !denied.has(n)));
+  const kept = Object.fromEntries(Object.entries(env).filter(([key]) => wanted.has(key.toUpperCase())));
+  // BROWSER=none: dev servers such as create-react-app would otherwise open a browser window.
+  return { ...kept, [portEnv]: String(port), BROWSER: "none" };
+}
+
+/** Servers started by this process and not stopped yet, killed when the process ends. */
 const live = new Set<number>();
-let exitHook = false;
+
+const killLive = () => {
+  for (const pid of live) killServer(pid);
+};
+/** SIGTERM and SIGHUP end the process without an "exit" event, so they take the servers down first. */
+const onSignal = (signal: NodeJS.Signals) => {
+  killLive();
+  // Without other listeners, Node's default for these signals was to end the process: keep that.
+  if (process.listenerCount(signal) === 0) process.exit(signal === "SIGTERM" ? 143 : 129);
+};
+
+function track(pid: number): void {
+  if (live.size === 0) {
+    // Ctrl+C ends the factory with process.exit, which still emits "exit".
+    process.on("exit", killLive);
+    process.once("SIGTERM", onSignal);
+    process.once("SIGHUP", onSignal);
+  }
+  live.add(pid);
+}
+
+function untrack(pid: number): void {
+  if (!live.delete(pid) || live.size > 0) return;
+  process.off("exit", killLive);
+  process.off("SIGTERM", onSignal);
+  process.off("SIGHUP", onSignal);
+}
 
 function killServer(pid: number): void {
   if (process.platform === "win32") {
@@ -94,8 +158,8 @@ function logTail(logFile: string): string {
 }
 
 /**
- * Start the app with the same scrubbed environment as the quality gate's checks (no Anthropic or
- * GitHub tokens: it runs code the builder wrote from issue text) and wait until its URL answers.
+ * Start the app with a minimal environment (appEnv: no tokens, nothing personal; it runs code the
+ * builder wrote from issue text, and its pages are published) and wait until its URL answers.
  * On any failure (exits early, never answers, cancelled) the server is killed before this throws,
  * so no caller can leave one running.
  */
@@ -112,8 +176,7 @@ export async function startApp(options: StartAppOptions): Promise<AppServer> {
     buffer: false,
     detached: process.platform !== "win32",
     extendEnv: false,
-    // BROWSER=none: dev servers such as create-react-app would otherwise open a browser window.
-    env: { ...withoutVars(process.env, CHECK_ENV_DENYLIST), [options.portEnv]: String(options.port), BROWSER: "none" },
+    env: appEnv(process.env, options.portEnv, options.port, options.passEnv),
   });
   child.all?.pipe(log);
   const pid = child.pid;
@@ -122,14 +185,7 @@ export async function startApp(options: StartAppOptions): Promise<AppServer> {
     log.end();
     throw new AppStartError(`could not start \`${options.command}\``);
   }
-  live.add(pid);
-  if (!exitHook) {
-    exitHook = true;
-    // Ctrl+C ends the factory with process.exit: still take the servers down with it.
-    process.once("exit", () => {
-      for (const p of live) killServer(p);
-    });
-  }
+  track(pid);
 
   // Set once the shell has exited; an object so the wait loop below sees the callback's write.
   const shell: { exitCode?: number; exited: boolean } = { exited: false };
@@ -137,17 +193,16 @@ export async function startApp(options: StartAppOptions): Promise<AppServer> {
     shell.exited = true;
     shell.exitCode = r.exitCode;
   });
-  let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    killServer(pid);
-    // The shell exits once its tree is gone; give it a moment, then make sure.
-    await Promise.race([done, new Promise((r) => setTimeout(r, 5000))]);
-    if (isAlive(pid)) killServer(pid);
-    live.delete(pid);
-    log.end();
-  };
+  let stopping: Promise<void> | undefined;
+  const stop = () =>
+    (stopping ??= (async () => {
+      killServer(pid);
+      // The shell exits once its tree is gone; give it a moment, then make sure.
+      await Promise.race([done, new Promise((r) => setTimeout(r, 5000))]);
+      if (isAlive(pid)) killServer(pid);
+      untrack(pid);
+      log.end();
+    })());
 
   const deadline = Date.now() + options.timeoutMs;
   try {

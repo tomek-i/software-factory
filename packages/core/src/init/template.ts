@@ -31,6 +31,9 @@ ${detection.appStart ? `  start: ${q(detection.appStart)}` : '  # start: "npm ru
   url: "http://localhost:{port}"
   port_env: "PORT"
   ready_timeout_sec: 180
+  # The app only gets PATH, temp and home folders and the like from your environment (its pages are
+  # published). List further variable names it needs here; tokens are never passed.
+  env: []
 
 # Gate modes: always (pass through) | auto (agent decides or escalates) | human (always stop for you)
 gates:
