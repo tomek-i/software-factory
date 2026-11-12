@@ -22,7 +22,7 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - The factory only works on issues you start (`factory run`). Opening an issue does not start a run.
 
 **What agents can do:**
-- Each role runs with its own permission allowlist (`--permission-mode dontAsk`). Most roles have no shell and can write only their own report file.
+- Each role runs with its own permission allowlist (`--permission-mode dontAsk`). Most roles have no shell and can write only their own files in the run's folder.
 - Agents ignore your Claude Code settings, hooks, plugins and MCP servers (`--setting-sources ""`, `--strict-mcp-config`).
 - Agents run on your Claude subscription. `ANTHROPIC_API_KEY` is removed from their environment.
 - The engine, not an agent, starts the app, drives the browser and records videos, and only on the app's own origin.
@@ -32,7 +32,7 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - Your checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN`, and a secret scan runs on every checked commit.
 
 **What always stops for you:**
-- Hard rules: protected paths, new or changed dependencies, lockfiles, package-source config, `.env`, key and certificate files, and deletions the issue does not name. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
+- Hard rules: protected paths, new dependencies or new dependency sources, any lockfile change, package-source config, `.env`, key and certificate files, and deletions the issue does not name. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
 - The merge gate, by default. The factory merges only the exact commit that passed the gate (`gh pr merge --match-head-commit`).
 
 ## Out of scope

@@ -32,7 +32,7 @@ pnpm test
 
 - Branch from `main` as `type/short-description`, e.g. `fix/merge-gate-retry`.
 - The PR title is a [Conventional Commit](https://www.conventionalcommits.org/) subject: `type(scope): subject`, lowercase, imperative, no period. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
-- The title becomes the commit message on `main` and feeds the changelog.
+- Commit messages follow the same format.
 - Every change comes with tests. Never weaken, skip or delete a test to make it pass.
 - `pnpm lint`, `pnpm typecheck` and `pnpm test` must pass. CI runs them on Linux and Windows.
 - Update the README when behaviour, config or commands change.
