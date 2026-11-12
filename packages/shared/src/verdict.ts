@@ -60,6 +60,8 @@ export const verdictHeaderSchemas = {
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),
   approver: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
+  // PLAN comes with a ## Plan json block (parseCapturePlan); SKIP when nothing visible can be shown.
+  capture: z.object({ CAPTURE: z.enum(["PLAN", "SKIP"]) }),
 } as const;
 
 export type VerdictKind = keyof typeof verdictHeaderSchemas;

@@ -81,6 +81,9 @@ export const factoryConfigSchema = z.object({
       start: z.string().optional(),
       url: z.string().default("http://localhost:{port}"),
       port_env: z.string().default("PORT"),
+      // How long `start` may take until `url` answers. It also runs in a fresh checkout of the
+      // default branch for the before shots, so an install step in `start` has to fit in here.
+      ready_timeout_sec: z.number().int().positive().default(180),
     })
     .default({}),
   gates: z
