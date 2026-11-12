@@ -24,16 +24,21 @@ function listFiles(dir: string, prefix = ""): string[] {
   return out.sort();
 }
 
-/** `round-N/checks.md` of the highest round N (numerically) that has one. */
-function latestChecks(files: string[]): string | undefined {
+/** `round-N/<name>` of the highest round N (numerically) that has one. */
+function latestInRound(files: string[], name: string): string | undefined {
   let best: { round: number; path: string } | undefined;
   for (const path of files) {
-    const match = /^round-(\d+)\/checks\.md$/.exec(path);
-    if (!match) continue;
+    const match = /^round-(\d+)\/(.+)$/.exec(path);
+    if (!match || match[2] !== name) continue;
     const round = Number(match[1]);
     if (!best || round > best.round) best = { round, path };
   }
   return best?.path;
+}
+
+/** `round-N/checks.md` of the highest round N that has one. */
+function latestChecks(files: string[]): string | undefined {
+  return latestInRound(files, "checks.md");
 }
 
 function fileList(files: string[]): string {
@@ -45,10 +50,16 @@ function fileList(files: string[]): string {
  * on every OS, and anything that would leave the run folder (`..`, absolute or drive paths) is refused.
  */
 function resolveInRunDir(runDir: string, file: string, files: string[]): string {
-  const short: Record<string, string | undefined> = { triage: "triage.md", build: "build.md", checks: latestChecks(files), approval: "approval.md" };
+  const short: Record<string, string | undefined> = {
+    triage: "triage.md",
+    build: "build.md",
+    checks: latestChecks(files),
+    capture: latestInRound(files, "capture-report.md"),
+    approval: "approval.md",
+  };
   if (Object.hasOwn(short, file)) {
     const path = short[file];
-    if (!path) throw new CliError(`No round has a checks.md yet. Files in the run folder:\n${fileList(files)}`);
+    if (!path) throw new CliError(`No round has a ${file === "capture" ? "capture-report.md" : "checks.md"} yet. Files in the run folder:\n${fileList(files)}`);
     return path;
   }
   const slashed = file.replace(/\\/g, "/");
@@ -116,6 +127,15 @@ function overview(run: Run, issueTitle: string | undefined, runDir: string, file
       if (!(err instanceof VerdictParseError)) throw err;
       lines.push(`${path} (could not be parsed: ${err.problems[0] ?? err.message})`);
     }
+  }
+
+  // The capture stage's report: its summary says what was shot, new browser errors and the upload.
+  const capture = latestInRound(files, "capture-report.md");
+  if (capture) {
+    const text = readFileSync(join(runDir, capture), "utf8");
+    const summary = /^## Summary\s*$([\s\S]*?)(?=^#{1,3}\s|(?![\s\S]))/m.exec(text)?.[1] ?? "";
+    const items = summary.split(/\r?\n/).flatMap((l) => /^[-*]\s+(.+)$/.exec(l.trim())?.[1] ?? []);
+    lines.push("", capture, ...(items.length ? items.map((s) => `  - ${s}`) : ["  (no summary)"]));
   }
 
   // The merge stage: the quality gate again after merging the default branch in, and the approver's call.

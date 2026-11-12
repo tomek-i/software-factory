@@ -60,6 +60,23 @@ describe("factory show <run>", () => {
     expect(runShow(dir, "16", "approval")).toContain("the issue leaves the price open");
   });
 
+  it("lists the latest capture report with its summary, and shows it as `capture`", () => {
+    const report = (what: string) => `# Capture\n\n## Summary\n- ${what}\n- no new browser errors\n\n## Pages\n| a |\n`;
+    const { dir } = setup({
+      "round-1/checks.md": checks("PASS", "round one"),
+      "round-1/capture-report.md": report("old capture"),
+      "round-2/checks.md": checks("PASS", "round two"),
+      "round-2/capture-report.md": report("2 page(s) at 1440 and 390 px"),
+      "round-2/capture/after-home-1440.png": "png",
+    });
+
+    const text = runShow(dir, "16");
+    expect(text).toContain("round-2/capture-report.md\n  - 2 page(s) at 1440 and 390 px\n  - no new browser errors\n");
+    expect(text).toContain("  round-2/capture/after-home-1440.png");
+    expect(runShow(dir, "16", "capture")).toBe(report("2 page(s) at 1440 and 390 px"));
+    expect(() => runShow(setup({ "triage.md": TRIAGE }).dir, "16", "capture")).toThrow(/No round has a capture-report\.md yet/);
+  });
+
   it("prints the run, the verdict summaries with their paths, and the files", () => {
     const { dir, runId } = setup(
       {
