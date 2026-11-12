@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
+import { runNew, type NewOptions } from "./commands/new.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
 import { styleFor } from "./style.js";
@@ -24,6 +25,17 @@ export function buildProgram(): Command {
     .description("pull open issues from GitHub into the local database")
     .action(() => {
       console.log(runSync(process.cwd()));
+    });
+
+  program
+    .command("new")
+    .description("draft a GitHub issue from an idea, and create and queue it once approved")
+    .argument("[idea...]", 'the idea, e.g. "export orders as CSV"')
+    .option("--approve <draft>", "create a saved draft on GitHub and queue it")
+    .option("--discard <draft>", "drop a saved draft")
+    .option("--list", "list drafts waiting for approval")
+    .action(async (idea: string[], options: NewOptions) => {
+      console.log(await runNew(process.cwd(), idea, options, { style: styleFor(process.stdout) }));
     });
 
   program

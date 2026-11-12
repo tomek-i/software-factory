@@ -98,6 +98,8 @@ export const verdictHeaderSchemas = {
   approver: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
   // How many lessons the `## Lessons` block proposes; zero is the common case.
   learn: z.object({ LESSONS: z.string().regex(/^\d+$/, "must be a whole number").transform(Number) }),
+  // The issues themselves follow the header in delimited blocks (see drafts/draft.ts in core).
+  issue_writer: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
 } as const;
 
 export type VerdictKind = keyof typeof verdictHeaderSchemas;

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createWriteStream, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { execa } from "execa";
 import type { FactoryEvents } from "../events.js";
@@ -129,13 +130,16 @@ function excerptOf(summary: StreamSummary, outcome: AgentOutcome): string {
   return lines.join("\n").trim();
 }
 
-/** Spawn headless Claude Code for one agent turn and record it in agent_runs. */
-export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; env?: NodeJS.ProcessEnv }): AgentRunner {
+/**
+ * Spawn headless Claude Code for one agent turn and record it in agent_runs. Without a store nothing
+ * is recorded: an issue draft (`factory new`) has no run yet for the record to belong to.
+ */
+export function createAgentRunner(deps: { store?: Store; events?: FactoryEvents; env?: NodeJS.ProcessEnv }): AgentRunner {
   return async (options) => {
     const env = deps.env ?? process.env;
     const sessionId = options.resumeSessionId ?? randomUUID();
     mkdirSync(options.logDir, { recursive: true });
-    const record = deps.store.startAgentRun({
+    const record = deps.store?.startAgentRun({
       run_id: options.runId,
       role: options.role,
       model: options.model,
@@ -143,11 +147,12 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
       session_id: sessionId,
       log_dir: options.logDir,
     });
-    const logPath = record.log_path!;
+    const agentRunId = record?.id ?? `agent-${randomUUID().slice(0, 8)}`;
+    const logPath = record?.log_path ?? join(options.logDir, `${agentRunId}.jsonl`);
     deps.events?.emit({
       type: "agent:start",
       runId: options.runId,
-      agentRunId: record.id,
+      agentRunId,
       role: options.role,
       sessionId,
       resumed: !!options.resumeSessionId,
@@ -164,7 +169,7 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
       buffer: { stdout: false, stderr: true },
       maxBuffer: { stderr: 1_000_000 },
     });
-    if (child.pid !== undefined) deps.store.setAgentPid(record.id, child.pid);
+    if (record && child.pid !== undefined) deps.store?.setAgentPid(record.id, child.pid);
 
     // Timeouts and cancellation kill the whole tree while the parent is still alive; once it has
     // exited, its children can no longer be found from its pid.
@@ -185,7 +190,7 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
     lines.on("line", (line) => {
       log.write(line + "\n");
       for (const activity of applyStreamLine(summary, line)) {
-        deps.events?.emit({ type: "agent:activity", runId: options.runId, agentRunId: record.id, summary: activity });
+        deps.events?.emit({ type: "agent:activity", runId: options.runId, agentRunId, summary: activity });
       }
     });
 
@@ -202,7 +207,7 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
     if (stopped === "cancelled") outcome = { kind: "error", subtype: "cancelled", message: "agent was cancelled" };
 
     const result: AgentRunResult = {
-      agentRunId: record.id,
+      agentRunId,
       sessionId: summary.sessionId ?? sessionId,
       outcome,
       exitCode: finished.exitCode,
@@ -214,7 +219,7 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
     };
     const status =
       outcome.kind === "ok" ? "ok" : outcome.kind === "rate_limited" ? "rate_limited" : stopped === "cancelled" ? "cancelled" : "error";
-    deps.store.finishAgentRun(record.id, {
+    if (record) deps.store?.finishAgentRun(record.id, {
       status,
       session_id: result.sessionId,
       cost_usd: result.costUsd,
@@ -225,7 +230,7 @@ export function createAgentRunner(deps: { store: Store; events?: FactoryEvents; 
     deps.events?.emit({
       type: "agent:end",
       runId: options.runId,
-      agentRunId: record.id,
+      agentRunId,
       role: options.role,
       status,
       costUsd: result.costUsd ?? null,

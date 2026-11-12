@@ -1,5 +1,5 @@
 import { fetchIssue, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
-import { isTrustedAuthor, type FactoryConfig } from "@factory/shared";
+import { isTrustedIssue, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 import { reconcileRuns } from "./reconcile.js";
 import { plain, type Style } from "../style.js";
@@ -28,7 +28,7 @@ function table(issues: Issue[], config: FactoryConfig, style: Style): string {
       // Pad the plain number, then style it, so the columns stay aligned.
       const cell = style.detail(number) + " ".repeat(width - number.length);
       const closed = i.state === "closed" ? ` ${style.detail("(closed)")}` : "";
-      const trust = isTrustedAuthor(config, i.author) ? "" : ` ${style.attention("(untrusted)")}`;
+      const trust = isTrustedIssue(config, i) ? "" : ` ${style.attention("(untrusted)")}`;
       return `${mark} ${cell}  ${i.title}${closed}  @${i.author}${trust}`;
     })
     .join("\n");
@@ -78,7 +78,7 @@ export function runQueue(cwd: string, values: string[], queued: boolean, run?: C
             if (queued && !store.getIssue(project.id, n)) fetchIssue(store, project, n, run);
             const issue = store.setQueued(project.id, n, queued);
             const line = `${queued ? "Queued" : "Unqueued"} #${n} ${issue.title}`;
-            return queued && !isTrustedAuthor(config, issue.author) ? `${line}\n${UNTRUSTED_NOTE}` : line;
+            return queued && !isTrustedIssue(config, issue) ? `${line}\n${UNTRUSTED_NOTE}` : line;
           } catch (err) {
             return `Skipped #${n}: ${(err as Error).message}`;
           }

@@ -125,6 +125,33 @@ export const MIGRATIONS: readonly string[] = [
     ELSE build_iterations + 1
   END;
   `,
+  // created_by_factory: the factory itself opened the issue on GitHub (`factory new`), from the
+  // operator's own idea, so its text counts as trusted whoever the gh login is. Only set locally,
+  // never read from GitHub, so a sync cannot set or clear it.
+  `
+  ALTER TABLE issues ADD COLUMN created_by_factory INTEGER NOT NULL DEFAULT 0;
+  `,
+  // What `factory new --approve` has created from a draft so far, so an interrupted approval
+  // resumes instead of creating issues again. Kept here, not in the draft folder: a file in the
+  // working tree could come from a branch and name someone else's issue as the factory's.
+  // fingerprint ties each number to the draft entry it was created from.
+  `
+  CREATE TABLE draft_issues (
+    project_id   TEXT NOT NULL REFERENCES projects(id),
+    draft_id     TEXT NOT NULL,
+    position     INTEGER NOT NULL,
+    number       INTEGER NOT NULL,
+    fingerprint  TEXT NOT NULL,
+    linked       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (project_id, draft_id, position)
+  );
+  CREATE TABLE drafts_done (
+    project_id  TEXT NOT NULL REFERENCES projects(id),
+    draft_id    TEXT NOT NULL,
+    done_at     TEXT NOT NULL,
+    PRIMARY KEY (project_id, draft_id)
+  );
+  `,
   // Lessons the learner proposed after a run. They only reach `.factory/lessons.md` (through a PR)
   // once a human approves them; pull_request is that PR, comment why a human rejected one.
   `
