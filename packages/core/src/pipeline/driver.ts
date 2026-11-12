@@ -694,7 +694,7 @@ export class PipelineDriver {
       } catch (err) {
         // Only the round cap is an expected stop here; anything else is reported as the error it is.
         if (!(err instanceof TransitionError) || this.load(run.id).state !== run.state || !err.problems.some((p) => p.includes("cap reached"))) throw err;
-        const spec = readValid("refine", specFile(dir, round, "refine.md"), refined);
+        const spec = this.currentSpec(run)?.verdict;
         const open = [...problems, ...bullets(spec && section(spec.body, "open questions"))];
         return this.waitForHuman(run, "critic", [`the spec critic still asks for revisions after spec round ${round}: ${err.problems.join("; ")}`, ...open.map((q) => `open: ${q}`)], {
           specRound: round,
@@ -715,7 +715,7 @@ export class PipelineDriver {
     this.deps.store.recordDecision({ run_id: run.id, gate: "critic", mode, outcome: "proceed", actor: mode === "auto" ? "agent" : "system", comment });
   }
 
-  /** The critic checks the issue, and this round's refined spec if there is one, against the code. */
+  /** The critic checks the issue, and the current refined spec if there is one, against the code. */
   private criticTurn(run: Run, round: number): Promise<TurnResult<"critic">> {
     const issue = this.issueOf(run);
     const dir = this.runDir(run);
@@ -724,8 +724,8 @@ export class PipelineDriver {
     mkdirSync(dirname(outputFile), { recursive: true });
     const files = writeRoleFiles(dir, "critic", rolePrompt("critic", this.deps.read), permissionProfile("critic", { runDirFromCwd: relative(root, dir), outputFile }));
     const sections = this.triageScope(dir);
-    const spec = readValid("refine", specFile(dir, round, "refine.md"), refined);
-    if (spec) sections.push({ title: `Refined spec (round ${round})`, body: spec.body });
+    const spec = this.currentSpec(run);
+    if (spec) sections.push({ title: `Refined spec (round ${spec.round})`, body: spec.verdict.body });
     const earlier = round > 1 ? readValid("critic", specFile(dir, round - 1, "critic.md"), () => []) : undefined;
     if (earlier) sections.push({ title: `Your verdict on round ${round - 1}: ${earlier.header.VERDICT}`, body: earlier.body });
     return runTurn({
@@ -780,7 +780,7 @@ export class PipelineDriver {
           defaultBranch: this.defaultBranch,
           portBase: run.port_base,
           checks: this.deps.config.checks,
-          sections: [...this.triageScope(dir), ...this.acceptedSpec(dir)],
+          sections: [...this.triageScope(dir), ...this.acceptedSpec(run)],
           instructions: [
             `Implement issue #${issue.number} in the working directory on branch \`${worktree.branch}\`.`,
             "Add tests, run the checks, commit (do not push), then write the output file.",
@@ -1439,14 +1439,28 @@ export class PipelineDriver {
   }
 
   /**
-   * What the builder gets from the latest spec round: the refined spec, and the critic's notes when
-   * it accepted it. A spec a human approved at the critic gate comes without the critic's notes.
+   * The refined spec the critic and the builder work from: the latest one refine wrote, as long as the
+   * run has not been through triage since. Triaging again (after the author answered) makes it stale,
+   * and a human sending the run back to the critic keeps it.
    */
-  private acceptedSpec(dir: string): { title: string; body: string }[] {
-    const round = latestSpecRound(dir);
-    if (!round) return [];
-    const spec = readValid("refine", specFile(dir, round, "refine.md"), refined);
-    const critique = readValid("critic", specFile(dir, round, "critic.md"), (v) => (v.header.VERDICT === "ACCEPT" ? [] : ["not accepted"]));
+  private currentSpec(run: Run): { round: number; verdict: ParsedVerdict<"refine"> } | undefined {
+    const events = this.deps.store.listEvents(run.id);
+    if (events.findLastIndex((e) => e.to_state === "refine") < events.findLastIndex((e) => e.to_state === "triage")) return undefined;
+    const dir = this.runDir(run);
+    const round = latestSpecRound(dir, "refine.md");
+    const verdict = round ? readValid("refine", specFile(dir, round, "refine.md"), refined) : undefined;
+    return verdict && { round, verdict };
+  }
+
+  /**
+   * What the builder gets: the current refined spec, and the critic's notes when the latest critic
+   * accepted it. A spec a human approved at the critic gate comes without the critic's notes.
+   */
+  private acceptedSpec(run: Run): { title: string; body: string }[] {
+    const dir = this.runDir(run);
+    const spec = this.currentSpec(run)?.verdict;
+    const round = latestSpecRound(dir, "critic.md");
+    const critique = round ? readValid("critic", specFile(dir, round, "critic.md"), (v) => (v.header.VERDICT === "ACCEPT" ? [] : ["not accepted"])) : undefined;
     return [
       ...(spec ? [{ title: "Refined spec", body: spec.body }] : []),
       ...(critique ? [{ title: "Spec critic's notes", body: critique.body }] : []),

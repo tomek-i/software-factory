@@ -138,6 +138,32 @@ describe("PipelineDriver", () => {
       expect(existsSync(join(runDirOf(root, run.id), "spec-2", "critic.md"))).toBe(true);
     });
 
+    it("keeps the refined spec when a human sends the run back to the critic, but drops it once triage runs again", async () => {
+      const { driver, store, fake } = setup([{ output: INCOMPLETE }, refined(1), revise(1), accept, blockedBuild], {
+        config: config("critic: auto", "loops:\n  max_critic_rounds: 1\n"),
+      });
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "critic", { comment: "check it again" });
+      await driver.drive(run.id);
+
+      expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "critic", "critic", "builder"]);
+      expect(fake.calls()[3]!.stdin).toContain("## Refined spec (round 1)");
+      expect(fake.calls()[4]!.stdin).toContain("feature.txt says fixed (v1)");
+
+      const again = setup(
+        [{ output: INCOMPLETE }, refined(1), { role: "critic", output: "VERDICT: ACCEPT\n\n## Summary\n- ok\n\n## Questions\n- JSON?\n" }, { output: TRIAGE() }, accept, blockedBuild],
+        { config: config("critic: auto") },
+      );
+      const second = again.driver.startRun(12);
+      await again.driver.drive(second.id);
+      again.driver.retriage(second.id);
+      await again.driver.drive(second.id);
+      expect(again.fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "critic", "triage", "critic", "builder"]);
+      expect(again.fake.calls()[4]!.stdin).not.toContain("## Refined spec");
+      expect(again.fake.calls()[5]!.stdin).not.toContain("(v1)");
+    });
+
     it("posts the reasons and ends the run when the critic rejects", async () => {
       const reject: FakeStep = { role: "critic", output: "VERDICT: REJECT\n\n## Summary\n- wrong\n\n## Problems\n- feature.txt already exists and says fixed\n" };
       const { driver, store, comments } = setup([{ output: TRIAGE() }, reject], { config: config("critic: auto") });
