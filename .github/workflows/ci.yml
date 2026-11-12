@@ -34,6 +34,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm build
+      # Before the build, so tests can only pass on the sources: a stale dist/ cannot stand in for them.
       # Tests that need Chromium, ffmpeg or the narrate plugin skip themselves when those are missing.
       - run: pnpm test
+      - run: pnpm build

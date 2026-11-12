@@ -54,7 +54,7 @@ export const walkthroughStepSchema = z
   ])
   .superRefine((step, ctx) => {
     if (step.action === "click" && (step.selector === undefined) === (step.text === undefined)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "click needs exactly one of selector or text" });
+      ctx.addIssue({ code: "custom", message: "click needs exactly one of selector or text" });
     }
   });
 export type WalkthroughStep = z.infer<typeof walkthroughStepSchema>;
@@ -79,10 +79,10 @@ export const capturePlanSchema = z
   .superRefine((plan, ctx) => {
     const names = plan.pages.map((p) => p.name);
     const twice = [...new Set(names.filter((n, i) => names.indexOf(n) !== i))];
-    if (twice.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pages"], message: `page names must be unique: ${twice.join(", ")}` });
+    if (twice.length) ctx.addIssue({ code: "custom", path: ["pages"], message: `page names must be unique: ${twice.join(", ")}` });
     const shots = plan.walkthrough.flatMap((s) => (s.action === "screenshot" ? [s.name] : []));
     const repeated = [...new Set(shots.filter((n, i) => shots.indexOf(n) !== i))];
-    if (repeated.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["walkthrough"], message: `screenshot names must be unique: ${repeated.join(", ")}` });
+    if (repeated.length) ctx.addIssue({ code: "custom", path: ["walkthrough"], message: `screenshot names must be unique: ${repeated.join(", ")}` });
   });
 export type CapturePlan = z.infer<typeof capturePlanSchema>;
 

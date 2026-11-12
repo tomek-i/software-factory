@@ -28,7 +28,7 @@ describe("parseCapturePlan", () => {
     expect(parseCapturePlan("## Summary\n- x\n").problems).toEqual(["## Plan with a ```json block is missing"]);
     expect(parseCapturePlan(`${body({ pages: [home] })}\`\`\`json\n{}\n\`\`\`\n`).problems).toEqual(["## Plan must contain exactly one ```json block"]);
     expect(parseCapturePlan("## Plan\n```json\n{ nope\n```\n").problems[0]).toMatch(/^plan JSON is invalid/);
-    expect(parseCapturePlan(body({ pages: [] })).problems).toEqual(["plan.pages: Array must contain at least 1 element(s)"]);
+    expect(parseCapturePlan(body({ pages: [] })).problems).toEqual(["plan.pages: Too small: expected array to have >=1 items"]);
   });
 });
 
