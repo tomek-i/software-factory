@@ -10,9 +10,9 @@ The `protect-main` ruleset applies to the default branch:
 - Changes land only through a pull request. No approving review is required: there is one maintainer, who cannot approve their own PRs.
 - PRs merge only by squash, so history stays linear and the PR title becomes the commit.
 - Required checks: `test (ubuntu-latest)` and `test (windows-latest)` from CI, and `conventional` from the PR-title check. They must come from GitHub Actions.
-- The branch must be up to date with `main` before it merges. The factory already merges `main` into its branch before merging (see the README's merge stage).
+- The branch must be up to date with `main` before it merges. The factory merges `main` into its branch once, before it waits for the checks. If `main` moves during that wait, GitHub refuses the merge and the run stops for you.
 - Force pushes and deleting `main` are refused.
-- CLA is not required: the maintainer and the bots are on its allowlist.
+- The `cla` check is not required, so GitHub does not block an outside contributor's PR that has no signed CLA. Check the CLA comment before merging one.
 
 ## Release PRs
 
@@ -20,7 +20,7 @@ release-please opens its release PR with the workflow's `GITHUB_TOKEN`. GitHub d
 
 - Repo admins may bypass the ruleset, but only by merging a pull request (`bypass_mode: pull_request`). Direct and force pushes stay refused for admins too.
 - To merge a release PR, tick "Merge without waiting for requirements to be met".
-- The factory runs as its user. If that user is an admin, it could merge without the checks, but it waits for the required checks itself and stops when one fails.
+- The factory waits for the required checks itself and stops when one fails, so the bypass is not what it relies on to merge.
 
 ## Repo settings
 
