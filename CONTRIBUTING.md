@@ -33,6 +33,7 @@ pnpm test
 - Branch from `main` as `type/short-description`, e.g. `fix/merge-gate-retry`.
 - The PR title is a [Conventional Commit](https://www.conventionalcommits.org/) subject: `type(scope): subject`, lowercase, imperative, no period. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. A check fails the PR otherwise.
 - PRs are squash-merged, so the PR title becomes the commit on `main`.
+- `main` is protected: changes land only through a PR, CI and the title check must pass, and the branch must be up to date with `main`. See [docs/repo-settings.md](docs/repo-settings.md).
 - Commit messages follow the same format.
 - Every change comes with tests. Never weaken, skip or delete a test to make it pass.
 - `pnpm lint`, `pnpm typecheck` and `pnpm test` must pass. CI runs them on Linux and Windows.
