@@ -30,7 +30,7 @@ import type { TrustedReader } from "../config/trusted.js";
 import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
-import { MEDIA_MARKER, mediaTag } from "../github/media.js";
+import { MEDIA_MARKER } from "../github/media.js";
 import { factoryComment, type GithubPort, type PullRequestState, type RequiredCheck } from "../github/port.js";
 import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunEvent, type RunPatch, type Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -1139,7 +1139,7 @@ export class PipelineDriver {
       }
       if (this.load(run.id).state !== run.state) return undefined; // cancelled while the app ran
       outcome.restored = this.restoreWorktree(worktree);
-      this.uploadMedia(run, outcome);
+      await this.uploadMedia(run, outcome);
     }
 
     writeFileSync(join(roundDir, "capture-report.md"), renderCaptureReport(outcome));
@@ -1244,7 +1244,7 @@ export class PipelineDriver {
   }
 
   /** Upload the screenshots and the video. A failure is noted in the outcome; it never stops the run. */
-  private uploadMedia(run: Run, outcome: CaptureOutcome): void {
+  private async uploadMedia(run: Run, outcome: CaptureOutcome): Promise<void> {
     const result = outcome.result;
     if (result?.status !== "captured") return;
     const files = [
@@ -1255,9 +1255,12 @@ export class PipelineDriver {
     ];
     if (files.length === 0) return;
     try {
-      outcome.urls = this.capturer.publish(run.id, files);
-      // So ending the run without merging can delete the media again (see deleteMedia).
-      writeFileSync(join(this.runDir(run), MEDIA_MARKER), `${mediaTag(run.id)}\n`);
+      const published = await this.capturer.publish(run.id, run.pr_number, files);
+      outcome.urls = published.urls;
+      outcome.mediaFallback = published.fallback;
+      // So ending the run without merging can delete the release again (see deleteMedia). PR
+      // attachments cannot be deleted, so there is nothing to remember for them.
+      if (published.release) writeFileSync(join(this.runDir(run), MEDIA_MARKER), `${published.release}\n`);
     } catch (err) {
       outcome.uploadProblem = (err as Error).message.split("\n")[0];
     }

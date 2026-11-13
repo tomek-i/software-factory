@@ -48,9 +48,10 @@ describe("PipelineDriver > capture", () => {
    * A capture port without a browser: writes stand-in media into the run folder (as the real one
    * does), optionally leaves a file in the worktree, and returns `result` or a captured result.
    */
-  function fakeCapture(options: { result?: Partial<CaptureResult>; throws?: string; uploadError?: string; litter?: boolean } = {}) {
+  function fakeCapture(options: { result?: Partial<CaptureResult>; throws?: string; uploadError?: string; litter?: boolean; attached?: boolean } = {}) {
     const requests: CaptureRequest[] = [];
     const uploads: string[][] = [];
+    const prNumbers: (number | null)[] = [];
     const port: CapturePort = {
       capture: async (request) => {
         requests.push(request);
@@ -78,13 +79,17 @@ describe("PipelineDriver > capture", () => {
           ...options.result,
         };
       },
-      publish: (runId, files) => {
+      // Unless `attached`, attaching fails and the media goes to the draft release, as without a signed-in browser.
+      publish: async (runId, prNumber, files) => {
         uploads.push(files);
+        prNumbers.push(prNumber);
         if (options.uploadError) throw new Error(options.uploadError);
-        return Object.fromEntries(files.map((f) => [basename(f), `https://github.com/o/r/releases/download/factory-media-${runId}/${basename(f)}`]));
+        if (options.attached) return { urls: Object.fromEntries(files.map((f) => [basename(f), `https://github.com/user-attachments/assets/${basename(f).replace(/\W/g, "-")}`])) };
+        const urls = Object.fromEntries(files.map((f) => [basename(f), `https://github.com/o/r/releases/download/factory-media-${runId}/${basename(f)}`]));
+        return { urls, release: `factory-media-${runId}`, fallback: "the factory's browser is not signed in to GitHub: run `factory login github`" };
       },
     };
-    return { port, requests, uploads };
+    return { port, requests, uploads, prNumbers };
   }
 
   const infos = (seen: { type: string; message?: string }[]) => seen.flatMap((e) => (e.type === "info" ? [e.message!] : []));
@@ -101,6 +106,22 @@ describe("PipelineDriver > capture", () => {
     expect(uploaded).not.toContain("walkthrough.webm");
     const url = `https://github.com/o/r/releases/download/factory-media-${run.id}/walkthrough-narrated.mp4`;
     expect(edits.at(-1)!.body).toContain(`**Walkthrough video (narrated):** [walkthrough-narrated.mp4](${url})`);
+  });
+
+  it("attaches the media to the run's PR: everyone can see it, the video plays inline, and there is no release to delete", async () => {
+    const capture = fakeCapture({ attached: true });
+    const { driver, store, root, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
+    expect(capture.prNumbers).toEqual([store.getRun(run.id)!.pr_number]);
+    const body = edits.at(-1)!.body;
+    expect(body).toContain('<img src="https://github.com/user-attachments/assets/after-feature-1440-png"');
+    expect(body).toContain("**Walkthrough video:**\n\nhttps://github.com/user-attachments/assets/walkthrough-webm");
+    expect(body).not.toContain("only maintainers");
+    const dir = runDirOf(root, run.id);
+    expect(readFileSync(join(dir, "round-1", "capture-report.md"), "utf8")).toContain("- media uploaded (4 files) as PR attachments");
+    expect(existsSync(join(dir, MEDIA_MARKER))).toBe(false);
   });
 
   it("skips capture without an agent when triage did not list ui, or no app.start is configured", async () => {
@@ -159,6 +180,8 @@ describe("PipelineDriver > capture", () => {
     expect(body).toContain(`| **feature** \`/feature\` 1440px | _new screen_ | <img src="${url("after-feature-1440.png")}"`);
     expect(body).toContain(`**Walkthrough video:** [walkthrough.webm](${url("walkthrough.webm")})`);
     expect(body).toContain("- home at 1440px: `console error: boom`");
+    expect(body).toContain("- only maintainers signed in to GitHub can see this media (a draft release): `the factory's browser is not signed in to GitHub: run 'factory login github'`");
+    expect(readFileSync(join(dir, "round-1", "capture-report.md"), "utf8")).toContain("- media uploaded (4 files) to the draft release, visible to maintainers only: the factory's browser is not signed in to GitHub");
     expect(body).toContain("## Review notes");
     expect(body).toContain("- minor: it says fixed (feature.txt:1)");
     expect(body.indexOf("## Screenshots")).toBeLessThan(body.indexOf("## Review notes"));
@@ -272,9 +295,9 @@ describe("PipelineDriver > capture", () => {
           });
           return { status: "failed", problem: "cancelled", pages: [], notes: [] };
         },
-        publish: () => {
+        publish: async () => {
           published = true;
-          return {};
+          return { urls: {} };
         },
       },
     });

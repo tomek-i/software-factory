@@ -11,6 +11,8 @@ export interface CaptureOutcome {
   /** Uploaded media: file name -> URL. */
   urls?: Record<string, string>;
   uploadProblem?: string;
+  /** Why the media went to the draft release instead of being attached to the PR. */
+  mediaFallback?: string;
   /** Files the app left behind in the run's worktree, which the engine restored. */
   restored?: string[];
 }
@@ -82,7 +84,10 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
     const walk = walkthroughLine(result);
     if (walk) lines.push(`- ${walk}`);
   }
-  if (outcome.urls) lines.push(`- media uploaded (${Object.keys(outcome.urls).length} files)`);
+  if (outcome.urls) {
+    const where = outcome.mediaFallback ? `to the draft release, visible to maintainers only: ${firstLine(outcome.mediaFallback)}` : "as PR attachments";
+    lines.push(`- media uploaded (${Object.keys(outcome.urls).length} files) ${where}`);
+  }
   if (outcome.uploadProblem) lines.push(`- media could not be uploaded: ${firstLine(outcome.uploadProblem)}`);
 
   if (result?.status === "captured" && !outcome.problem) {
@@ -141,6 +146,10 @@ function cell(text: string): string {
   return text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
+function isAttachment(url: string): boolean {
+  return url.startsWith("https://github.com/user-attachments/");
+}
+
 function image(urls: Record<string, string>, shot: Shot | undefined, alt: string): string | undefined {
   const name = fileName(shot);
   const url = name ? urls[name] : undefined;
@@ -173,14 +182,20 @@ export function screenshotsSection(outcome: CaptureOutcome, runId: string): stri
   // The narrated video replaces the silent one when there is one; only one of them is uploaded.
   const shown = w?.narrated ?? w?.video;
   const video = shown ? urls[basename(shown)] : undefined;
-  if (video) parts.push(`**Walkthrough video${w?.narrated ? " (narrated)" : ""}:** [${basename(shown!)}](${video})`);
+  const label = `**Walkthrough video${w?.narrated ? " (narrated)" : ""}:**`;
+  // An attached video's bare link on its own line is what GitHub turns into a player.
+  if (video) parts.push(isAttachment(video) ? `${label}\n\n${video}` : `${label} [${basename(shown!)}](${video})`);
   if (w?.narrationProblem) parts.push(`No narration: ${brief(w.narrationProblem)}`);
   if (w?.problem) parts.push(`The walkthrough stopped early: ${brief(w.problem)}`);
   const fresh = newErrors(result.pages);
   if (fresh.length) {
     parts.push(`**New browser errors**\n${fresh.flatMap((e) => e.errors.map((s) => `- ${e.page} at ${e.width}px: ${code(s)}`)).join("\n")}`);
   }
-  const notes = [...result.notes.map((n) => `- ${n}`), ...(result.beforeProblem ? [`- no before shots: ${brief(result.beforeProblem)}`] : [])];
+  const notes = [
+    ...result.notes.map((n) => `- ${n}`),
+    ...(result.beforeProblem ? [`- no before shots: ${brief(result.beforeProblem)}`] : []),
+    ...(outcome.mediaFallback ? [`- only maintainers signed in to GitHub can see this media (a draft release): ${brief(outcome.mediaFallback)}`] : []),
+  ];
   if (notes.length) parts.push(notes.join("\n"));
   return parts.join("\n\n");
 }

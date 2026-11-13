@@ -58,7 +58,10 @@ describe("PipelineDriver: the whole pipeline", () => {
         notes: ["no before shot of feature (/feature): it is a new screen"],
       };
     },
-    publish: (runId, files) => Object.fromEntries(files.map((f) => [basename(f), `https://github.com/o/r/releases/download/factory-media-${runId}/${basename(f)}`])),
+    publish: async (runId, _pr, files) => ({
+      urls: Object.fromEntries(files.map((f) => [basename(f), `https://github.com/o/r/releases/download/factory-media-${runId}/${basename(f)}`])),
+      release: `factory-media-${runId}`,
+    }),
   };
 
   it("takes an incomplete UI issue from triage through refine, critic, build, gate, review, capture, PR and merge to learn", async () => {

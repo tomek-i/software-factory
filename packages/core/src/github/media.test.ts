@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Project } from "../store/store.js";
 import type { CommandRunner, ExecResult } from "../util/exec.js";
-import { deleteMedia, mediaTag, uploadMedia } from "./media.js";
+import { deleteMedia, mediaTag, publishMedia, uploadMedia } from "./media.js";
 
 const project: Project = { id: "p", name: "demo", repo_path: "/repo", github_repo: "o/r", created_at: "" };
 // A draft release's assets live under an untagged-… path until it is published.
@@ -54,5 +54,42 @@ describe("deleteMedia", () => {
     deleteMedia(project, "r1", run);
     expect(calls).toEqual([["release", "delete", "factory-media-r1", "--yes", "-R", "o/r"]]);
     expect(() => deleteMedia(project, "r1", fakeGh({ fail: "release delete" }).run)).toThrow(/gh release delete failed: HTTP 403/);
+  });
+});
+
+describe("publishMedia", () => {
+  const files = ["/run/capture/a.png", "/run/capture/walkthrough.webm"];
+  const attached = { "a.png": "https://github.com/user-attachments/assets/1", "walkthrough.webm": "https://github.com/user-attachments/assets/2" };
+
+  it("attaches the media to the run's PR, without touching releases", async () => {
+    const { calls, run } = fakeGh();
+    const seen: unknown[] = [];
+    const published = await publishMedia(project, "r1", 7, files, async (...args) => (seen.push(args), attached), run);
+    expect(published).toEqual({ urls: attached });
+    expect(seen).toEqual([["o/r", 7, files]]);
+    expect(calls).toEqual([]);
+  });
+
+  it("falls back to the draft release, and says why, when attaching fails or there is no PR", async () => {
+    const failing = async () => {
+      throw new Error("the factory's browser is not signed in to GitHub: run `factory login github`\nmore");
+    };
+    const { run } = fakeGh();
+    expect(await publishMedia(project, "r1", 7, files, failing, run)).toEqual({
+      urls: { "a.png": url("a.png"), "walkthrough.webm": url("walkthrough.webm") },
+      release: "factory-media-r1",
+      fallback: "the factory's browser is not signed in to GitHub: run `factory login github`",
+    });
+    const unused = async () => {
+      throw new Error("must not be called");
+    };
+    expect(await publishMedia(project, "r1", null, files, unused, fakeGh().run)).toMatchObject({ release: "factory-media-r1", fallback: "the run has no pull request" });
+  });
+
+  it("throws when the draft release fails too", async () => {
+    const failing = async () => {
+      throw new Error("timeout");
+    };
+    await expect(publishMedia(project, "r1", 7, files, failing, fakeGh({ fail: "release upload" }).run)).rejects.toThrow(/gh release upload failed/);
   });
 });
