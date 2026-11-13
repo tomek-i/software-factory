@@ -71,6 +71,7 @@ export function claudeCommand(env: NodeJS.ProcessEnv = process.env): { file: str
  * On Windows, commands are looked up in the current directory before PATH. The agent runs in a
  * worktree the builder writes to, so a planted claude.cmd would run with the user's environment;
  * NoDefaultCurrentDirectoryInExePath turns that lookup off, for execa and for the agent's own tools.
+ * A relative entry in the user's PATH (such as `.`) is still resolved against the worktree.
  */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return {
