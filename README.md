@@ -95,7 +95,7 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
   - `pnpm install` installs the `playwright` package (an optional dependency) but never downloads browsers.
   - Run `pnpm exec playwright install chromium` once in the factory's checkout.
   - Without it the capture stage is skipped with a note and runs carry on.
-  - If the factory's own `playwright` package is missing but the [narrate](https://github.com/tomek-i/narrate-plugin) Claude Code plugin is installed, the plugin's copy is used.
+  - If the factory's own `playwright` package is missing, the copy the [narrate](https://github.com/tomek-i/narrate-plugin) Claude Code plugin ships with is used, as far as `app.narrate` allows: with `auto` (the default) the newest plugin in the cache, with a path to `narrate.mjs` only the plugin that path belongs to, and with `off` not at all.
 - Optional, so everyone can see the screenshots and videos in the factory's PRs: run `factory login github` once. See [Where the media goes](#where-the-media-goes).
 - Optional, for a narrated walkthrough: the narrate Claude Code plugin and `ffmpeg` on PATH. See [Narrated walkthrough](#narrated-walkthrough) under the capture stage.
 

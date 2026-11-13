@@ -62,11 +62,14 @@ export interface CapturePort {
   discard(runId: string): void;
 }
 
-/** The real thing: Playwright for the browser, PR attachments (or a draft release) for the media. */
-export function playwrightCapture(project: Project, run: CommandRunner = runCommand): CapturePort {
+/**
+ * The real thing: Playwright for the browser, PR attachments (or a draft release) for the media.
+ * `narrate` is the project's `app.narrate`; the upload needs it too, as it opens its own browser.
+ */
+export function playwrightCapture(project: Project, run: CommandRunner = runCommand, narrate?: string): CapturePort {
   return {
     capture: (request) => captureWithPlaywright(request, run),
-    publish: (runId, prNumber, files, signal) => publishMedia(project, runId, prNumber, files, (repo, pr, f, s) => uploadAttachments(repo, pr, f, { signal: s }), run, signal),
+    publish: (runId, prNumber, files, signal) => publishMedia(project, runId, prNumber, files, (repo, pr, f, s) => uploadAttachments(repo, pr, f, { signal: s, narrate }), run, signal),
     discard: (runId) => deleteMedia(project, runId, run),
   };
 }
@@ -74,7 +77,7 @@ export function playwrightCapture(project: Project, run: CommandRunner = runComm
 async function captureWithPlaywright(request: CaptureRequest, run: CommandRunner): Promise<CaptureResult> {
   const { plan, outDir } = request;
   const notes: string[] = [];
-  const launched = await launchBrowser();
+  const launched = await launchBrowser(request.app.narrate);
   if ("problem" in launched) return { status: "skipped", problem: launched.problem, pages: [], notes };
   const { browser } = launched;
   try {
