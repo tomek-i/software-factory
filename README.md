@@ -566,7 +566,8 @@ The factory works on its own issues. It runs from a **pinned copy** of `main`, n
 
 - **Register this repo** with `factory init` in your checkout. The committed `.factory/config.yaml` is kept.
 - **Run an issue** with `factory run <issue>` in your checkout.
-  - Every gate in `.factory/config.yaml` starts on `human`, so each run stops for you at triage, critic, review, PR and merge.
+  - The gates in `.factory/config.yaml` start on `human`, so each run stops for you at triage, review, PR and merge.
+  - The spec critic stays on `auto`: on `human` no critic agent runs, and the gate only asks you to accept the spec triage already showed you. The run still waits for you when the critic asks for revisions after its last round.
   - Loosen the gates once runs on this repo are reliable.
 - **Update the pinned copy** only after a PR merged and no run is in progress:
 

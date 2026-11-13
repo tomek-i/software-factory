@@ -28,11 +28,12 @@ app:
   port_env: "PORT"
 
 # Gate modes: always (pass through) | auto (agent decides or escalates) | human (always stop for you)
-# Dogfooding starts with every gate on human; loosen them once runs on this repo are reliable.
+# Dogfooding starts with the gates on human; loosen them once runs on this repo are reliable.
+# The critic stays on auto: on human no critic agent runs, so the gate would only repeat triage's.
 gates:
   issue_writer: human
   triage: human
-  critic: human
+  critic: auto
   plan: always
   review: human
   pr: human
