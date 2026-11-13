@@ -357,6 +357,7 @@ What `factory run` does today:
     - `factory run` prints that it is waiting and for which checks; `factory status` shows the run in `merge`.
     - A commit pushed to the PR while it waits is never merged: `--match-head-commit` makes GitHub refuse.
     - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
+    - How this repo protects its own `main`: [docs/repo-settings.md](docs/repo-settings.md).
     - Its worktree and branch are kept.
 12. **Learn**: after the merge, a learner agent (no shell, writes only `learn.md`) looks back at the run.
     - It reads the builder's report, the checks of failed rounds, the reviews and the verifier's judgements, re-sync conflicts, the approver's decision, escalation reasons and your decisions and comments.
