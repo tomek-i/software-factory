@@ -28,15 +28,15 @@ app:
   port_env: "PORT"
 
 # Gate modes: always (pass through) | auto (agent decides or escalates) | human (always stop for you)
-# Dogfooding starts with the gates on human; loosen them once runs on this repo are reliable.
-# The critic stays on auto: on human no critic agent runs, so the gate would only repeat triage's.
+# Agents decide every gate but merge; hard rules, untrusted authors and loop caps still stop for you.
+# Merge stays human: you look at every PR before it lands on main.
 gates:
-  issue_writer: human
-  triage: human
+  issue_writer: auto
+  triage: auto
   critic: auto
   plan: always
-  review: human
-  pr: human
+  review: auto
+  pr: auto
   merge: human
 
 # Changes matching hard rules always come to you, whatever the gate mode.
