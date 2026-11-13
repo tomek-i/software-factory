@@ -90,6 +90,10 @@ trust:
   authors: ["tomek-i"]
   everyone: false
 
+# The repo only allows squash merges; the PR title (a Conventional Commit) becomes the commit on main.
+merge:
+  method: squash
+
 # Issues are synced from GitHub into the local database and you choose which ones to queue.
 # Labels are optional and only mirror run status onto the issue; they never feed work in.
 # After enabling status_labels, run `factory init` again to create them.

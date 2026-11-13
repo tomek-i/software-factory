@@ -35,7 +35,13 @@ the branch and opens the draft pull request.
 ```
 STATUS: READY | BLOCKED
 COMMIT: <full 40-character sha from `git rev-parse HEAD`>
+TITLE: <the pull request title; leave the line out when BLOCKED>
 ```
+
+TITLE is a Conventional Commit subject for the whole change, because the PR is squash-merged
+under it: `type(scope): subject`, with type one of feat, fix, docs, style, refactor, perf, test,
+build, ci, chore or revert; imperative, starting lowercase, no period, at most 72 characters.
+For example `feat(cli): show the merge method in factory status`.
 
 Then:
 

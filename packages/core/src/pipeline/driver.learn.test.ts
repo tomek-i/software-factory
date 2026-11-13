@@ -76,7 +76,7 @@ describe("PipelineDriver learn stage", () => {
         ["git", "add", "-A"],
         ["git", "commit", "-qm", "refactor: use a constant"],
       ],
-      output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- reworked\n",
+      output: "STATUS: READY\nCOMMIT: {{HEAD}}\nTITLE: feat: add the feature\n\n## Summary\n- reworked\n",
     };
     const steps = [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, rework, CODE_PASS, { role: "learner", output: learned([]) }];
     const { driver, store, fake } = setup(steps, { config: reviewHuman });

@@ -81,6 +81,20 @@ const csv = z
 
 const sha = z.string().regex(/^[0-9a-f]{40}$/, "must be a full 40-character commit sha");
 
+/**
+ * A Conventional Commit subject line, as the repo's PR-title check enforces it: squash merges turn
+ * the PR title into the commit on the default branch, and release tooling reads those commits.
+ */
+export const CONVENTIONAL_TITLE = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()\s]+\))?!?: [^A-Z\s].*$/;
+
+/** Why a builder's TITLE cannot name a pull request, or undefined when it can. */
+export function pullRequestTitleProblem(title: string | undefined): string | undefined {
+  if (!title) return "TITLE is missing: the hand-over that opens the pull request names it, as type(scope): subject";
+  if (title.length > 100) return "TITLE is longer than 100 characters";
+  if (!CONVENTIONAL_TITLE.test(title)) return `TITLE "${title}" is not a Conventional Commit subject: type(scope): subject, starting lowercase`;
+  return undefined;
+}
+
 /** Header contract per output kind. Enum-like values are upper-cased before validation. */
 export const verdictHeaderSchemas = {
   triage: z.object({
@@ -93,7 +107,9 @@ export const verdictHeaderSchemas = {
   refine: z.object({ STATUS: z.enum(["REFINED", "BLOCKED"]) }),
   critic: z.object({ VERDICT: z.enum(["ACCEPT", "REVISE", "REJECT"]) }),
   // COMMIT ties the builder's report to the code it describes, so a stale READY can't be reused.
-  build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha }),
+  // TITLE names the PR. Only the READY hand-over that opens it needs one, so the driver checks it
+  // (pullRequestTitleProblem): a filler title on a BLOCKED hand-over must not fail the parse.
+  build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha, TITLE: z.string().optional() }),
   checks: z.object({ GATE: z.enum(["PASS", "FAIL"]), COMMIT: sha }),
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),
@@ -127,7 +143,7 @@ export class VerdictParseError extends Error {
 }
 
 const HEADER_LINE = /^([A-Z][A-Z_]*):\s*(.*)$/;
-const VERBATIM_KEYS = new Set(["COMMIT", "SURFACES"]);
+const VERBATIM_KEYS = new Set(["COMMIT", "SURFACES", "TITLE"]);
 
 function parseHeaderLines(lines: string[]): { raw: Record<string, string>; rest: number; problems: string[] } {
   const raw: Record<string, string> = {};
