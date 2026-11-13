@@ -31,7 +31,7 @@ import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { MEDIA_MARKER, mediaTag } from "../github/media.js";
-import { CLEANUP_MARKER, cleanupRun, describeCleanup, recordCleanup } from "./cleanup.js";
+import { CLEANUP_MARKER, cleanupFinishedRun, describeCleanup } from "./cleanup.js";
 import { factoryComment, type GithubPort, type PullRequestState, type RequiredCheck } from "../github/port.js";
 import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunEvent, type RunPatch, type Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -504,19 +504,26 @@ export class PipelineDriver {
       clearInterval(watch);
       this.signal = undefined;
       // Nothing of this worker runs in the worktree any more, so a finished run can be cleaned up now.
-      const final = store.getRun(runId);
-      if (final && isTerminal(final.state)) this.cleanUp(final);
+      this.cleanUp(runId);
       store.releaseLease(runId, owner);
     }
   }
 
-  /** Remove a finished run's worktree and branches (see cleanupRun). Never throws. */
-  private cleanUp(run: Run): void {
-    const runDir = this.runDir(run);
-    if (existsSync(join(runDir, CLEANUP_MARKER))) return;
-    const result = cleanupRun(run, { root: this.deps.project.repo_path, runDir, defaultBranch: this.defaultBranch, run: this.run });
-    recordCleanup(this.deps.store, run, result);
-    for (const line of describeCleanup(run.id, result)) this.info(run, `cleanup: ${line}`);
+  /**
+   * Remove a finished run's worktree and branches (see cleanupRun). Never throws: it runs while
+   * drive() returns or throws, and must neither hide that error nor keep the lease from being released.
+   */
+  private cleanUp(runId: string): void {
+    try {
+      const run = this.deps.store.getRun(runId);
+      if (!run || !isTerminal(run.state)) return;
+      const runDir = this.runDir(run);
+      if (existsSync(join(runDir, CLEANUP_MARKER))) return;
+      const result = cleanupFinishedRun(this.deps.store, run, { root: this.deps.project.repo_path, runDir, defaultBranch: this.defaultBranch, run: this.run });
+      for (const line of describeCleanup(run.id, result)) this.deps.events?.emit({ type: "info", runId, message: `cleanup: ${line}` });
+    } catch (err) {
+      this.deps.events?.emit({ type: "info", runId, message: `cleanup: could not clean up ${runId}: ${(err as Error).message.split("\n")[0]}` });
+    }
   }
 
   /**
