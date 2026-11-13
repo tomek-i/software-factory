@@ -7,6 +7,7 @@ import { runLogin } from "./commands/login.js";
 import { runNew, type NewOptions } from "./commands/new.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
+import { refuseRunningOnItself } from "./self.js";
 import { styleFor } from "./style.js";
 
 export function buildProgram(): Command {
@@ -79,6 +80,7 @@ export function buildProgram(): Command {
     .argument("<issues...>", "issue numbers, e.g. 12 15")
     .option("--unsafe", "lift hard rules for these runs only (untrusted authors still wait for you)")
     .action(async (issues: string[], options: { unsafe?: boolean }) => {
+      refuseRunningOnItself(process.cwd());
       console.log(await runRun(process.cwd(), issues, options, { style: styleFor(process.stdout) }));
     });
 
@@ -116,6 +118,7 @@ export function buildProgram(): Command {
     .option("-m, --message <text>", "why (stored with the decision)")
     .option("--no-run", "only record the approval; continue later with `factory run`")
     .action(async (ref: string, options: { message?: string; run: boolean }) => {
+      refuseRunningOnItself(process.cwd());
       console.log(await runApprove(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
@@ -137,6 +140,7 @@ export function buildProgram(): Command {
     .option("--reset-loops", "give the build and review loops a fresh budget")
     .option("--no-run", "only record the decision; continue later with `factory run`")
     .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
+      refuseRunningOnItself(process.cwd());
       console.log(await runResume(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
