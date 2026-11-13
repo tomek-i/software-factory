@@ -5,3 +5,8 @@ packages:
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+
+# minimatch <11.0.1 has a ReDoS (GHSA-g3hv-75wg-m249). typescript-eslint still asks for ^10;
+# drop this once it moves to 11.
+overrides:
+  "minimatch@>=7 <11.0.1": "^11.0.1"
