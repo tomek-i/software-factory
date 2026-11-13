@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Project } from "../store/store.js";
 import type { CommandRunner, ExecResult } from "../util/exec.js";
+import { AttachmentError, NotSignedInError } from "./attachments.js";
 import { deleteMedia, mediaTag, publishMedia, uploadMedia } from "./media.js";
 
 const project: Project = { id: "p", name: "demo", repo_path: "/repo", github_repo: "o/r", created_at: "" };
@@ -66,13 +67,13 @@ describe("publishMedia", () => {
     const seen: unknown[] = [];
     const published = await publishMedia(project, "r1", 7, files, async (...args) => (seen.push(args), attached), run);
     expect(published).toEqual({ urls: attached });
-    expect(seen).toEqual([["o/r", 7, files]]);
+    expect(seen).toEqual([["o/r", 7, files, undefined]]);
     expect(calls).toEqual([]);
   });
 
   it("falls back to the draft release, and says why, when attaching fails or there is no PR", async () => {
     const failing = async () => {
-      throw new Error("the factory's browser is not signed in to GitHub: run `factory login github`\nmore");
+      throw new NotSignedInError();
     };
     const { run } = fakeGh();
     expect(await publishMedia(project, "r1", 7, files, failing, run)).toEqual({
@@ -84,6 +85,31 @@ describe("publishMedia", () => {
       throw new Error("must not be called");
     };
     expect(await publishMedia(project, "r1", null, files, unused, fakeGh().run)).toMatchObject({ release: "factory-media-r1", fallback: "the run has no pull request" });
+  });
+
+  it("keeps the browser's own error out of the PR: it can name local paths", async () => {
+    const launch = async () => {
+      throw new AttachmentError("the factory's browser could not start", "Executable doesn't exist at C:\\Users\\alice\\AppData\\Local\\ms-playwright\\chromium");
+    };
+    expect(await publishMedia(project, "r1", 7, files, launch, fakeGh().run)).toMatchObject({
+      fallback: "the factory's browser could not start",
+      fallbackDetail: "Executable doesn't exist at C:\\Users\\alice\\AppData\\Local\\ms-playwright\\chromium",
+    });
+    const unexpected = async () => {
+      throw new Error("ENOENT: no such file, stat 'C:\\Users\\alice\\run\\a.png'");
+    };
+    expect(await publishMedia(project, "r1", 7, files, unexpected, fakeGh().run)).toMatchObject({ fallback: "attaching to the PR failed", fallbackDetail: expect.stringContaining("ENOENT") });
+  });
+
+  it("makes no release for a run that stopped while it was attaching", async () => {
+    const controller = new AbortController();
+    const stopping = async () => {
+      controller.abort();
+      throw new AttachmentError("the run stopped while the media was uploading");
+    };
+    const { calls, run } = fakeGh();
+    await expect(publishMedia(project, "r1", 7, files, stopping, run, controller.signal)).rejects.toThrow("the run stopped while the media was uploading");
+    expect(calls).toEqual([]);
   });
 
   it("throws when the draft release fails too", async () => {

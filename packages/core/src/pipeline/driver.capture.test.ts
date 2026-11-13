@@ -52,6 +52,7 @@ describe("PipelineDriver > capture", () => {
     const requests: CaptureRequest[] = [];
     const uploads: string[][] = [];
     const prNumbers: (number | null)[] = [];
+    const discarded: string[] = [];
     const port: CapturePort = {
       capture: async (request) => {
         requests.push(request);
@@ -88,8 +89,11 @@ describe("PipelineDriver > capture", () => {
         const urls = Object.fromEntries(files.map((f) => [basename(f), `https://github.com/o/r/releases/download/factory-media-${runId}/${basename(f)}`]));
         return { urls, release: `factory-media-${runId}`, fallback: "the factory's browser is not signed in to GitHub: run `factory login github`" };
       },
+      discard: (runId) => {
+        discarded.push(runId);
+      },
     };
-    return { port, requests, uploads, prNumbers };
+    return { port, requests, uploads, prNumbers, discarded };
   }
 
   const infos = (seen: { type: string; message?: string }[]) => seen.flatMap((e) => (e.type === "info" ? [e.message!] : []));
@@ -299,6 +303,7 @@ describe("PipelineDriver > capture", () => {
           published = true;
           return { urls: {} };
         },
+        discard: () => undefined,
       },
     });
     const run = driver.startRun(12);
@@ -306,6 +311,26 @@ describe("PipelineDriver > capture", () => {
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "cancelled" });
     expect(published).toBe(false);
     expect(edits.some((e) => e.body.includes("## Screenshots"))).toBe(false);
+  });
+
+  it("stops when the run is cancelled while the media uploads, and deletes a release made meanwhile", async () => {
+    const capture = fakeCapture();
+    const { driver, store, root, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
+    const upload = capture.port.publish;
+    let signal: AbortSignal | undefined;
+    // `factory cancel` lands while the upload runs; the upload then falls back to a release anyway.
+    capture.port.publish = async (runId, prNumber, files, s) => {
+      signal = s;
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).cancel(runId, "changed my mind");
+      return upload(runId, prNumber, files, s);
+    };
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "cancelled" });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(edits.some((e) => e.body.includes("## Screenshots"))).toBe(false);
+    expect(capture.discarded).toEqual([run.id]);
+    expect(existsSync(join(runDirOf(root, run.id), MEDIA_MARKER))).toBe(false);
   });
 
   it("stops at capture when the usage limit is hit, and captures on the next run", async () => {

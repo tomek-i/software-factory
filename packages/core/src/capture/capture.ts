@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CapturePlan, FactoryConfig } from "@factory/shared";
 import { WORKTREES_DIR } from "../git/worktrees.js";
 import { uploadAttachments } from "../github/attachments.js";
-import { publishMedia, type PublishedMedia } from "../github/media.js";
+import { deleteMedia, publishMedia, type PublishedMedia } from "../github/media.js";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { launchBrowser, recordWalkthrough, shootPages, type Shot, type Walkthrough } from "./browser.js";
@@ -57,14 +57,17 @@ export interface CapturePort {
   /** Never throws for an app or browser problem: those come back as `failed`/`skipped` with the reason. */
   capture(request: CaptureRequest): Promise<CaptureResult>;
   /** Put the files where PR `prNumber` can show them, and say where they went. Throws on failure. */
-  publish(runId: string, prNumber: number | null, files: string[]): Promise<PublishedMedia>;
+  publish(runId: string, prNumber: number | null, files: string[], signal?: AbortSignal): Promise<PublishedMedia>;
+  /** Delete the run's draft release (see publish's fallback). Throws when that fails. */
+  discard(runId: string): void;
 }
 
 /** The real thing: Playwright for the browser, PR attachments (or a draft release) for the media. */
 export function playwrightCapture(project: Project, run: CommandRunner = runCommand): CapturePort {
   return {
     capture: (request) => captureWithPlaywright(request, run),
-    publish: (runId, prNumber, files) => publishMedia(project, runId, prNumber, files, (repo, pr, f) => uploadAttachments(repo, pr, f), run),
+    publish: (runId, prNumber, files, signal) => publishMedia(project, runId, prNumber, files, (repo, pr, f, s) => uploadAttachments(repo, pr, f, { signal: s }), run, signal),
+    discard: (runId) => deleteMedia(project, runId, run),
   };
 }
 

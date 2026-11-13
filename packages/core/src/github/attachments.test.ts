@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromiumInstalled } from "../capture/browser.js";
-import { attachmentProblem, githubProfileDir, newAttachmentLink, NotSignedInError, uploadAttachments } from "./attachments.js";
+import { AttachmentError, attachmentProblem, githubProfileDir, launchProblem, newAttachmentLink, NotSignedInError, uploadAttachments } from "./attachments.js";
 
 describe("githubProfileDir", () => {
   it("is in the user's local app data on Windows and their config dir elsewhere, never in a repo", () => {
@@ -79,7 +79,8 @@ describe.skipIf(!available)("uploadAttachments (real browser)", () => {
 
   afterAll(async () => {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(dir, { recursive: true, force: true });
+    // Chromium's helper processes can hold the profile for a moment after it closed (Windows).
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 
   it("uploads each file through the comment box and returns its own link", async () => {
@@ -89,6 +90,36 @@ describe.skipIf(!available)("uploadAttachments (real browser)", () => {
 
   it("says so when the profile is not signed in, and when no link comes back", async () => {
     await expect(uploadAttachments("o/r", 2, [join(dir, "a.png")], { baseUrl: base, profile: join(dir, "profile") })).rejects.toBeInstanceOf(NotSignedInError);
-    await expect(uploadAttachments("o/r", 3, [join(dir, "a.png")], { baseUrl: base, profile: join(dir, "profile"), timeoutMs: 1000 })).rejects.toThrow(/no attachment link came back for a\.png/);
+    await expect(uploadAttachments("o/r", 3, [join(dir, "a.png")], { baseUrl: base, profile: join(dir, "profile"), timeoutMs: 1000 })).rejects.toThrow(
+      new AttachmentError("no attachment link came back for a.png in time"),
+    );
+  });
+
+  it("lets two runs upload at the same time: the second waits for the profile instead of failing", async () => {
+    const profile = join(dir, "shared-profile");
+    const [first, second] = await Promise.all([
+      uploadAttachments("o/r", 1, [join(dir, "a.png")], { baseUrl: base, profile }),
+      uploadAttachments("o/r", 1, [join(dir, "walkthrough.webm")], { baseUrl: base, profile }),
+    ]);
+    expect(first).toEqual({ "a.png": "https://github.com/user-attachments/assets/id-1" });
+    expect(second).toEqual({ "walkthrough.webm": "https://github.com/user-attachments/assets/id-1" });
+  });
+
+  it("closes the browser and stops when the run stops", async () => {
+    const controller = new AbortController();
+    const upload = uploadAttachments("o/r", 3, [join(dir, "a.png")], { baseUrl: base, profile: join(dir, "profile"), signal: controller.signal });
+    setTimeout(() => controller.abort(), 3000);
+    await expect(upload).rejects.toThrow(new AttachmentError("the run stopped while the media was uploading"));
+  });
+});
+
+describe("launchProblem", () => {
+  it("names a profile another browser holds, and hides the browser's own message", () => {
+    const locked = launchProblem(new Error("browserType.launchPersistentContext: Failed to create a ProcessSingleton for your profile directory C:\\Users\\alice\\AppData\\Local\\software-factory\\github-browser"));
+    expect(locked.message).toBe("the factory's browser profile is in use (another upload, or `factory login github` is open)");
+    expect(locked.detail).toContain("ProcessSingleton");
+    const missing = launchProblem(new Error("Executable doesn't exist at C:\\Users\\alice\\AppData\\Local\\ms-playwright\\chromium-1200\\chrome.exe"));
+    expect(missing.message).toBe("the factory's browser could not start");
+    expect(missing.message).not.toContain("alice");
   });
 });

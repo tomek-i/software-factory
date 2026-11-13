@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
+import { AttachmentError, NotSignedInError } from "./attachments.js";
 import { GithubError } from "./issues.js";
 
 /** The release that holds a run's screenshots and video. */
@@ -79,11 +80,13 @@ export interface PublishedMedia {
   urls: Record<string, string>;
   /** The draft release's tag, when the media went there instead of being attached to the PR. */
   release?: string;
-  /** Why the media is not attached to the PR, for the PR. */
+  /** Why the media is not attached to the PR: a fixed reason, safe for a public PR. */
   fallback?: string;
+  /** The underlying error behind `fallback`, for the run's report only (it can hold local paths). */
+  fallbackDetail?: string;
 }
 
-export type AttachmentUploader = (repo: string, prNumber: number, files: string[]) => Promise<Record<string, string>>;
+export type AttachmentUploader = (repo: string, prNumber: number, files: string[], signal?: AbortSignal) => Promise<Record<string, string>>;
 
 /**
  * Attach the run's media to its PR, which everyone who can see the repo can open; when that cannot
@@ -98,19 +101,29 @@ export async function publishMedia(
   files: string[],
   attach: AttachmentUploader,
   run: CommandRunner = runCommand,
+  signal?: AbortSignal,
 ): Promise<PublishedMedia> {
   const repo = project.github_repo;
   if (!repo) throw new GithubError(`project ${project.name} has no GitHub repository`);
   let why: string;
+  let detail: string | undefined;
   if (prNumber === null) why = "the run has no pull request";
   else {
     try {
-      return { urls: await attach(repo, prNumber, files) };
+      return { urls: await attach(repo, prNumber, files, signal) };
     } catch (err) {
-      why = (err as Error).message.split("\n")[0]!;
+      if (err instanceof AttachmentError || err instanceof NotSignedInError) {
+        why = err.message;
+        detail = err instanceof AttachmentError ? err.detail : undefined;
+      } else {
+        why = "attaching to the PR failed";
+        detail = (err as Error).message;
+      }
     }
   }
-  return { urls: uploadMedia(project, runId, files, run), release: mediaTag(runId), fallback: why };
+  // A stopped run must not leave a release behind that nothing will delete.
+  if (signal?.aborted) throw new AttachmentError("the run stopped while the media was uploading");
+  return { urls: uploadMedia(project, runId, files, run), release: mediaTag(runId), fallback: why, ...(detail ? { fallbackDetail: detail } : {}) };
 }
 
 /** Delete a run's media release (a draft, so there is no tag to clean up). Throws when gh fails. */

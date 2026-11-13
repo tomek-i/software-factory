@@ -11,8 +11,10 @@ export interface CaptureOutcome {
   /** Uploaded media: file name -> URL. */
   urls?: Record<string, string>;
   uploadProblem?: string;
-  /** Why the media went to the draft release instead of being attached to the PR. */
+  /** Why the media went to the draft release instead of being attached to the PR (safe for the PR). */
   mediaFallback?: string;
+  /** The error behind it, for the report only. */
+  mediaFallbackDetail?: string;
   /** Files the app left behind in the run's worktree, which the engine restored. */
   restored?: string[];
 }
@@ -124,6 +126,8 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
   if (notes.length) lines.push("", "## Notes", ...notes.map((n) => `- ${n}`));
   // Whole messages of more than one line, e.g. the end of the app's output when it did not start.
   const details = [...(failed ? [problem] : []), outcome.uploadProblem, result?.beforeProblem].filter((d): d is string => d !== undefined && d.trim().includes("\n"));
+  // The browser's own error behind the PR's fixed reason; it can name local paths, so only here.
+  if (outcome.mediaFallbackDetail) details.push(`why the media is not attached to the PR:\n${outcome.mediaFallbackDetail}`);
   if (details.length) lines.push("", "## Details", ...details.flatMap((d) => ["", "```text", d.trim().replace(/```/g, "'''"), "```"]));
   return `${lines.join("\n")}\n`;
 }

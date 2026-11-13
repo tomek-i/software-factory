@@ -62,6 +62,7 @@ describe("PipelineDriver: the whole pipeline", () => {
       urls: Object.fromEntries(files.map((f) => [basename(f), `https://github.com/o/r/releases/download/factory-media-${runId}/${basename(f)}`])),
       release: `factory-media-${runId}`,
     }),
+    discard: () => undefined,
   };
 
   it("takes an incomplete UI issue from triage through refine, critic, build, gate, review, capture, PR and merge to learn", async () => {
