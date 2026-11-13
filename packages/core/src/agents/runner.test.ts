@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { fakeClaude, tempDir, type FakeStep } from "../../test/helpers.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
 import { Store } from "../store/store.js";
-import { agentEnv, claudeArgs, claudeCommand, createAgentRunner, type AgentRunOptions } from "./runner.js";
+import { agentEnv, claudeArgs, claudeCommand, createAgentRunner, withoutVars, type AgentRunOptions } from "./runner.js";
 
 function setup(steps: FakeStep[], extraEnv: NodeJS.ProcessEnv = {}) {
   const fake = fakeClaude(steps);
@@ -37,12 +37,12 @@ function setup(steps: FakeStep[], extraEnv: NodeJS.ProcessEnv = {}) {
 describe("agentEnv", () => {
   it("removes ANTHROPIC_API_KEY in any casing so runs use the subscription", () => {
     const env = agentEnv({ ANTHROPIC_API_KEY: "sk-ant-x", anthropic_api_key: "y", PATH: "/bin" });
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" });
+    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", NoDefaultCurrentDirectoryInExePath: "1" });
   });
 
   it("switches auto-memory off even if the caller's env tried to enable it", () => {
     const env = agentEnv({ claude_code_disable_auto_memory: "0", PATH: "/bin" });
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" });
+    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", NoDefaultCurrentDirectoryInExePath: "1" });
   });
 });
 
@@ -101,6 +101,29 @@ describe("claudeCommand", () => {
 });
 
 describe("createAgentRunner", () => {
+  it.runIf(process.platform === "win32")("never runs a claude.cmd planted in the agent's working directory", async () => {
+    const { options, dir } = setup([]);
+    const bin = tempDir();
+    const marker = join(tempDir(), "which.txt");
+    writeFileSync(join(bin, "claude.cmd"), `@echo path>"${marker}"\r\n`);
+    writeFileSync(join(dir, "claude.cmd"), `@echo planted>"${marker}"\r\n`);
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+    // Shells such as Claude Code's set this already; a plain terminal does not, so test without it.
+    const outer = withoutVars(process.env, ["NoDefaultCurrentDirectoryInExePath"]);
+    const saved = process.env;
+    process.env = outer;
+    try {
+      const planted = createAgentRunner({
+        env: { ...outer, FACTORY_CLAUDE_BIN: "", [pathKey]: `${bin};${outer[pathKey] ?? ""}` },
+      });
+      await planted(options());
+    } finally {
+      process.env = saved;
+    }
+
+    expect(readFileSync(marker, "utf8").trim()).toBe("path");
+  });
+
   it("returns session, cost, tokens and log path, and records the agent run", async () => {
     const { runner, options, store, run, fake, seen } = setup([{ stream: "success", output: "DECISION: APPROVE\n" }], {
       ANTHROPIC_API_KEY: "sk-ant-must-not-leak",

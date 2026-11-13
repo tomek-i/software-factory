@@ -68,9 +68,16 @@ export function claudeCommand(env: NodeJS.ProcessEnv = process.env): { file: str
  * `claude -p`, so it is removed: runs must use the user's own Claude subscription.
  * Auto-memory is switched off: --setting-sources "" does not disable it, so agents reading untrusted
  * issue text could otherwise read the user's personal memory for the repo and write to it.
+ * On Windows, commands are looked up in the current directory before PATH. The agent runs in a
+ * worktree the builder writes to, so a planted claude.cmd would run with the user's environment;
+ * NoDefaultCurrentDirectoryInExePath turns that lookup off, for execa and for the agent's own tools.
  */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...withoutVars(env, ["ANTHROPIC_API_KEY", "CLAUDE_CODE_DISABLE_AUTO_MEMORY"]), CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+  return {
+    ...withoutVars(env, ["ANTHROPIC_API_KEY", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "NoDefaultCurrentDirectoryInExePath"]),
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    NoDefaultCurrentDirectoryInExePath: "1",
+  };
 }
 
 /** Copy of env without the given variables, matched case-insensitively (Windows env is case-insensitive). */
