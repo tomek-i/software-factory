@@ -395,11 +395,11 @@ What `factory run` does today:
   - The remote branch goes too, unless GitHub already deleted it, or someone pushed to it after the merge.
 - **Rejected, cancelled or failed**:
   - The worktree and the local branch go only when everything in them is on the remote. The remote branch stays, so a closed PR can be reopened from it.
-- **Work that would be lost is kept.** Uncommitted changes, or commits that are not on the remote (or, for a merged run, not in what was merged), keep both the worktree and the branch, and the reason is noted in the run's events.
+- **Work that would be lost is kept.** Uncommitted changes, or commits on the branch or the worktree's HEAD that are not on the remote (or, for a merged run, not in what was merged), keep both the worktree and the branch, and the reason is noted in the run's events.
 - **Who does it:**
   - the worker that finished the run, once it has stopped;
   - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
-  - `factory status` and `factory run`: runs whose PR was merged or closed on GitHub, and finished runs the cleanup has not handled yet. They wait 2 minutes after a run finished, so a worker that is still stopping is never disturbed.
+  - `factory status` and `factory run`: right away, runs they themselves finish because their PR was merged or closed on GitHub; and finished runs the cleanup has not handled yet, 2 minutes after they finished and only once no worker holds them, so a worker that is still stopping is never disturbed.
 - **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach), it's a warning in the output and the run's events, never a failure of the run. The next `factory status` or `factory run` tries again, and finishes a removal that stopped half way.
 - **`factory cleanup`** removes what older runs left behind; `factory cleanup --dry-run` lists it first. Like the sweep, it waits 2 minutes after a run finished. It also looks again at runs that were kept, so after you push their work, `factory cleanup` removes them.
 
