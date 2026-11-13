@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { RunMachine, Store } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
 import { GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
@@ -21,6 +21,10 @@ describe("factory cleanup", () => {
     const store = new Store(join(root, ".factory", "factory.db"));
     new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).cancel(id, "old run");
     store.close();
+    // Past the grace that leaves runs that just finished to their worker.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 3 * 60_000);
+    onTestFinished(() => void vi.useRealTimers());
 
     const dry = runCleanup(dir, { dryRun: true });
     expect(dry.startsWith(`${id}: would remove worktree, local branch factory/12-`)).toBe(true);
