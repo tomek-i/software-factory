@@ -28,13 +28,14 @@ app:
   port_env: "PORT"
 
 # Gate modes: always (pass through) | auto (agent decides or escalates) | human (always stop for you)
+# Dogfooding starts with every gate on human; loosen them once runs on this repo are reliable.
 gates:
   issue_writer: human
-  triage: auto
-  critic: auto
+  triage: human
+  critic: human
   plan: always
-  review: auto
-  pr: always
+  review: human
+  pr: human
   merge: human
 
 # Changes matching hard rules always come to you, whatever the gate mode.
