@@ -550,6 +550,30 @@ packages/core     engine: config, SQLite store, state machine, gates, agent runn
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```
 
+### Dogfooding
+
+The factory works on its own issues. It runs from a **pinned copy** of `main`, never from the code its runs change.
+
+- **Why:** a merged PR, or an agent reaching outside its worktree, would otherwise change the code that is running. `factory run`, `approve` and `resume` refuse to drive runs with a copy that lives inside the repository they would change (its checkout or one of its `.worktrees/`). Other commands, such as `pnpm factory status`, still work from source.
+- **Set up the pinned copy** once, outside every repository (PowerShell):
+
+  ```powershell
+  $pinned = "$env:LOCALAPPDATA\software-factory\pinned"
+  git clone https://github.com/tomek-i/software-factory $pinned
+  pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
+  function factory { node "$env:LOCALAPPDATA\software-factory\pinned\apps\cli\dist\main.js" @args }  # e.g. in your $PROFILE
+  ```
+
+- **Register this repo** with `factory init` in your checkout. The committed `.factory/config.yaml` is kept.
+- **Run an issue** with `factory run <issue>` in your checkout.
+  - Every gate in `.factory/config.yaml` starts on `human`, so each run stops for you at triage, critic, review, PR and merge.
+  - Loosen the gates once runs on this repo are reliable.
+- **Update the pinned copy** only after a PR merged and no run is in progress:
+
+  ```powershell
+  git -C $pinned pull --ff-only; pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
+  ```
+
 ### Releases
 
 [release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, and bumps the version in `package.json` and in `factory --version`. Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
