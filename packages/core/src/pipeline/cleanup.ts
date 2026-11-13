@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isTerminal } from "@factory/shared";
 import { removeWorktree, type Worktree } from "../git/worktrees.js";
@@ -10,8 +10,8 @@ export const CLEANUP_MARKER = "cleanup.json";
 
 /**
  * In the run folder while a removal that was judged safe is under way. A removal that fails half
- * way (a file locked on Windows) leaves a worktree with files missing, which would look like
- * uncommitted changes; with this marker the next attempt finishes the job instead of keeping it.
+ * way (a file locked on Windows) leaves a folder git no longer knows as a worktree; with this marker
+ * the next attempt deletes it instead of keeping it. The branch is still checked every time.
  */
 export const CLEANUP_PENDING = "cleanup-pending.json";
 
@@ -40,14 +40,17 @@ export interface CleanupOptions {
   dryRun?: boolean;
 }
 
-function git(run: CommandRunner, cwd: string, args: string[]): { ok: boolean; out: string; err: string } {
-  const result = run("git", args, { cwd });
+/** For the calls that reach the remote: a hung remote or a credential prompt must not hang a worker or `factory status`. */
+const NETWORK_TIMEOUT_MS = 60_000;
+
+function git(run: CommandRunner, cwd: string, args: string[], timeoutMs?: number): { ok: boolean; out: string; err: string } {
+  const result = run("git", args, { cwd, timeoutMs });
   return { ok: result.code === 0, out: result.stdout.trim(), err: (result.stderr || result.stdout).trim().split(/\r?\n/)[0] ?? "" };
 }
 
 /** The branch's commit on the remote, "" when the remote has no such branch. Throws when the remote cannot be asked. */
 function remoteHead(run: CommandRunner, root: string, branch: string): string {
-  const listed = git(run, root, ["ls-remote", "origin", `refs/heads/${branch}`]);
+  const listed = git(run, root, ["ls-remote", "origin", `refs/heads/${branch}`], NETWORK_TIMEOUT_MS);
   if (!listed.ok) throw new Error(`git ls-remote failed: ${listed.err}`);
   return listed.out.split(/\s+/)[0] ?? "";
 }
@@ -57,26 +60,54 @@ function within(run: CommandRunner, root: string, commit: string, target: string
   return commit === target || (target !== "" && git(run, root, ["merge-base", "--is-ancestor", commit, target]).ok);
 }
 
+function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync.native(a) === realpathSync.native(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the folder is still a git worktree of its own. When `git worktree remove` fails on a
+ * locked file (Windows), git has already unregistered the worktree and deleted its `.git` file, so
+ * git commands in the leftover folder silently act on the main repository instead.
+ */
+function isWorktree(run: CommandRunner, path: string): boolean {
+  const top = git(run, path, ["rev-parse", "--show-toplevel"]);
+  return top.ok && samePath(top.out, path);
+}
+
 /**
  * Why removing the run's worktree and local branch would lose work, or undefined when it would not.
  * The branch is read from the repository, so a worktree removed by hand does not hide its commits.
- * - Uncommitted changes in the worktree always keep it.
- * - A done run's branch must be what GitHub merged (or part of it): a commit made after the merge stays.
- * - Any other run's branch must be on the remote, or have nothing beyond the default branch.
+ * - Uncommitted changes in the worktree always keep it (`checkChanges` false: the folder is what is
+ *   left of a removal already judged safe, see CLEANUP_PENDING).
+ * - The branch, and the worktree's HEAD when it is elsewhere (detached, a rebase stopped half way):
+ *   for a done run within what GitHub merged, so a commit made after the merge stays; for any other
+ *   run on the remote, or nothing beyond the default branch.
  */
-function unsafeToRemove(root: string, worktree: Worktree, target: Run, options: CleanupOptions, run: CommandRunner): string | undefined {
-  if (existsSync(worktree.path)) {
+function unsafeToRemove(root: string, worktree: Worktree, target: Run, options: CleanupOptions, run: CommandRunner, checkChanges: boolean): string | undefined {
+  let head: string | undefined;
+  if (checkChanges) {
     const status = git(run, worktree.path, ["status", "--porcelain"]);
     if (!status.ok) throw new Error(`git status failed: ${status.err}`);
     if (status.out !== "") return "the worktree has uncommitted changes";
+    head = git(run, worktree.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).out || undefined;
   }
-  const local = git(run, root, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}^{commit}`]);
-  if (!local.ok) return undefined; // no branch, nothing to lose
-  if (target.state === "done" && options.mergedHead && within(run, root, local.out, options.mergedHead)) return undefined;
-  const ahead = git(run, root, ["rev-list", "--count", `origin/${options.defaultBranch}..${local.out}`]);
-  if (ahead.ok && ahead.out === "0") return undefined;
-  if (within(run, root, local.out, remoteHead(run, root, worktree.branch))) return undefined;
-  return target.state === "done" ? "the branch has commits that were not merged" : "the branch has commits that are not on the remote";
+  const local = git(run, root, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}^{commit}`]).out || undefined;
+  let remote: string | undefined;
+  const lost = (commit: string): boolean => {
+    if (target.state === "done" && options.mergedHead && within(run, root, commit, options.mergedHead)) return false;
+    const ahead = git(run, root, ["rev-list", "--count", `origin/${options.defaultBranch}..${commit}`]);
+    if (ahead.ok && ahead.out === "0") return false;
+    remote ??= remoteHead(run, root, worktree.branch);
+    return !within(run, root, commit, remote);
+  };
+  for (const commit of new Set([local, head].filter((c): c is string => c !== undefined))) {
+    if (lost(commit)) return target.state === "done" ? "the branch has commits that were not merged" : "the branch has commits that are not on the remote";
+  }
+  return undefined;
 }
 
 /**
@@ -97,14 +128,18 @@ export function cleanupRun(target: Run, options: CleanupOptions): CleanupResult 
   const { root, runDir } = options;
   const pending = join(runDir, CLEANUP_PENDING);
   try {
-    // Judged safe before and partly done: finish it.
-    if (!existsSync(pending)) {
-      const why = unsafeToRemove(root, worktree, target, options, run);
-      if (why) {
-        result.kept = `${why}, so the worktree and branch ${worktree.branch} are kept`;
-        if (!options.dryRun) writeMarker(runDir, result, run, root, worktree.branch);
-        return result;
-      }
+    const present = existsSync(worktree.path);
+    const registered = present && isWorktree(run, worktree.path);
+    // A folder git no longer knows as a worktree is what a removal that stopped half way leaves;
+    // its files can't be checked, so it is finished only when this cleanup started that removal.
+    const why =
+      present && !registered && !existsSync(pending)
+        ? "the worktree folder is no longer a git worktree"
+        : unsafeToRemove(root, worktree, target, options, run, registered);
+    if (why) {
+      result.kept = `${why}, so the worktree and branch ${worktree.branch} are kept`;
+      if (!options.dryRun) writeMarker(runDir, result, run, root, worktree.branch);
+      return result;
     }
     const localBranch = git(run, root, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`]).ok;
     let deleteRemote = false;
@@ -113,20 +148,21 @@ export function cleanupRun(target: Run, options: CleanupOptions): CleanupResult 
       if (remote && options.mergedHead && remote === options.mergedHead) deleteRemote = true;
       else if (remote) result.kept = `the remote branch ${worktree.branch} is not what was merged, so it is kept`;
     }
-    if (existsSync(worktree.path)) result.removed.push("worktree");
+    if (present) result.removed.push("worktree");
     if (localBranch) result.removed.push(`local branch ${worktree.branch}`);
     if (deleteRemote) result.removed.push(`remote branch ${worktree.branch}`);
     if (options.dryRun) return result;
 
     if (existsSync(runDir)) writeFileSync(pending, `${JSON.stringify({ at: new Date().toISOString() })}\n`);
-    removeWorktree(root, worktree, { run });
+    if (registered || !present) removeWorktree(root, worktree, { run });
+    else rmSync(worktree.path, { recursive: true, force: true });
     if (localBranch) {
       const deleted = git(run, root, ["branch", "-D", worktree.branch]);
       if (!deleted.ok) throw new Error(`git branch -D ${worktree.branch} failed: ${deleted.err}`);
     }
     if (deleteRemote) {
       // Only while it still points at what was merged: a commit pushed meanwhile is never deleted.
-      const pushed = git(run, root, ["push", "--quiet", `--force-with-lease=refs/heads/${worktree.branch}:${options.mergedHead}`, "origin", "--delete", worktree.branch]);
+      const pushed = git(run, root, ["push", "--quiet", `--force-with-lease=refs/heads/${worktree.branch}:${options.mergedHead}`, "origin", "--delete", worktree.branch], NETWORK_TIMEOUT_MS);
       if (!pushed.ok) throw new Error(`git push --delete ${worktree.branch} failed: ${pushed.err}`);
     }
     writeMarker(runDir, result, run, root, worktree.branch);
@@ -212,6 +248,8 @@ export function cleanupFinishedRuns(store: Store, project: Project, options: Swe
   const lines: string[] = [];
   for (const target of store.listRuns({ project_id: project.id })) {
     if (!isTerminal(target.state) || !target.worktree_path || target.updated_at > cutoff) continue;
+    // A worker still holding the run (e.g. stuck in a git call after a cancel) cleans it up itself.
+    if (target.lease_expires_at !== null && target.lease_expires_at > now.toISOString()) continue;
     const runDir = options.runDirOf(target.id);
     if (existsSync(join(runDir, CLEANUP_MARKER)) && !(options.recheckKept && keptOnPurpose(runDir))) continue;
     const result = cleanupFinishedRun(store, target, { root: project.repo_path, runDir, defaultBranch: options.defaultBranch, run: options.run, dryRun: options.dryRun });

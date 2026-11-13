@@ -135,32 +135,82 @@ describe("cleanupRun", () => {
     expect(localHas()).toBe(true);
   });
 
-  it("turns a locked worktree into a warning, and finishes a half-done removal next time instead of keeping it", () => {
-    const { run, worktree, runDir, options } = finishedRun("cancelled", { commit: true, push: true });
-    // Windows: git deletes what it can, then fails on a file another process holds open.
-    const locked: CommandRunner = (cmd, args, opts) => {
-      if (!args.includes("remove")) return runCommand(cmd, args, opts);
-      rmSync(join(worktree.path, "feature.txt"));
-      return { code: 1, stdout: "", stderr: `error: failed to delete '${worktree.path}': Permission denied` };
+  /**
+   * What `git worktree remove --force` does on Windows when another process holds a file open: it
+   * deletes the worktree's `.git` file and unregisters it, then fails, leaving the other files.
+   */
+  function lockedRemove(root: string, path: string): CommandRunner {
+    return (cmd, args, opts) => {
+      if (args[0] !== "worktree" || args[1] !== "remove") return runCommand(cmd, args, opts);
+      const gitDir = git(path, "rev-parse", "--absolute-git-dir");
+      rmSync(join(path, ".git"));
+      rmSync(gitDir, { recursive: true });
+      expect(git(root, "worktree", "list")).not.toContain(BRANCH);
+      return { code: 255, stdout: "", stderr: `error: failed to delete '${path}': Invalid argument` };
     };
-    const result = cleanupRun(run, { ...options, run: locked });
+  }
+
+  it("turns a locked worktree into a warning, and deletes what the failed removal left next time", () => {
+    const { root, run, worktree, runDir, options, localHas } = finishedRun("cancelled", { commit: true, push: true });
+    const result = cleanupRun(run, { ...options, run: lockedRemove(root, worktree.path) });
     expect(result.warnings).toEqual([expect.stringMatching(new RegExp(`^could not clean up ${run.id}: git worktree failed: error: failed to delete`))]);
+    expect(existsSync(join(worktree.path, "feature.txt"))).toBe(true);
     expect(existsSync(join(runDir, CLEANUP_MARKER))).toBe(false);
     expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(true);
 
-    // The deleted file now looks like an uncommitted change; the pending removal is finished anyway.
     expect(cleanupRun(run, options)).toEqual({ removed: ["worktree", `local branch ${BRANCH}`], warnings: [] });
     expect(existsSync(worktree.path)).toBe(false);
+    expect(localHas()).toBe(false);
     expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(false);
+  });
+
+  it("keeps a folder that is no longer a git worktree when it did not start removing it", () => {
+    const { root, run, worktree, runDir, options } = finishedRun("cancelled", { commit: true, push: true });
+    cleanupRun(run, { ...options, run: lockedRemove(root, worktree.path) });
+    rmSync(join(runDir, CLEANUP_PENDING));
+    // git commands in the folder now act on the main repository, so its files cannot be judged.
+    expect(cleanupRun(run, options).kept).toBe(`the worktree folder is no longer a git worktree, so the worktree and branch ${BRANCH} are kept`);
+    expect(existsSync(join(worktree.path, "feature.txt"))).toBe(true);
+  });
+
+  it("still checks the branch when finishing a half-done removal", () => {
+    // The branch could not be deleted (checked out elsewhere); meanwhile someone committed on it.
+    const { root, run, worktree, runDir, options, localHas } = finishedRun("cancelled", { commit: true, push: true });
+    rmSync(worktree.path, { recursive: true });
+    git(root, "worktree", "prune");
+    writeFileSync(join(runDir, CLEANUP_PENDING), "{}\n");
+    git(root, "checkout", "--quiet", BRANCH);
+    commit(root, "later.txt", "not pushed\n");
+    git(root, "checkout", "--quiet", "main");
+
+    expect(cleanupRun(run, options).kept).toMatch(/commits that are not on the remote/);
+    expect(localHas()).toBe(true);
+  });
+
+  it("keeps a worktree whose HEAD has commits on no branch", () => {
+    // A detached HEAD, e.g. a rebase stopped half way: the branch itself is pushed.
+    const { run, worktree, options } = finishedRun("cancelled", { commit: true, push: true });
+    git(worktree.path, "checkout", "--quiet", "--detach");
+    commit(worktree.path, "detached.txt", "only here\n");
+    expect(cleanupRun(run, options).kept).toMatch(/commits that are not on the remote/);
+    expect(existsSync(worktree.path)).toBe(true);
   });
 
   it("does not take an unreachable remote for a deleted branch", () => {
     const { run, worktree, runDir, options, localHas } = finishedRun("done", { commit: true, push: true });
-    const offline: CommandRunner = (cmd, args, opts) => (args[0] === "ls-remote" ? { code: 128, stdout: "", stderr: "fatal: unable to access 'origin': Could not resolve host" } : runCommand(cmd, args, opts));
+    const timeouts: (number | undefined)[] = [];
+    const offline: CommandRunner = (cmd, args, opts) => {
+      if (args[0] !== "ls-remote") return runCommand(cmd, args, opts);
+      timeouts.push(opts.timeoutMs);
+      return { code: 128, stdout: "", stderr: "fatal: unable to access 'origin': Could not resolve host" };
+    };
     expect(cleanupRun(run, { ...options, run: offline }).warnings).toEqual([`could not clean up ${run.id}: git ls-remote failed: fatal: unable to access 'origin': Could not resolve host`]);
     expect(existsSync(worktree.path)).toBe(true);
     expect(localHas()).toBe(true);
     expect(existsSync(join(runDir, CLEANUP_MARKER))).toBe(false);
+    // A hung remote or a credential prompt must not hang the caller.
+    expect(timeouts.length).toBeGreaterThan(0);
+    expect(timeouts.every((t) => t !== undefined && t > 0)).toBe(true);
   });
 
   it("only says what it would do in a dry run", () => {
@@ -191,6 +241,17 @@ describe("cleanupFinishedRuns", () => {
     expect(sweep(later(run, 3 * 60_000))).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}, remote branch ${BRANCH}`]);
     expect(remoteHas()).toBe(false);
     expect(sweep(later(run, 4 * 60_000))).toEqual([]);
+  });
+
+  it("leaves a run alone while a worker still holds its lease", () => {
+    const { root, store, project, run, worktree } = finishedRun("cancelled", { commit: true, push: true });
+    const at = later(run, 3 * 60_000);
+    expect(store.acquireLease(run.id, "worker", 10 * 60_000)).toBe(true);
+    const sweep = () => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now: at, graceMs: 0 });
+    expect(sweep()).toEqual([]);
+    expect(existsSync(worktree.path)).toBe(true);
+    store.releaseLease(run.id, "worker");
+    expect(sweep()).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}`]);
   });
 
   it("records why it kept a run once, lists without removing in a dry run, and looks again when asked", () => {

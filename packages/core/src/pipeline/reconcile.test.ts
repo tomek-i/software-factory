@@ -59,6 +59,16 @@ describe("reconcilePullRequests", () => {
     expect(reconcile()).toEqual([]);
   });
 
+  it("tells the caller which runs it finished, and only those", () => {
+    const { store, project, github, config, make } = setup({ 1: { state: "merged", draft: false, head: "h", mergeCommit: MERGE } });
+    const merged = make(1, "needs_human", { pr_number: 1 });
+    // Finished by its worker, not by reconcile.
+    make(2, "cancelled");
+    const moved: string[] = [];
+    reconcilePullRequests(store, project, github, config, (id) => moved.push(id));
+    expect(moved).toEqual([merged]);
+  });
+
   it("warns instead of failing when GitHub cannot be asked, and checks the other runs", () => {
     const { store, make, reconcile } = setup({
       1: new Error("gh: not logged in"),
