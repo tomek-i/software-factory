@@ -526,7 +526,7 @@ packages/shared   zod schemas shared by everything (config, run states, agent ve
 
 [release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, and bumps the version in `package.json` and in `factory --version`. Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
 
-CI does not run on the release PR: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for that token's events. The PR only changes `CHANGELOG.md` and version strings.
+CI does not run on the release PR: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for that token's events. The PR only changes `CHANGELOG.md`, `.release-please-manifest.json` and version strings.
 
 ## Contributing
 
