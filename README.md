@@ -337,7 +337,7 @@ What `factory run` does today:
      - GitHub has no API for attachments, so the engine does it in a headless browser signed in to GitHub. Sign it in once with `factory login github`.
      - The browser keeps its own profile in `%LOCALAPPDATA%\software-factory\github-browser` on Windows, or `~/.config/software-factory/github-browser` (`$XDG_CONFIG_HOME`) elsewhere. It holds your GitHub session, so it gives access to your account: keep it private. It is never in a repository.
      - The comment is never posted. Each upload leaves a `github.com/user-attachments/...` link, and the engine empties the box again.
-     - Attachments are served to everyone who can see the repo: anyone for a public repo, only people with access for a private one. Videos play inline in the PR.
+     - The PR shows them to everyone who can see the repo: anyone for a public repo, only people with access for a private one. GitHub serves each viewer a signed link from the PR page; the bare `user-attachments` link itself only opens for signed-in users. Videos play inline in the PR.
      - Limits: 10 MB per image, 100 MB per video (GitHub's free plans refuse videos over 10 MB).
      - Attachments cannot be deleted, so they stay when a run ends without merging, and so do files uploaded before an upload failed. Nothing links to them then.
      - Runs in one factory process take turns with the browser. While `factory login github` has it open, a run's upload goes to the draft release instead.
