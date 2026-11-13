@@ -16,6 +16,8 @@ function canonical(path: string): string {
  * Refuse to drive runs with a copy of the factory that lives in the repository the runs change
  * (its checkout or one of its `.worktrees/`): a merged PR, or an agent reaching outside its
  * worktree, would change the code that is running. Dogfooding uses a pinned copy elsewhere.
+ * Folders are compared, not repositories: a clone nested in the repository is refused too, and a
+ * `git worktree` of it outside its folder is allowed (its files are as separate as a clone's).
  */
 export function refuseRunningOnItself(cwd: string, cliFile: string = CLI_FILE, run?: CommandRunner): void {
   const root = findRepoRoot(cwd, run);

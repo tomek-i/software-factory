@@ -1,10 +1,24 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { git } from "../../../packages/core/test/helpers.js";
+import * as newCommand from "./commands/new.js";
+import * as runs from "./commands/runs.js";
 import { buildProgram } from "./program.js";
 import { CLI_FILE, refuseRunningOnItself } from "./self.js";
+
+// Stubbed so that a broken check fails the test instead of driving real runs of this repository.
+vi.mock("./commands/runs.js", () => ({
+  runApprove: vi.fn(async () => "recorded"),
+  runCancel: vi.fn(),
+  runLogs: vi.fn(),
+  runReject: vi.fn(),
+  runResume: vi.fn(),
+  runRun: vi.fn(),
+  runStatus: vi.fn(),
+}));
+vi.mock("./commands/new.js", () => ({ runNew: vi.fn() }));
 
 const REFUSED = /inside the repository it would change\. Run it from a pinned copy/;
 
@@ -39,16 +53,25 @@ describe("refuseRunningOnItself", () => {
     expect(() => refuseRunningOnItself(root.toUpperCase(), cliAt(join(root, "dist")).toLowerCase())).toThrow(REFUSED);
   });
 
-  it("refuses `factory run` when run from source inside this repository", async () => {
+  it("refuses the commands that drive runs when run from source inside this repository", async () => {
     // These tests run from this repository's own source, the case the check is for.
     expect(() => refuseRunningOnItself(join(CLI_FILE, ".."))).toThrow(REFUSED);
-    const program = buildProgram().exitOverride();
     const cwd = process.cwd();
     process.chdir(join(CLI_FILE, ".."));
     try {
-      await expect(program.parseAsync(["node", "factory", "run", "89"])).rejects.toThrow(REFUSED);
+      for (const args of [["run", "89"], ["approve", "89"], ["resume", "89", "--to", "build", "-m", "x"], ["new", "an idea"]]) {
+        await expect(buildProgram().exitOverride().parseAsync(["node", "factory", ...args])).rejects.toThrow(REFUSED);
+      }
+      // Only recording a decision drives nothing.
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      await buildProgram().exitOverride().parseAsync(["node", "factory", "approve", "89", "--no-run"]);
+      expect(runs.runApprove).toHaveBeenCalledOnce();
     } finally {
       process.chdir(cwd);
     }
+    // The commands must never get past the check here: a registered checkout would start real runs.
+    expect(runs.runRun).not.toHaveBeenCalled();
+    expect(runs.runResume).not.toHaveBeenCalled();
+    expect(newCommand.runNew).not.toHaveBeenCalled();
   });
 });

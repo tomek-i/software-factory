@@ -46,6 +46,8 @@ export function buildProgram(): Command {
     .option("--discard <draft>", "drop a saved draft")
     .option("--list", "list drafts waiting for approval")
     .action(async (idea: string[], options: NewOptions) => {
+      // Drafting runs the issue writer agent in the checkout; the other options only handle saved drafts.
+      if (!options.approve && !options.discard && !options.list) refuseRunningOnItself(process.cwd());
       console.log(await runNew(process.cwd(), idea, options, { style: styleFor(process.stdout) }));
     });
 
@@ -118,7 +120,7 @@ export function buildProgram(): Command {
     .option("-m, --message <text>", "why (stored with the decision)")
     .option("--no-run", "only record the approval; continue later with `factory run`")
     .action(async (ref: string, options: { message?: string; run: boolean }) => {
-      refuseRunningOnItself(process.cwd());
+      if (options.run) refuseRunningOnItself(process.cwd());
       console.log(await runApprove(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
@@ -140,7 +142,7 @@ export function buildProgram(): Command {
     .option("--reset-loops", "give the build and review loops a fresh budget")
     .option("--no-run", "only record the decision; continue later with `factory run`")
     .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
-      refuseRunningOnItself(process.cwd());
+      if (options.run) refuseRunningOnItself(process.cwd());
       console.log(await runResume(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
     });
 
