@@ -87,10 +87,13 @@ const sha = z.string().regex(/^[0-9a-f]{40}$/, "must be a full 40-character comm
  */
 export const CONVENTIONAL_TITLE = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()\s]+\))?!?: [^A-Z\s].*$/;
 
-const conventionalTitle = z
-  .string()
-  .regex(CONVENTIONAL_TITLE, "must be a Conventional Commit title: type(scope): subject, lowercase start")
-  .max(100, "must be at most 100 characters");
+/** Why a builder's TITLE cannot name a pull request, or undefined when it can. */
+export function pullRequestTitleProblem(title: string | undefined): string | undefined {
+  if (!title) return "TITLE is missing: the hand-over that opens the pull request names it, as type(scope): subject";
+  if (title.length > 100) return "TITLE is longer than 100 characters";
+  if (!CONVENTIONAL_TITLE.test(title)) return `TITLE "${title}" is not a Conventional Commit subject: type(scope): subject, starting lowercase`;
+  return undefined;
+}
 
 /** Header contract per output kind. Enum-like values are upper-cased before validation. */
 export const verdictHeaderSchemas = {
@@ -104,8 +107,9 @@ export const verdictHeaderSchemas = {
   refine: z.object({ STATUS: z.enum(["REFINED", "BLOCKED"]) }),
   critic: z.object({ VERDICT: z.enum(["ACCEPT", "REVISE", "REJECT"]) }),
   // COMMIT ties the builder's report to the code it describes, so a stale READY can't be reused.
-  // TITLE becomes the PR title; only a READY hand-over needs one (the driver checks that).
-  build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha, TITLE: conventionalTitle.optional() }),
+  // TITLE names the PR. Only the READY hand-over that opens it needs one, so the driver checks it
+  // (pullRequestTitleProblem): a filler title on a BLOCKED hand-over must not fail the parse.
+  build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha, TITLE: z.string().optional() }),
   checks: z.object({ GATE: z.enum(["PASS", "FAIL"]), COMMIT: sha }),
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),

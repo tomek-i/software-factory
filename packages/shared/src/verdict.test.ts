@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUnprintable, parseLessons, parseVerdict, VerdictParseError } from "./verdict.js";
+import { isUnprintable, parseLessons, parseVerdict, pullRequestTitleProblem, VerdictParseError } from "./verdict.js";
 
 const finding = (id: string, severity: string) => ({ id, severity, claim: "c", evidence: "e" });
 const block = (items: object[]) => "```json\n" + JSON.stringify(items) + "\n```";
@@ -84,15 +84,22 @@ describe("parseVerdict", () => {
     expect(parseVerdict("build", `STATUS: ready\nCOMMIT: ${"c".repeat(40)}\n`).header.STATUS).toBe("READY");
   });
 
-  it("keeps the builder's TITLE verbatim and accepts only a Conventional Commit title", () => {
-    const build = (title: string) => `STATUS: READY\nCOMMIT: ${"c".repeat(40)}\nTITLE: ${title}\n`;
-    for (const title of ["feat: add a thing", "fix(cli): handle --no-run", "feat(api)!: drop v1", "revert: undo the thing"]) {
-      expect(parseVerdict("build", build(title)).header.TITLE).toBe(title);
+  it("keeps the builder's TITLE verbatim, and a filler one on BLOCKED still parses", () => {
+    const head = `COMMIT: ${"c".repeat(40)}\n`;
+    expect(parseVerdict("build", `STATUS: READY\n${head}TITLE: fix(cli): handle --no-run\n`).header.TITLE).toBe("fix(cli): handle --no-run");
+    expect(parseVerdict("build", `STATUS: BLOCKED\n${head}TITLE: n/a\n\n## Blocker\npricing\n`).header.STATUS).toBe("BLOCKED");
+    expect(parseVerdict("build", `STATUS: BLOCKED\n${head}`).header.TITLE).toBeUndefined();
+  });
+
+  it("accepts only a Conventional Commit subject as a pull request title", () => {
+    for (const title of ["feat: add a thing", "fix(cli): handle --no-run", "feat(api)!: drop v1", "revert: undo the thing", "docs: explain 'a: b' #12"]) {
+      expect(pullRequestTitleProblem(title), title).toBeUndefined();
     }
-    for (const title of ["Add a thing", "feat: Add a thing", "feat:add a thing", "feature: add a thing", "feat(): add", `feat: ${"x".repeat(100)}`]) {
-      expect(() => parseVerdict("build", build(title)), title).toThrow(/TITLE/);
+    expect(pullRequestTitleProblem(undefined)).toMatch(/TITLE is missing/);
+    for (const title of ["Add a thing", "feat: Add a thing", "feat:add a thing", "feature: add a thing", "feat(): add", "feat:  add"]) {
+      expect(pullRequestTitleProblem(title), title).toMatch(/not a Conventional Commit/);
     }
-    expect(parseVerdict("build", `STATUS: BLOCKED\nCOMMIT: ${"c".repeat(40)}\n`).header.TITLE).toBeUndefined();
+    expect(pullRequestTitleProblem(`feat: ${"x".repeat(100)}`)).toMatch(/longer than 100/);
   });
 
   it("rejects duplicate header keys instead of letting the last one win", () => {

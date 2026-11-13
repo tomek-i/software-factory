@@ -7,6 +7,7 @@ import {
   parseCapturePlan,
   parseLessons,
   parseVerdict,
+  pullRequestTitleProblem,
   REVIEW_LENSES,
   resolveModel,
   type AgentRole,
@@ -874,7 +875,8 @@ export class PipelineDriver {
       validate: (verdict) =>
         verdict.header.STATUS === "READY"
           ? [
-              ...(verdict.header.TITLE ? [] : ["TITLE is missing: a READY hand-over names the pull request, as type(scope): subject"]),
+              // Only the hand-over that opens the PR names it; later rounds keep its title.
+              ...(run.pr_number == null ? [pullRequestTitleProblem(verdict.header.TITLE)].filter((p) => p !== undefined) : []),
               ...this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)),
             ]
           : [],

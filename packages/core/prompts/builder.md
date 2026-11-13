@@ -35,7 +35,7 @@ the branch and opens the draft pull request.
 ```
 STATUS: READY | BLOCKED
 COMMIT: <full 40-character sha from `git rev-parse HEAD`>
-TITLE: <the pull request title, required for READY>
+TITLE: <the pull request title; leave the line out when BLOCKED>
 ```
 
 TITLE is a Conventional Commit subject for the whole change, because the PR is squash-merged

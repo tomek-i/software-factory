@@ -14,7 +14,8 @@ describe("PipelineDriver", () => {
     const { driver, store, fake, root, seen, prs } = setup([
       { output: TRIAGE() },
       buildStep("broken"),
-      buildStep("fixed"),
+      // The second round needs no TITLE: the PR the first one opened keeps its title.
+      buildStep("fixed", READY.replace(/TITLE: .*\n/, "")),
       ...reviewsPass(),
     ]);
     const run = driver.startRun(12);
