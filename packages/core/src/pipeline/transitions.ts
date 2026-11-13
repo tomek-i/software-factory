@@ -440,7 +440,7 @@ export class RunMachine {
    * state, but only on the run's own PR and only once GitHub says it is no longer open. A run another
    * worker is driving is refused, so this never races that worker's own moves.
    */
-  closeByPullRequest(runId: string, pr: Pick<PullRequestState, "number" | "state" | "mergeCommit">, owner?: string): Run {
+  closeByPullRequest(runId: string, pr: Pick<PullRequestState, "number" | "state" | "mergeCommit"> & { head?: string }, owner?: string): Run {
     const run = this.load(runId);
     const merged = pr.state === "merged";
     const to: RunState = merged ? "done" : "cancelled";
@@ -464,7 +464,8 @@ export class RunMachine {
         comment: reason,
         commit_sha: merged ? pr.mergeCommit! : null,
       });
-      this.store.appendEvent(runId, run.state, to, reason, { pr: pr.number, ...(merged ? { mergeCommit: pr.mergeCommit } : {}) });
+      // `commit`: the PR head GitHub merged, as for a merge by the factory; cleanup checks the branch against it.
+      this.store.appendEvent(runId, run.state, to, reason, { pr: pr.number, ...(merged ? { mergeCommit: pr.mergeCommit, ...(pr.head ? { commit: pr.head } : {}) } : {}) });
     });
   }
 

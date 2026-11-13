@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GithubPort } from "@factory/core";
-import { GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
+import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, prStates, setup, TRIAGE } from "../../test/runs-setup.js";
 import { runStatus } from "./runs.js";
 
@@ -9,12 +9,14 @@ vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("runs whose PR was merged or closed on GitHub", () => {
   it("finishes a run whose PR was merged on GitHub when you look at the status", async () => {
-    const { run, queue, dir } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
+    const { run, queue, dir, root } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
     queue();
     await run();
-    prStates.set(7, { number: 7, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) });
+    // GitHub merged what the run pushed, so its remote branch can go too.
+    const head = git(root, "rev-parse", "refs/heads/factory/12-add-the-feature");
+    prStates.set(7, { number: 7, state: "merged", draft: false, head, mergeCommit: "c".repeat(40) });
 
-    expect(runStatus(dir, {}, { github })).toMatch(/^12-[\w-]+: PR #7 merged -> done\n\nNo active runs/);
+    expect(runStatus(dir, {}, { github })).toMatch(/^12-[\w-]+: PR #7 merged -> done\n12-[\w-]+: removed worktree, local branch factory\/12-[\w-]+, remote branch factory\/12-[\w-]+\n\nNo active runs/);
     expect(runStatus(dir, { all: true }, { github })).toMatch(/^RUN.*\n.*#12\s+done/);
   });
 

@@ -175,7 +175,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     checksGraceMs: 200,
     capture: options.capture,
   });
-  return { root, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges };
+  return { root, remote, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */

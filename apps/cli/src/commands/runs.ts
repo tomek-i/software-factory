@@ -34,7 +34,7 @@ import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
 import { lessonsNote } from "./lessons.js";
-import { reconcileRuns } from "./reconcile.js";
+import { cleanUpNow, reconcileAndSweep } from "./reconcile.js";
 
 export interface RunDeps {
   run?: CommandRunner;
@@ -156,7 +156,7 @@ export async function runRun(cwd: string, values: string[], options: { unsafe?: 
   return withProjectAsync(
     cwd,
     async ({ store, project, config }) => {
-      for (const line of reconcileRuns(store, project, config, deps)) (deps.print ?? console.log)(line);
+      for (const line of reconcileAndSweep(store, project, config, deps)) (deps.print ?? console.log)(line);
       if (numbers.length === 1) {
         ensureQueued(store, project, config, numbers[0]!, deps);
         return driveIssue(store, project, config, numbers[0]!, options, deps);
@@ -324,7 +324,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
   return withProject(
     cwd,
     ({ store, project, config }) => {
-      const reconciled = reconcileRuns(store, project, config, deps);
+      const reconciled = reconcileAndSweep(store, project, config, deps);
       const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
       const lessons = lessonsNote(store, project);
       const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
@@ -538,13 +538,18 @@ export function runReject(cwd: string, ref: string, options: { message: string }
         throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
       }
       new RunMachine(store, trustedConfig(project, config, run)).resume(target.id, "rejected", { comment: options.message });
-      return `Rejected ${target.id} at the ${target.waiting_gate} gate.${dropMedia(project, target.id, run)}`;
+      // A run waiting at a gate has no worker, so nothing runs in its worktree.
+      const cleaned = cleanUpNow(store, project, config, target.id, run).map((l) => `\n${l}`).join("");
+      return `Rejected ${target.id} at the ${target.waiting_gate} gate.${dropMedia(project, target.id, run)}${cleaned}`;
     },
     run,
   );
 }
 
-/** `factory cancel <run>`: stop its agent (and everything the agent started) and end the run. The worktree is kept. */
+/**
+ * `factory cancel <run>`: stop its agent (and everything the agent started) and end the run. Its
+ * worktree and branch are cleaned up now when no worker drives it, or else by the worker once it stopped.
+ */
 export function runCancel(cwd: string, ref: string, options: { message?: string }, run?: CommandRunner): string {
   return withProject(
     cwd,
@@ -558,8 +563,9 @@ export function runCancel(cwd: string, ref: string, options: { message?: string 
       for (const agent of running) killTree(agent.pid!);
       new RunMachine(store, config).cancel(target.id, options.message?.trim() || "cancelled from the CLI");
       const stopped = running.length ? ` Stopped ${running.length} agent process${running.length > 1 ? "es" : ""}.` : "";
-      const kept = target.worktree_path ? `\nThe worktree is kept for inspection: ${target.worktree_path}` : "";
-      return `Cancelled ${target.id}.${stopped}${kept}${dropMedia(project, target.id, run)}`;
+      // A driven run's worker may still be stopping in the worktree; it cleans up once it has.
+      const cleaned = driven ? [] : cleanUpNow(store, project, config, target.id, run);
+      return `Cancelled ${target.id}.${stopped}${dropMedia(project, target.id, run)}${cleaned.map((l) => `\n${l}`).join("")}`;
     },
     run,
   );

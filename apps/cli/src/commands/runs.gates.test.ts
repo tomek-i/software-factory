@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { MEDIA_MARKER, mediaTag, runCommand, Store, type CommandRunner } from "@factory/core";
+import { CLEANUP_MARKER, MEDIA_MARKER, mediaTag, runCommand, Store, type CommandRunner } from "@factory/core";
 import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
@@ -142,6 +142,20 @@ describe("approve / reject / cancel", () => {
     expect(cancelled).toContain(`Could not delete its screenshots release (gh release delete failed: HTTP 403); delete it with \`gh release delete factory-media-${second}\`.`);
     // Kept, so a later cancel or reject does not lose track of the release.
     expect(existsSync(join(runs, second, MEDIA_MARKER))).toBe(true);
+  });
+
+  it("removes the worktree and local branch of a run rejected at a gate, and keeps its run folder", async () => {
+    const { run, queue, dir, root } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
+    queue();
+    await run();
+    const [id] = readdirSync(join(root, ".factory", "runs")) as [string];
+    const worktree = join(root, ".worktrees", id);
+    expect(existsSync(worktree)).toBe(true);
+
+    // The build was pushed with the PR, so nothing is lost.
+    expect(runReject(dir, id, { message: "not now" })).toMatch(new RegExp(`\\n${id}: removed worktree, local branch factory/12-[\\w-]+$`));
+    expect(existsSync(worktree)).toBe(false);
+    expect(existsSync(join(root, ".factory", "runs", id, CLEANUP_MARKER))).toBe(true);
   });
 
   it("explains unknown run references", async () => {

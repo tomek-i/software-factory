@@ -193,7 +193,8 @@ factory show 12 triage     # one file in full: triage, refine and critic (latest
 factory approve <run>      # let a run waiting at a gate continue and keep running it; -m "why", --no-run to only record it
 factory reject <run> -m "why"   # end a run waiting at a gate
 factory resume <run> --to build -m "why"   # send an escalated run back to a stage and keep running it; --reset-loops, --no-run
-factory cancel <run>       # stop the run, its agent and running checks; the worktree is kept; -m "why" is optional
+factory cancel <run>       # stop the run, its agent and running checks; -m "why" is optional (see Cleaning up finished runs)
+factory cleanup            # remove the worktrees and branches finished runs left behind; --dry-run lists them first
 factory lessons            # lessons the learner proposed, waiting for you; -a/--all includes approved and rejected ones
 factory lessons approve 3 4        # open one PR that appends these lessons to .factory/lessons.md
 factory lessons reject 5 -m "why"  # never apply this lesson; -m is optional
@@ -369,7 +370,7 @@ What `factory run` does today:
     - A commit pushed to the PR while it waits is never merged: `--match-head-commit` makes GitHub refuse.
     - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
     - How this repo protects its own `main`: [docs/repo-settings.md](docs/repo-settings.md).
-    - Its worktree and branch are kept.
+    - Its worktree and branches are removed once the run is done (see [Cleaning up finished runs](#cleaning-up-finished-runs)).
 12. **Learn**: after the merge, a learner agent (no shell, writes only `learn.md`) looks back at the run.
     - It reads the builder's report, the checks of failed rounds, the reviews and the verifier's judgements, re-sync conflicts, the approver's decision, escalation reasons and your decisions and comments.
     - It writes `learn.md` with `LESSONS: <n>`. For each lesson: an observation, the evidence (files and rounds) and a one-line rule for `.factory/lessons.md`.
@@ -386,6 +387,21 @@ What `factory run` does today:
 - A PR closed without merging marks it `cancelled`. You don't need `factory cancel`.
 - Runs without a PR, or with an open one, are left alone.
 - If GitHub can't be reached, the command prints a warning and carries on.
+
+<a id="cleaning-up-finished-runs"></a>**Cleaning up finished runs.** When a run ends, its worktree (`.worktrees/<run>`, a full checkout with `node_modules`) and its branches are removed. Its run folder, `.factory/runs/<run>/`, is never touched.
+
+- **Merged** (`done`):
+  - The worktree and the local branch go when everything in them was part of the merged PR.
+  - The remote branch goes too, unless GitHub already deleted it, or someone pushed to it after the merge.
+- **Rejected, cancelled or failed**:
+  - The worktree and the local branch go only when everything in them is on the remote. The remote branch stays, so a closed PR can be reopened from it.
+- **Work that would be lost is kept.** Uncommitted changes, or commits on the branch or the worktree's HEAD that are not on the remote (or, for a merged run, not in what was merged), keep both the worktree and the branch, and the reason is noted in the run's events.
+- **Who does it:**
+  - the worker that finished the run, once it has stopped;
+  - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
+  - `factory status` and `factory run`: right away, runs they themselves finish because their PR was merged or closed on GitHub; and finished runs the cleanup has not handled yet, 2 minutes after they finished and only once no worker holds them, so a worker that is still stopping is never disturbed.
+- **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach), it's a warning in the output and the run's events, never a failure of the run. The next `factory status` or `factory run` tries again, and finishes a removal that stopped half way.
+- **`factory cleanup`** removes what older runs left behind; `factory cleanup --dry-run` lists it first. Like the sweep, it waits 2 minutes after a run finished. It also looks again at runs that were kept, so after you push their work, `factory cleanup` removes them.
 
 **When a run escalates** (agent failed, builder blocked, loop cap reached, loop stalled), `factory run` tells you why.
 
