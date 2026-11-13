@@ -1,0 +1,27 @@
+# Opens or updates a release PR from the conventional commits on main; merging it tags v<version>
+# and publishes a GitHub release. It only manages its own v* releases: the factory's draft
+# factory-media-* releases (PR screenshots) are separate and left alone.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # The default GITHUB_TOKEN: PRs it opens do not trigger other workflows, so CI does not run
+      # on the release PR. That PR only changes CHANGELOG.md and version strings.
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
