@@ -554,7 +554,7 @@ packages/shared   zod schemas shared by everything (config, run states, agent ve
 
 The factory works on its own issues. It runs from a **pinned copy** of `main`, never from the code its runs change.
 
-- **Why:** a merged PR, or an agent reaching outside its worktree, would otherwise change the code that is running. `factory run`, `approve` and `resume` refuse to drive runs with a copy that lives inside the repository they would change (its checkout or one of its `.worktrees/`). Other commands, such as `pnpm factory status`, still work from source.
+- **Why:** a merged PR, or an agent reaching outside its worktree, would otherwise change the code that is running. `factory run`, `approve`, `resume` and `new "<idea>"` refuse to start agents with a copy that lives inside the repository they would change (its checkout or one of its `.worktrees/`). Other commands, such as `pnpm factory status` or `approve --no-run`, still work from source.
 - **Set up the pinned copy** once, outside every repository (PowerShell):
 
   ```powershell
@@ -571,6 +571,7 @@ The factory works on its own issues. It runs from a **pinned copy** of `main`, n
 - **Update the pinned copy** only after a PR merged and no run is in progress:
 
   ```powershell
+  $pinned = "$env:LOCALAPPDATA\software-factory\pinned"
   git -C $pinned pull --ff-only; pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
   ```
 
