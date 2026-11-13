@@ -1,32 +1,29 @@
 import { cleanupFinishedRun, cleanupFinishedRuns, describeCleanup, ghPort, reconcilePullRequests, runDirOf, type CommandRunner, type GithubPort, type Project, type Store } from "@factory/core";
-import { isTerminal, type FactoryConfig } from "@factory/shared";
+import type { FactoryConfig } from "@factory/shared";
 
 /**
  * Finish runs whose PR was merged or closed on GitHub since the factory last looked. Returns the
  * lines to print: one per run that moved, or a warning. Never throws, so a GitHub outage or a
  * missing login never stops the command that asked.
  */
-export function reconcileRuns(store: Store, project: Project, config: FactoryConfig, deps: { github?: GithubPort; run?: CommandRunner }): string[] {
+export function reconcileRuns(store: Store, project: Project, config: FactoryConfig, deps: { github?: GithubPort; run?: CommandRunner }, onMoved?: (runId: string) => void): string[] {
   // Without a GitHub repository no run has a PR.
   if (!deps.github && !project.github_repo) return [];
   try {
-    return reconcilePullRequests(store, project, deps.github ?? ghPort(project, deps.run), config);
+    return reconcilePullRequests(store, project, deps.github ?? ghPort(project, deps.run), config, onMoved);
   } catch (err) {
     return [`warning: could not check pull requests: ${(err as Error).message}`];
   }
 }
 
 /**
- * reconcileRuns, then clean up: the runs it just finished right away (no worker holds them, or it
- * would have left them alone), and other finished runs through the sweep. Returns the lines to print.
+ * reconcileRuns, then clean up: the runs it finished right away (no worker holds them, or it would
+ * have left them alone), and other finished runs through the sweep. Returns the lines to print.
  */
 export function reconcileAndSweep(store: Store, project: Project, config: FactoryConfig, deps: { github?: GithubPort; run?: CommandRunner }): string[] {
-  const open = store.listRuns({ project_id: project.id }).filter((r) => !isTerminal(r.state));
-  const lines = reconcileRuns(store, project, config, deps);
-  for (const before of open) {
-    const now = store.getRun(before.id);
-    if (now && isTerminal(now.state)) lines.push(...cleanUpNow(store, project, config, now.id, deps.run));
-  }
+  const moved: string[] = [];
+  const lines = reconcileRuns(store, project, config, deps, (id) => moved.push(id));
+  for (const id of moved) lines.push(...cleanUpNow(store, project, config, id, deps.run));
   return [...lines, ...sweepFinishedRuns(store, project, config, deps)];
 }
 
