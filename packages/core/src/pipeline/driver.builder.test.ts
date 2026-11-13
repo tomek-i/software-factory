@@ -53,6 +53,19 @@ describe("PipelineDriver", () => {
     expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature")).toBe("");
   });
 
+  it("sends a READY hand-over without a TITLE back to the builder, since it names the PR", async () => {
+    const untitled = READY.replace(/TITLE: .*\n/, "");
+    const { driver, store, fake, root } = setup([{ output: TRIAGE() }, buildStep("x\n", untitled), { output: untitled }]);
+    const run = driver.startRun(12);
+
+    const outcome = await driver.drive(run.id);
+
+    expect(outcome.kind === "parked" && outcome.reason).toMatch(/builder output was rejected twice: TITLE is missing/);
+    expect(fake.calls()[2]!.stdin).toContain("TITLE is missing");
+    expect(store.getRun(run.id)!.state).toBe("needs_human");
+    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature")).toBe("");
+  });
+
   it("escalates when the builder is blocked", async () => {
     const blocked = "STATUS: BLOCKED\nCOMMIT: {{HEAD}}\n\n## Blocker\nNeeds a product decision on pricing.\n";
     const { driver } = setup([{ output: TRIAGE() }, { output: blocked }]);

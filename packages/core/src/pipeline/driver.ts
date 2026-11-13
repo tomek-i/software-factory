@@ -872,7 +872,12 @@ export class PipelineDriver {
         prompt,
       },
       validate: (verdict) =>
-        verdict.header.STATUS === "READY" ? this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)) : [],
+        verdict.header.STATUS === "READY"
+          ? [
+              ...(verdict.header.TITLE ? [] : ["TITLE is missing: a READY hand-over names the pull request, as type(scope): subject"]),
+              ...this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)),
+            ]
+          : [],
     });
     if (turn.status !== "ok") return this.agentTrouble(run, "builder", turn);
 
@@ -882,7 +887,7 @@ export class PipelineDriver {
     }
     const long = longSummaryBullets(turn.verdict.body);
     if (long > 0) this.info(run, `note: ${long} Summary bullet(s) longer than ${LONG_SUMMARY_BULLET} characters; the PR's What section may be hard to scan`);
-    const pr = this.publish(worktree, issue, turn.verdict.body, run.unsafe);
+    const pr = this.publish(worktree, turn.verdict.header.TITLE ?? issue.title, issue, turn.verdict.body, run.unsafe);
     this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.round + 1, git), {
       pr_number: pr,
     });
@@ -891,16 +896,17 @@ export class PipelineDriver {
 
   /**
    * Push the branch (never forced) and make sure a draft PR exists. Done by the engine, after the
-   * secret scan, so nothing the builder committed reaches GitHub unchecked.
+   * secret scan, so nothing the builder committed reaches GitHub unchecked. The PR keeps the title
+   * of the hand-over that opened it.
    */
-  private publish(worktree: Worktree, issue: Issue, buildBody: string, unsafe: boolean): number {
+  private publish(worktree: Worktree, title: string, issue: Issue, buildBody: string, unsafe: boolean): number {
     this.push(worktree);
     const existing = this.deps.github.findPullRequest(worktree.branch);
     if (existing !== undefined) return existing;
     return this.deps.github.createDraftPullRequest({
       head: worktree.branch,
       base: this.defaultBranch,
-      title: issue.title,
+      title,
       body: prBody(buildBody, issue.number, unsafe),
     });
   }

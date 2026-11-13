@@ -18,7 +18,7 @@ export const BUILD: FakeStep = {
     ["git", "add", "-A"],
     ["git", "commit", "-qm", "feat: add feature"],
   ],
-  output: "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n",
+  output: "STATUS: READY\nCOMMIT: {{HEAD}}\nTITLE: feat: add the feature\n\n## Summary\n- done\n",
 };
 
 /** PR states the fake GitHub reports; a PR not listed is open. Reset by setup(). */

@@ -256,6 +256,7 @@ What `factory run` does today:
    - It cannot push.
    - The engine scans every new commit for secrets (gitleaks if installed, otherwise built-in patterns). If it finds one, it sends the builder back, so a leaked key never reaches GitHub.
    - Then the engine pushes the branch (never forced) and opens a **draft** PR that closes the issue.
+   - The PR title is the one the builder hands over: a Conventional Commit subject such as `feat(cli): add x`, so a squash merge leaves a conventional commit on the default branch.
    - The PR description starts with a short brief for you (What, How it was tested), with the builder's implementation notes collapsed underneath.
 5. **Quality gate**: the engine runs your `checks` on the pushed commit, plus the secret scan again.
    - Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment.

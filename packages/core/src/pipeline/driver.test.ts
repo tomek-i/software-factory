@@ -62,7 +62,7 @@ describe("PipelineDriver", () => {
 
     // The engine pushed and opened one draft PR; the second round reused it.
     expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(head);
-    expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "Add the feature", body: "## What\n- done\n\nCloses #12\n" }]);
+    expect(prs).toEqual([{ head: "factory/12-add-the-feature", base: "main", title: "feat: add the feature", body: "## What\n- done\n\nCloses #12\n" }]);
   });
 
   it("names the hard rules the diff trips when it parks at review, and marks an --unsafe PR", async () => {
@@ -166,7 +166,7 @@ describe("PipelineDriver", () => {
       [`${long}\n- short one`, ["note: 1 Summary bullet(s) longer than 200 characters; the PR's What section may be hard to scan"]],
       ["- short one\n- another short one", []],
     ] as const) {
-      const { driver, store, fake, seen } = setup([{ output: TRIAGE() }, buildStep("fixed", `STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n${summary}\n`), ...reviewsPass()]);
+      const { driver, store, fake, seen } = setup([{ output: TRIAGE() }, buildStep("fixed", `STATUS: READY\nCOMMIT: {{HEAD}}\nTITLE: feat: add the feature\n\n## Summary\n${summary}\n`), ...reviewsPass()]);
       const run = driver.startRun(12);
 
       await driver.drive(run.id);

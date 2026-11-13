@@ -81,6 +81,17 @@ const csv = z
 
 const sha = z.string().regex(/^[0-9a-f]{40}$/, "must be a full 40-character commit sha");
 
+/**
+ * A Conventional Commit subject line, as the repo's PR-title check enforces it: squash merges turn
+ * the PR title into the commit on the default branch, and release tooling reads those commits.
+ */
+export const CONVENTIONAL_TITLE = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()\s]+\))?!?: [^A-Z\s].*$/;
+
+const conventionalTitle = z
+  .string()
+  .regex(CONVENTIONAL_TITLE, "must be a Conventional Commit title: type(scope): subject, lowercase start")
+  .max(100, "must be at most 100 characters");
+
 /** Header contract per output kind. Enum-like values are upper-cased before validation. */
 export const verdictHeaderSchemas = {
   triage: z.object({
@@ -93,7 +104,8 @@ export const verdictHeaderSchemas = {
   refine: z.object({ STATUS: z.enum(["REFINED", "BLOCKED"]) }),
   critic: z.object({ VERDICT: z.enum(["ACCEPT", "REVISE", "REJECT"]) }),
   // COMMIT ties the builder's report to the code it describes, so a stale READY can't be reused.
-  build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha }),
+  // TITLE becomes the PR title; only a READY hand-over needs one (the driver checks that).
+  build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha, TITLE: conventionalTitle.optional() }),
   checks: z.object({ GATE: z.enum(["PASS", "FAIL"]), COMMIT: sha }),
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),
@@ -127,7 +139,7 @@ export class VerdictParseError extends Error {
 }
 
 const HEADER_LINE = /^([A-Z][A-Z_]*):\s*(.*)$/;
-const VERBATIM_KEYS = new Set(["COMMIT", "SURFACES"]);
+const VERBATIM_KEYS = new Set(["COMMIT", "SURFACES", "TITLE"]);
 
 function parseHeaderLines(lines: string[]): { raw: Record<string, string>; rest: number; problems: string[] } {
   const raw: Record<string, string> = {};

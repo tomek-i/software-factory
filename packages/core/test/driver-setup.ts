@@ -13,7 +13,7 @@ import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./h
 
 export const TRIAGE = (decision = "APPROVE", extra = "") =>
   `DECISION: ${decision}\nREADINESS: READY\nRISK: LOW\nSURFACES: api\n\n## Summary\n- looks fine\n${extra}`;
-export const READY = "STATUS: READY\nCOMMIT: {{HEAD}}\n\n## Summary\n- done\n";
+export const READY = "STATUS: READY\nCOMMIT: {{HEAD}}\nTITLE: feat: add the feature\n\n## Summary\n- done\n";
 
 /** A builder round that writes feature.txt and commits it (the engine pushes), then reports READY. */
 export const buildStep = (content: string, output = READY): FakeStep => ({

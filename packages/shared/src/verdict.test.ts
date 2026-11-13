@@ -84,6 +84,17 @@ describe("parseVerdict", () => {
     expect(parseVerdict("build", `STATUS: ready\nCOMMIT: ${"c".repeat(40)}\n`).header.STATUS).toBe("READY");
   });
 
+  it("keeps the builder's TITLE verbatim and accepts only a Conventional Commit title", () => {
+    const build = (title: string) => `STATUS: READY\nCOMMIT: ${"c".repeat(40)}\nTITLE: ${title}\n`;
+    for (const title of ["feat: add a thing", "fix(cli): handle --no-run", "feat(api)!: drop v1", "revert: undo the thing"]) {
+      expect(parseVerdict("build", build(title)).header.TITLE).toBe(title);
+    }
+    for (const title of ["Add a thing", "feat: Add a thing", "feat:add a thing", "feature: add a thing", "feat(): add", `feat: ${"x".repeat(100)}`]) {
+      expect(() => parseVerdict("build", build(title)), title).toThrow(/TITLE/);
+    }
+    expect(parseVerdict("build", `STATUS: BLOCKED\nCOMMIT: ${"c".repeat(40)}\n`).header.TITLE).toBeUndefined();
+  });
+
   it("rejects duplicate header keys instead of letting the last one win", () => {
     expect(() => parseVerdict("review", "VERDICT: CHANGES\nVERDICT: PASS\n")).toThrow(/more than once/);
   });
