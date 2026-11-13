@@ -85,12 +85,14 @@ export interface BrowserOptions {
   timeoutMs?: number;
   /** Closes the browser and stops: the run was cancelled or the worker is going away. */
   signal?: AbortSignal;
+  /** The `app.narrate` setting, which decides whether the plugin's Playwright may be used; `auto` without a project config. */
+  narrate?: string;
 }
 
-async function openProfile(profile: string, headless: boolean): Promise<BrowserContext> {
+async function openProfile(profile: string, headless: boolean, narrate?: string): Promise<BrowserContext> {
   let chromium: Awaited<ReturnType<typeof loadPlaywright>>["chromium"];
   try {
-    ({ chromium } = await loadPlaywright());
+    ({ chromium } = await loadPlaywright(narrate));
   } catch (err) {
     throw new AttachmentError("Playwright is not installed", (err as Error).message);
   }
@@ -129,7 +131,7 @@ async function upload(repo: string, prNumber: number, files: string[], options: 
   }
   if (options.signal?.aborted) throw stopped();
   const base = options.baseUrl ?? "https://github.com";
-  const context = await openProfile(options.profile ?? githubProfileDir(), true);
+  const context = await openProfile(options.profile ?? githubProfileDir(), true, options.narrate);
   const abort = () => void context.close().catch(() => undefined);
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
@@ -176,11 +178,12 @@ async function upload(repo: string, prNumber: number, files: string[], options: 
 
 /**
  * `factory login github`: open the profile in a visible browser and wait until someone has signed in
- * to GitHub there (up to `waitMs`). Returns the login; throws NotSignedInError when nobody did.
+ * to GitHub there (up to `waitMs`). Returns the login; throws NotSignedInError when nobody did. It
+ * runs outside a project, so without `narrate` the plugin's Playwright is looked for as with `auto`.
  */
 export async function loginGithub(options: BrowserOptions & { waitMs?: number; onWaiting?: () => void } = {}): Promise<string> {
   const base = options.baseUrl ?? "https://github.com";
-  const context = await openProfile(options.profile ?? githubProfileDir(), false);
+  const context = await openProfile(options.profile ?? githubProfileDir(), false, options.narrate);
   try {
     const page = context.pages()[0] ?? (await context.newPage());
     await page.goto(`${base}/login`);

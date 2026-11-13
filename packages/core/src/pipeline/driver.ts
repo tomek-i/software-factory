@@ -434,7 +434,7 @@ export class PipelineDriver {
   constructor(private readonly deps: DriverDeps) {
     this.machine = new RunMachine(deps.store, deps.config);
     this.run = deps.run ?? runCommand;
-    this.capturer = deps.capture ?? playwrightCapture(deps.project, this.run);
+    this.capturer = deps.capture ?? playwrightCapture(deps.project, this.run, deps.config.app.narrate);
   }
 
   /** Start a run for a queued issue, or return the run already working on it. */

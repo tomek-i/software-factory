@@ -7,7 +7,7 @@ import { findNarrate } from "./narrate.js";
 
 /** How to make Playwright available, for the notes when it is not. */
 export const PLAYWRIGHT_HINT =
-  "install playwright to enable screenshots: `pnpm install` in the factory's checkout (playwright is an optional dependency), then `pnpm exec playwright install chromium`; the narrate Claude Code plugin's own copy is used too when it is installed";
+  "install playwright to enable screenshots: `pnpm install` in the factory's checkout (playwright is an optional dependency), then `pnpm exec playwright install chromium`; the narrate Claude Code plugin's own copy is used too, unless `app.narrate` is `off`";
 
 const NAV_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 10_000;
@@ -17,12 +17,16 @@ type PlaywrightModule = typeof import("playwright");
 /**
  * Playwright from the factory's own install, or else the copy the narrate plugin ships with, so a
  * machine that has the plugin needs no separate install. Throws the first error when neither loads.
+ *
+ * `narrate` is the `app.narrate` setting, so the plugin is only reached into when it is allowed:
+ * `off` uses the factory's own Playwright alone, a path only the plugin that path belongs to, and
+ * `auto` the newest plugin in Claude Code's cache.
  */
-export async function loadPlaywright(home?: string): Promise<PlaywrightModule> {
+export async function loadPlaywright(narrate = "auto", home?: string): Promise<PlaywrightModule> {
   try {
     return await import("playwright");
   } catch (err) {
-    const cli = findNarrate("auto", home);
+    const cli = findNarrate(narrate, home);
     if (!cli) throw err;
     try {
       // bin/narrate.mjs sits next to the plugin's package.json and node_modules.
@@ -35,12 +39,13 @@ export async function loadPlaywright(home?: string): Promise<PlaywrightModule> {
 
 /**
  * Launch headless Chromium, or say why it cannot be. Playwright is an optional dependency loaded on
- * demand: without it (or its browsers) capture is skipped and the run goes on.
+ * demand: without it (or its browsers) capture is skipped and the run goes on. `narrate` is the
+ * `app.narrate` setting, which decides whether the plugin's copy may be used.
  */
-export async function launchBrowser(): Promise<{ browser: Browser } | { problem: string }> {
+export async function launchBrowser(narrate?: string): Promise<{ browser: Browser } | { problem: string }> {
   let chromium: PlaywrightModule["chromium"];
   try {
-    ({ chromium } = await loadPlaywright());
+    ({ chromium } = await loadPlaywright(narrate));
   } catch (err) {
     return { problem: `${PLAYWRIGHT_HINT} (${(err as Error).message.split("\n")[0]})` };
   }
@@ -54,7 +59,7 @@ export async function launchBrowser(): Promise<{ browser: Browser } | { problem:
 
 /**
  * Whether Playwright and its Chromium are installed, without launching a browser (tests use it to
- * decide whether a real-browser test can run).
+ * decide whether a real-browser test can run). There is no project config here, so `auto`.
  */
 export async function chromiumInstalled(): Promise<boolean> {
   try {
