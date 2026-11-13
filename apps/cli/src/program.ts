@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { runCleanup } from "./commands/cleanup.js";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
@@ -166,11 +167,19 @@ export function buildProgram(): Command {
 
   program
     .command("cancel")
-    .description("stop a run and its agent; the worktree is kept")
+    .description("stop a run and its agent; its worktree is removed unless it holds unpushed work")
     .argument("<run>", "run id, id prefix, or issue number")
     .option("-m, --message <text>", "why (stored with the decision)")
     .action((ref: string, options: { message?: string }) => {
       console.log(runCancel(process.cwd(), ref, options));
+    });
+
+  program
+    .command("cleanup")
+    .description("remove the worktrees and branches of finished runs that still have them")
+    .option("--dry-run", "list what would be removed and kept, change nothing")
+    .action((options: { dryRun?: boolean }) => {
+      console.log(runCleanup(process.cwd(), options));
     });
 
   return program;

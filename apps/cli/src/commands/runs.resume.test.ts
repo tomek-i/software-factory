@@ -1,7 +1,4 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { findRepoRoot } from "@factory/core";
 import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, setup, TRIAGE } from "../../test/runs-setup.js";
 import { runApprove, runCancel, runResume, runStatus } from "./runs.js";
@@ -10,18 +7,18 @@ import { runApprove, runCancel, runResume, runStatus } from "./runs.js";
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("approve / reject / cancel", () => {
-  it("cancels a run and keeps its worktree", async () => {
+  it("cancels a run and removes its worktree and local branch; the pushed branch stays for the PR", async () => {
     const { run, queue, dir } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
     queue();
     await run();
-    const worktrees = join(findRepoRoot(dir)!, ".worktrees");
+    const branch = git(dir, "branch", "--list", "factory/12-*", "--format=%(refname:short)");
 
     const message = runCancel(dir, "12-", {});
 
-    expect(message).toMatch(/^Cancelled 12-[\w-]+\./);
-    expect(message).toContain("The worktree is kept");
-    expect(existsSync(worktrees)).toBe(true);
-    expect(git(dir, "worktree", "list")).toContain(".worktrees");
+    expect(message).toMatch(new RegExp(`^Cancelled 12-[\\w-]+\\.\\n12-[\\w-]+: removed worktree, local branch ${branch}$`));
+    expect(git(dir, "worktree", "list")).not.toContain(".worktrees");
+    expect(git(dir, "branch", "--list", branch)).toBe("");
+    expect(git(dir, "ls-remote", "origin", `refs/heads/${branch}`)).not.toBe("");
     expect(() => runCancel(dir, "#12", {})).toThrow(/already cancelled/);
     expect(runStatus(dir, {}, { github })).toContain("No active runs");
   });

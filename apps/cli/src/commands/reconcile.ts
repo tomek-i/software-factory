@@ -1,5 +1,5 @@
-import { ghPort, reconcilePullRequests, type CommandRunner, type GithubPort, type Project, type Store } from "@factory/core";
-import type { FactoryConfig } from "@factory/shared";
+import { cleanupFinishedRuns, cleanupRun, describeCleanup, ghPort, reconcilePullRequests, recordCleanup, runDirOf, type CommandRunner, type GithubPort, type Project, type Store } from "@factory/core";
+import { isTerminal, type FactoryConfig } from "@factory/shared";
 
 /**
  * Finish runs whose PR was merged or closed on GitHub since the factory last looked. Returns the
@@ -14,4 +14,45 @@ export function reconcileRuns(store: Store, project: Project, config: FactoryCon
   } catch (err) {
     return [`warning: could not check pull requests: ${(err as Error).message}`];
   }
+}
+
+/**
+ * reconcileRuns, then clean up: the runs it just finished right away (no worker holds them, or it
+ * would have left them alone), and other finished runs through the sweep. Returns the lines to print.
+ */
+export function reconcileAndSweep(store: Store, project: Project, config: FactoryConfig, deps: { github?: GithubPort; run?: CommandRunner }): string[] {
+  const open = store.listRuns({ project_id: project.id }).filter((r) => !isTerminal(r.state));
+  const lines = reconcileRuns(store, project, config, deps);
+  for (const before of open) {
+    const now = store.getRun(before.id);
+    if (now && isTerminal(now.state)) lines.push(...cleanUpNow(store, project, config, now.id, deps.run));
+  }
+  return [...lines, ...sweepFinishedRuns(store, project, config, deps)];
+}
+
+/**
+ * Remove the worktrees and branches of finished runs that still have them (see cleanupFinishedRuns):
+ * runs whose PR was merged by hand, or that finished before cleanup existed. Never throws.
+ */
+export function sweepFinishedRuns(store: Store, project: Project, config: FactoryConfig, deps: { run?: CommandRunner; dryRun?: boolean; graceMs?: number }): string[] {
+  try {
+    return cleanupFinishedRuns(store, project, {
+      defaultBranch: config.project.default_branch,
+      runDirOf: (id) => runDirOf(project.repo_path, id),
+      run: deps.run,
+      dryRun: deps.dryRun,
+      graceMs: deps.graceMs,
+    });
+  } catch (err) {
+    return [`warning: could not clean up finished runs: ${(err as Error).message.split("\n")[0]}`];
+  }
+}
+
+/** Clean up one run that just finished and that no worker drives. Returns the lines to print. */
+export function cleanUpNow(store: Store, project: Project, config: FactoryConfig, runId: string, run?: CommandRunner): string[] {
+  const target = store.getRun(runId);
+  if (!target) return [];
+  const result = cleanupRun(target, { root: project.repo_path, runDir: runDirOf(project.repo_path, runId), defaultBranch: config.project.default_branch, run });
+  recordCleanup(store, target, result);
+  return describeCleanup(runId, result);
 }

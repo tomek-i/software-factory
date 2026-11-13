@@ -14,7 +14,7 @@ describe("runs whose PR was merged or closed on GitHub", () => {
     await run();
     prStates.set(7, { number: 7, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) });
 
-    expect(runStatus(dir, {}, { github })).toMatch(/^12-[\w-]+: PR #7 merged -> done\n\nNo active runs/);
+    expect(runStatus(dir, {}, { github })).toMatch(/^12-[\w-]+: PR #7 merged -> done\n12-[\w-]+: removed worktree, local branch factory\/12-[\w-]+, remote branch factory\/12-[\w-]+\n\nNo active runs/);
     expect(runStatus(dir, { all: true }, { github })).toMatch(/^RUN.*\n.*#12\s+done/);
   });
 
