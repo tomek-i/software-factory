@@ -1,6 +1,6 @@
 # Software Factory
 
-[![CI](https://github.com/tomek-i/software-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/tomek-i/software-factory/actions/workflows/ci.yml) [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
+[![CI](https://github.com/tomek-i/software-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/tomek-i/software-factory/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/tomek-i/software-factory?sort=semver)](https://github.com/tomek-i/software-factory/releases/latest) [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 
 Give it a GitHub issue, or just an idea. Get back a reviewed, tested pull request.
 
@@ -521,6 +521,12 @@ packages/core     engine: config, SQLite store, state machine, gates, agent runn
   test/           fake `claude` binary and fixtures: tests never spend real usage
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```
+
+### Releases
+
+[release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, and bumps the version in `package.json` and in `factory --version`. Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
+
+CI does not run on the release PR: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for that token's events. The PR only changes `CHANGELOG.md` and version strings.
 
 ## Contributing
 
