@@ -1139,7 +1139,8 @@ export class PipelineDriver {
       }
       if (this.load(run.id).state !== run.state) return undefined; // cancelled while the app ran
       outcome.restored = this.restoreWorktree(worktree);
-      this.uploadMedia(run, outcome);
+      await this.uploadMedia(run, outcome);
+      if (this.load(run.id).state !== run.state) return undefined; // cancelled while the media uploaded
     }
 
     writeFileSync(join(roundDir, "capture-report.md"), renderCaptureReport(outcome));
@@ -1244,7 +1245,17 @@ export class PipelineDriver {
   }
 
   /** Upload the screenshots and the video. A failure is noted in the outcome; it never stops the run. */
-  private uploadMedia(run: Run, outcome: CaptureOutcome): void {
+  /** Best effort, like `factory cancel` itself: delete the release of a run that ended while it uploaded. */
+  private dropStoppedRunsRelease(run: Run): void {
+    try {
+      this.capturer.discard(run.id);
+      rmSync(join(this.runDir(run), MEDIA_MARKER));
+    } catch (err) {
+      this.info(run, `could not delete the screenshots release (${(err as Error).message.split("\n")[0]}); delete it with \`gh release delete ${mediaTag(run.id)} --yes\``);
+    }
+  }
+
+  private async uploadMedia(run: Run, outcome: CaptureOutcome): Promise<void> {
     const result = outcome.result;
     if (result?.status !== "captured") return;
     const files = [
@@ -1255,9 +1266,17 @@ export class PipelineDriver {
     ];
     if (files.length === 0) return;
     try {
-      outcome.urls = this.capturer.publish(run.id, files);
-      // So ending the run without merging can delete the media again (see deleteMedia).
-      writeFileSync(join(this.runDir(run), MEDIA_MARKER), `${mediaTag(run.id)}\n`);
+      const published = await this.capturer.publish(run.id, run.pr_number, files, this.signal);
+      outcome.urls = published.urls;
+      outcome.mediaFallback = published.fallback;
+      outcome.mediaFallbackDetail = published.fallbackDetail;
+      // So ending the run without merging can delete the release again (see deleteMedia). PR
+      // attachments cannot be deleted, so there is nothing to remember for them.
+      if (published.release) {
+        writeFileSync(join(this.runDir(run), MEDIA_MARKER), `${published.release}\n`);
+        // Cancelled while it uploaded: the cancel looked for the marker before it was written.
+        if (this.load(run.id).state !== run.state) this.dropStoppedRunsRelease(run);
+      }
     } catch (err) {
       outcome.uploadProblem = (err as Error).message.split("\n")[0];
     }

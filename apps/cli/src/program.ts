@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
+import { runLogin } from "./commands/login.js";
 import { runNew, type NewOptions } from "./commands/new.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
@@ -18,6 +19,14 @@ export function buildProgram(): Command {
     .description("set up the factory in the current git repository")
     .action(() => {
       console.log(runInit(process.cwd()));
+    });
+
+  program
+    .command("login")
+    .description("sign in to GitHub in the factory's browser, so it can attach screenshots and videos to PRs")
+    .argument("<service>", "github")
+    .action(async (service: string) => {
+      console.log(await runLogin(service));
     });
 
   program

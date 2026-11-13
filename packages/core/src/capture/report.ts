@@ -11,6 +11,10 @@ export interface CaptureOutcome {
   /** Uploaded media: file name -> URL. */
   urls?: Record<string, string>;
   uploadProblem?: string;
+  /** Why the media went to the draft release instead of being attached to the PR (safe for the PR). */
+  mediaFallback?: string;
+  /** The error behind it, for the report only. */
+  mediaFallbackDetail?: string;
   /** Files the app left behind in the run's worktree, which the engine restored. */
   restored?: string[];
 }
@@ -82,7 +86,10 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
     const walk = walkthroughLine(result);
     if (walk) lines.push(`- ${walk}`);
   }
-  if (outcome.urls) lines.push(`- media uploaded (${Object.keys(outcome.urls).length} files)`);
+  if (outcome.urls) {
+    const where = outcome.mediaFallback ? `to the draft release, visible to maintainers only: ${firstLine(outcome.mediaFallback)}` : "as PR attachments";
+    lines.push(`- media uploaded (${Object.keys(outcome.urls).length} files) ${where}`);
+  }
   if (outcome.uploadProblem) lines.push(`- media could not be uploaded: ${firstLine(outcome.uploadProblem)}`);
 
   if (result?.status === "captured" && !outcome.problem) {
@@ -119,6 +126,8 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
   if (notes.length) lines.push("", "## Notes", ...notes.map((n) => `- ${n}`));
   // Whole messages of more than one line, e.g. the end of the app's output when it did not start.
   const details = [...(failed ? [problem] : []), outcome.uploadProblem, result?.beforeProblem].filter((d): d is string => d !== undefined && d.trim().includes("\n"));
+  // The browser's own error behind the PR's fixed reason; it can name local paths, so only here.
+  if (outcome.mediaFallbackDetail) details.push(`why the media is not attached to the PR:\n${outcome.mediaFallbackDetail}`);
   if (details.length) lines.push("", "## Details", ...details.flatMap((d) => ["", "```text", d.trim().replace(/```/g, "'''"), "```"]));
   return `${lines.join("\n")}\n`;
 }
@@ -139,6 +148,10 @@ function brief(text: string): string {
 /** A markdown table cell: no pipes or line breaks. */
 function cell(text: string): string {
   return text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function isAttachment(url: string): boolean {
+  return url.startsWith("https://github.com/user-attachments/");
 }
 
 function image(urls: Record<string, string>, shot: Shot | undefined, alt: string): string | undefined {
@@ -173,14 +186,20 @@ export function screenshotsSection(outcome: CaptureOutcome, runId: string): stri
   // The narrated video replaces the silent one when there is one; only one of them is uploaded.
   const shown = w?.narrated ?? w?.video;
   const video = shown ? urls[basename(shown)] : undefined;
-  if (video) parts.push(`**Walkthrough video${w?.narrated ? " (narrated)" : ""}:** [${basename(shown!)}](${video})`);
+  const label = `**Walkthrough video${w?.narrated ? " (narrated)" : ""}:**`;
+  // An attached video's bare link on its own line is what GitHub turns into a player.
+  if (video) parts.push(isAttachment(video) ? `${label}\n\n${video}` : `${label} [${basename(shown!)}](${video})`);
   if (w?.narrationProblem) parts.push(`No narration: ${brief(w.narrationProblem)}`);
   if (w?.problem) parts.push(`The walkthrough stopped early: ${brief(w.problem)}`);
   const fresh = newErrors(result.pages);
   if (fresh.length) {
     parts.push(`**New browser errors**\n${fresh.flatMap((e) => e.errors.map((s) => `- ${e.page} at ${e.width}px: ${code(s)}`)).join("\n")}`);
   }
-  const notes = [...result.notes.map((n) => `- ${n}`), ...(result.beforeProblem ? [`- no before shots: ${brief(result.beforeProblem)}`] : [])];
+  const notes = [
+    ...result.notes.map((n) => `- ${n}`),
+    ...(result.beforeProblem ? [`- no before shots: ${brief(result.beforeProblem)}`] : []),
+    ...(outcome.mediaFallback ? [`- only maintainers signed in to GitHub can see this media (a draft release): ${brief(outcome.mediaFallback)}`] : []),
+  ];
   if (notes.length) parts.push(notes.join("\n"));
   return parts.join("\n\n");
 }
