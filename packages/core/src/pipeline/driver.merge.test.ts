@@ -68,7 +68,7 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
   });
 
   it("merges the latest main in, checks the result again, and keeps the approval when only main's changes came in", async () => {
-    const { driver, store, merges, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: human") });
+    const { driver, store, merges, root, remote } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: human") });
     const run = driver.startRun(12);
     await driver.drive(run.id);
     const approved = waitingCommit(store.listEvents(run.id))!;
@@ -77,16 +77,20 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
     approve(store, run.id);
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
 
+    // The finished run's worktree and branches are gone (see cleanup); its commits stay in the history.
     const worktree = store.getRun(run.id)!.worktree_path!;
-    const head = git(worktree, "rev-parse", "HEAD");
+    expect(existsSync(worktree)).toBe(false);
+    const head = merges[0]!.head;
     expect(head).not.toBe(approved);
-    expect(git(worktree, "rev-parse", "HEAD^1")).toBe(approved);
-    expect(existsSync(join(worktree, "other.txt"))).toBe(true);
+    expect(git(root, "rev-parse", `${head}^1`)).toBe(approved);
+    expect(git(root, "cat-file", "-t", `${head}:other.txt`)).toBe("blob");
     const resynced = parseVerdict("checks", readFileSync(join(runDirOf(root, run.id), "round-1", "resync", "checks.md"), "utf8"));
     expect(resynced.header).toEqual({ GATE: "PASS", COMMIT: head });
-    // The merge commit was pushed before GitHub was asked to merge exactly it.
-    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(head);
+    // The merge commit was pushed before GitHub was asked to merge exactly it (the branch itself is
+    // deleted once the run is done, the commit stays on the remote).
+    expect(git(remote, "cat-file", "-t", head)).toBe("commit");
     expect(merges).toEqual([{ number: 7, head }]);
+    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature")).toBe("");
   });
 
   it("asks the approver in auto mode and merges when it says PROCEED", async () => {
@@ -220,7 +224,7 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
   });
 
   it("pushes a re-synced commit whose push failed before, and an approval survives the escalation in between", async () => {
-    const { driver, store, merges, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: human") });
+    const { driver, store, merges, root, remote } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: human") });
     const run = driver.startRun(12);
     await driver.drive(run.id);
     const approved = waitingCommit(store.listEvents(run.id))!;
@@ -241,7 +245,7 @@ describe("PipelineDriver after the reviews: capture, PR and merge", () => {
     new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "merge", { comment: "the remote is back" });
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
     expect(merges).toEqual([{ number: 7, head }]);
-    expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(head);
+    expect(git(remote, "cat-file", "-t", head)).toBe("commit");
   });
 
   it("does not merge a run that was cancelled while the merge stage ran", async () => {

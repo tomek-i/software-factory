@@ -311,6 +311,8 @@ describe("PipelineDriver > capture", () => {
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "cancelled" });
     expect(published).toBe(false);
     expect(edits.some((e) => e.body.includes("## Screenshots"))).toBe(false);
+    // Once it stopped, the worker removed the worktree: its work was pushed with the PR.
+    expect(existsSync(store.getRun(run.id)!.worktree_path!)).toBe(false);
   });
 
   it("stops when the run is cancelled while the media uploads, and deletes a release made meanwhile", async () => {

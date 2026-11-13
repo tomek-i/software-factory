@@ -31,6 +31,7 @@ import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { MEDIA_MARKER, mediaTag } from "../github/media.js";
+import { CLEANUP_MARKER, cleanupRun, describeCleanup, recordCleanup } from "./cleanup.js";
 import { factoryComment, type GithubPort, type PullRequestState, type RequiredCheck } from "../github/port.js";
 import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunEvent, type RunPatch, type Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -502,8 +503,20 @@ export class PipelineDriver {
     } finally {
       clearInterval(watch);
       this.signal = undefined;
+      // Nothing of this worker runs in the worktree any more, so a finished run can be cleaned up now.
+      const final = store.getRun(runId);
+      if (final && isTerminal(final.state)) this.cleanUp(final);
       store.releaseLease(runId, owner);
     }
+  }
+
+  /** Remove a finished run's worktree and branches (see cleanupRun). Never throws. */
+  private cleanUp(run: Run): void {
+    const runDir = this.runDir(run);
+    if (existsSync(join(runDir, CLEANUP_MARKER))) return;
+    const result = cleanupRun(run, { root: this.deps.project.repo_path, runDir, defaultBranch: this.defaultBranch, run: this.run });
+    recordCleanup(this.deps.store, run, result);
+    for (const line of describeCleanup(run.id, result)) this.info(run, `cleanup: ${line}`);
   }
 
   /**
