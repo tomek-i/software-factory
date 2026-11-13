@@ -16,7 +16,7 @@ Thanks for helping! Start with the [README](README.md) to see what the factory d
 
 ## Setup
 
-You need Node.js 22+, pnpm, Git and the GitHub CLI. Windows, macOS and Linux all work.
+You need Node.js 22.12+, pnpm, Git and the GitHub CLI. Windows, macOS and Linux all work.
 
 ```sh
 pnpm install

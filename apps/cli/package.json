@@ -10,6 +10,6 @@
   "dependencies": {
     "@factory/core": "workspace:*",
     "@factory/shared": "workspace:*",
-    "commander": "^12.1.0"
+    "commander": "^15.1.0"
   }
 }
