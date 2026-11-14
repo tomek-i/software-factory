@@ -42,7 +42,22 @@ require("http").createServer((req, res) => {
   res.end(page);
 }).listen(Number(process.env.PORT), "127.0.0.1");
 `;
-const HOME_V1 = `<html><head><link rel="stylesheet" href="/old.css"></head><body><h1>Home</h1></body></html>`;
+/**
+ * Whether a server the test started (an app.js above) still runs. taskkill returns before Windows has
+ * finished ending a process, so it gets a moment. Windows also hands a pid out again almost at once,
+ * and under the full suite another process can hold it by the time this looks, so there a live pid
+ * counts only while it still runs app.js. A server that was really left running still fails.
+ */
+async function serverRunning(pid: number): Promise<boolean> {
+  for (let i = 0; i < 40 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+  if (!isAlive(pid)) return false;
+  if (process.platform !== "win32") return true;
+  const found = runCommand("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`], { cwd: process.cwd() });
+  // Without an answer, assume the worst.
+  return found.code !== 0 || found.stdout.includes("app.js");
+}
+
+const HOME_V1 =`<html><head><link rel="stylesheet" href="/old.css"></head><body><h1>Home</h1></body></html>`;
 const testApp = {
   ...factoryConfigSchema.parse({ version: 1 }).app,
   start: `"${process.execPath}" app.js`,
@@ -112,7 +127,7 @@ describe.skipIf(!available)("playwrightCapture (real browser)", () => {
     expect(git(root, "worktree", "list")).not.toContain("r1-before");
     const started = readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number);
     expect(started).toHaveLength(2); // after and before
-    for (const pid of started) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
+    for (const pid of started) expect(await serverRunning(pid), `server ${pid} still running`).toBe(false);
   });
 
   it("never shoots or records a page outside the app, whether a redirect or a link leads there", async () => {
@@ -160,7 +175,7 @@ describe.skipIf(!available)("playwrightCapture (real browser)", () => {
     } finally {
       outside.close();
     }
-    for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
+    for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(await serverRunning(pid), `server ${pid} still running`).toBe(false);
   });
 
   it("narrates a walkthrough that went through, while the app still runs, and only then", async () => {
@@ -214,7 +229,7 @@ console.log(JSON.stringify({ ok: true, video }));
     expect(stopped.walkthrough!.narrated).toBeUndefined();
     expect(stopped.walkthrough!.narrationProblem).toBe("not narrated, as the silent walkthrough did not finish");
     expect(existsSync(join(outDir, "walkthrough-narrated.mp4"))).toBe(false);
-    for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(isAlive(pid), `server ${pid} still running`).toBe(false);
+    for (const pid of readFileSync(pids, "utf8").split("\n").filter(Boolean).map(Number)) expect(await serverRunning(pid), `server ${pid} still running`).toBe(false);
   });
 
   it("reports an app that does not start, without throwing", async () => {

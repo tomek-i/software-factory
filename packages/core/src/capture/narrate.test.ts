@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, relative } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { walkthroughStepSchema, type WalkthroughStep } from "@factory/shared";
-import { tempDir } from "../../test/helpers.js";
+import { GIT_TEST_TIMEOUT, tempDir } from "../../test/helpers.js";
 import type { CommandRunner } from "../util/exec.js";
 import { isAlive } from "../util/process.js";
 import { findNarrate, narrateEnv, narrationScene, renderNarrated, type NarrationScene } from "./narrate.js";
@@ -223,15 +223,30 @@ describe("renderNarrated", () => {
       for (let i = 0; i < 40 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
       expect(isAlive(pid)).toBe(false);
     }
-  }, 30_000);
+    // About 9s alone and 13-15s in the full suite (two fake renders, each stopped with taskkill on
+    // Windows); the 1.5s render limit above is what this test proves.
+  }, GIT_TEST_TIMEOUT);
 });
 
-// Against the real plugin, where it is installed with ffmpeg and Chromium, with narrate's silent
-// "mock" voice (no TTS key, no cost): catches a scene that narrate's own schema no longer accepts.
-const realNarrate = findNarrate("auto");
-const canRender = realNarrate !== undefined && runCommand("ffmpeg", ["-version"], { cwd: process.cwd() }).code === 0 && (await chromiumInstalled());
+// Against the real plugin, with ffmpeg and Chromium, with narrate's silent "mock" voice (no TTS
+// key, no cost): catches a scene that narrate's own schema no longer accepts. These test the narrate
+// installed on this machine, not this repo, so they run only with FACTORY_TEST_NARRATE=1, and then
+// fail when something they need is missing instead of skipping.
+const narrateWanted = process.env.FACTORY_TEST_NARRATE === "1";
+const realNarrate = narrateWanted ? findNarrate("auto") : undefined;
+const missing = narrateWanted
+  ? [
+      realNarrate === undefined && "the narrate plugin (in ~/.claude/plugins/cache)",
+      runCommand("ffmpeg", ["-version"], { cwd: process.cwd() }).code !== 0 && "ffmpeg on PATH",
+      !(await chromiumInstalled()) && "Playwright's Chromium (`pnpm exec playwright install chromium`)",
+    ].filter((m): m is string => typeof m === "string")
+  : [];
 
-describe.skipIf(!canRender)("renderNarrated with the real narrate plugin", () => {
+describe.runIf(narrateWanted)("renderNarrated with the real narrate plugin", () => {
+  beforeAll(() => {
+    expect(missing, `FACTORY_TEST_NARRATE=1 needs ${missing.join(", ")}`).toEqual([]);
+  });
+
   it("renders the engine's scene, with a fill value that looks like a variable typed as written", async () => {
     const server = createServer((_, res) => {
       res.setHeader("content-type", "text/html");
