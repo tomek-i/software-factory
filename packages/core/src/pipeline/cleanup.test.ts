@@ -6,7 +6,7 @@ import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "../../test/helpers.js";
 import { createWorktree } from "../git/worktrees.js";
 import { Store, type Run } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
-import { CLEANUP_MARKER, CLEANUP_PENDING, cleanupFinishedRuns, cleanupRun, mergedHeadOf } from "./cleanup.js";
+import { CLEANUP_MARKER, CLEANUP_PENDING, cleanupFinishedRuns, cleanupRun, describeCleanup, mergedHeadOf } from "./cleanup.js";
 import { runDirOf } from "./driver.js";
 
 // Each test drives real git repos; a busy machine makes them slow, not failing.
@@ -150,11 +150,26 @@ describe("cleanupRun", () => {
     };
   }
 
-  it("turns a locked worktree into a warning, and deletes what the failed removal left next time", () => {
+  /** A folder that stays locked on every retry; no real waits between them. */
+  function stillLocked(root: string, path: string) {
+    const tries: string[] = [];
+    const removeFolder = (folder: string) => {
+      tries.push(folder);
+      throw new Error(`EBUSY: resource busy or locked, rmdir '${folder}'`);
+    };
+    return { tries, options: { run: lockedRemove(root, path), removeFolder, removeRetryDelayMs: 0 } };
+  }
+
+  it("turns a worktree that stays locked into a warning, reports nothing removed, and deletes what is left next time", () => {
     const { root, run, worktree, runDir, options, localHas } = finishedRun("cancelled", { commit: true, push: true });
-    const result = cleanupRun(run, { ...options, run: lockedRemove(root, worktree.path) });
-    expect(result.warnings).toEqual([expect.stringMatching(new RegExp(`^could not clean up ${run.id}: git worktree failed: error: failed to delete`))]);
+    const locked = stillLocked(root, worktree.path);
+    const result = cleanupRun(run, { ...options, ...locked.options });
+    expect(result).toEqual({ removed: [], warnings: [expect.stringMatching(new RegExp(`^could not clean up ${run.id}: git worktree failed: error: failed to delete`))] });
+    expect(describeCleanup(run.id, result)).toEqual([`warning: ${result.warnings[0]}`]);
+    // The first try is `git worktree remove`, the two retries delete the folder.
+    expect(locked.tries).toEqual([worktree.path, worktree.path]);
     expect(existsSync(join(worktree.path, "feature.txt"))).toBe(true);
+    expect(localHas()).toBe(true);
     expect(existsSync(join(runDir, CLEANUP_MARKER))).toBe(false);
     expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(true);
 
@@ -164,9 +179,43 @@ describe("cleanupRun", () => {
     expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(false);
   });
 
+  it("removes a locked worktree when a retry succeeds", () => {
+    const { root, run, worktree, runDir, options, localHas } = finishedRun("cancelled", { commit: true, push: true });
+    const result = cleanupRun(run, { ...options, run: lockedRemove(root, worktree.path), removeRetryDelayMs: 0 });
+    expect(result).toEqual({ removed: ["worktree", `local branch ${BRANCH}`], warnings: [] });
+    expect(existsSync(worktree.path)).toBe(false);
+    expect(localHas()).toBe(false);
+    expect(git(root, "worktree", "list")).not.toContain(BRANCH);
+    expect(JSON.parse(readFileSync(join(runDir, CLEANUP_MARKER), "utf8"))).toMatchObject({ removed: result.removed, kept: null });
+    expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(false);
+  });
+
+  it("reports only the worktree as removed when deleting the branch fails afterwards", () => {
+    const { run, worktree, runDir, options, localHas } = finishedRun("cancelled", { commit: true, push: true });
+    const refused: CommandRunner = (cmd, args, opts) =>
+      args[0] === "branch" && args[1] === "-D" ? { code: 1, stdout: "", stderr: `error: cannot delete branch '${BRANCH}'` } : runCommand(cmd, args, opts);
+    const result = cleanupRun(run, { ...options, run: refused });
+    expect(result).toEqual({ removed: ["worktree"], warnings: [`could not clean up ${run.id}: git branch -D ${BRANCH} failed: error: cannot delete branch '${BRANCH}'`] });
+    expect(describeCleanup(run.id, result)[0]).toBe(`${run.id}: removed worktree`);
+    expect(existsSync(worktree.path)).toBe(false);
+    expect(localHas()).toBe(true);
+    expect(existsSync(join(runDir, CLEANUP_MARKER))).toBe(false);
+    expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(true);
+  });
+
+  it("does not report the remote branch as removed when deleting it fails", () => {
+    const { run, options, localHas, remoteHas } = finishedRun("done", { commit: true, push: true });
+    const rejected: CommandRunner = (cmd, args, opts) =>
+      args[0] === "push" ? { code: 1, stdout: "", stderr: "error: failed to push some refs" } : runCommand(cmd, args, opts);
+    const result = cleanupRun(run, { ...options, run: rejected });
+    expect(result).toEqual({ removed: ["worktree", `local branch ${BRANCH}`], warnings: [`could not clean up ${run.id}: git push --delete ${BRANCH} failed: error: failed to push some refs`] });
+    expect(localHas()).toBe(false);
+    expect(remoteHas()).toBe(true);
+  });
+
   it("keeps a folder that is no longer a git worktree when it did not start removing it", () => {
     const { root, run, worktree, runDir, options } = finishedRun("cancelled", { commit: true, push: true });
-    cleanupRun(run, { ...options, run: lockedRemove(root, worktree.path) });
+    cleanupRun(run, { ...options, ...stillLocked(root, worktree.path).options });
     rmSync(join(runDir, CLEANUP_PENDING));
     // git commands in the folder now act on the main repository, so its files cannot be judged.
     expect(cleanupRun(run, options).kept).toBe(`the worktree folder is no longer a git worktree, so the worktree and branch ${BRANCH} are kept`);
