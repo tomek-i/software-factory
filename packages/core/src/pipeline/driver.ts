@@ -1164,7 +1164,9 @@ export class PipelineDriver {
     }
 
     writeFileSync(join(roundDir, "capture-report.md"), renderCaptureReport(outcome));
-    writeFileSync(join(captureDir, "screenshots.md"), `${screenshotsSection(outcome, run.id)}\n`);
+    // The PR's copy: local paths shortened. The report above keeps the full text.
+    const roots = [this.deps.project.repo_path, worktree.path];
+    writeFileSync(join(captureDir, "screenshots.md"), `${screenshotsSection(outcome, run.id, { roots })}\n`);
     this.updatePrDescription(run);
     const summary = outcome.skipped
       ? `no screenshots: ${outcome.skipped}`

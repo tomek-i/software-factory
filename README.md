@@ -352,6 +352,7 @@ What `factory run` does today:
    - **Nothing here fails the run.** When the app does not start, Playwright or its browser is missing, a walkthrough step fails, the agent's plan is unusable or the upload fails:
      - `round-N/capture-report.md` and the PR description say why (for example "Screenshots could not be taken: …") and the run goes on.
      - The PR gets only the first line of a problem. The app's log and the full error stay in the report (`factory show <run> capture`).
+     - Local paths in the errors the PR shows are shortened first: a path in the repository becomes relative to it, and the home folder (or any `C:\Users\<name>`, `/home/<name>`, `/Users/<name>`) becomes `~`. The report keeps them as they were.
      - Only a usage limit or a cancel stops it here. After a usage limit, the next `factory run` captures again.
 
    The `pr` gate (default `always`) then takes the draft PR out of draft.
