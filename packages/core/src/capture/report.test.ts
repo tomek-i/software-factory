@@ -130,4 +130,51 @@ describe("screenshotsSection", () => {
     expect(report).toContain("## Details\n\n```text\nthe app did not start");
     expect(report).toContain("DATABASE_URL=postgres://me:pw@db\ncc @someone\n```");
   });
+
+  describe("local paths", () => {
+    const paths = { home: "/home/alice", roots: ["D:\\work\\repo"] };
+    // As long as the real hint (about 245 characters), so the path starts near where the first line is cut.
+    const hint = "Playwright is not installed. ".repeat(8);
+    const win = `${hint}(Cannot find package 'playwright' imported from C:\\Users\\alice\\repo\\packages\\core\\dist\\capture\\browser.js)`;
+
+    it("are shortened in every message the PR shows, also past where the first line is cut", () => {
+      const pr = screenshotsSection({ problem: win }, "r1", paths);
+      expect(pr).toContain("Cannot find package 'playwright' imported from ~");
+      expect(pr).not.toContain("alice");
+
+      const msg = (where: string) => `${where}: cannot read /home/alice/repo/x.js`;
+      const leaky: PageCapture[] = [
+        { ...pages[0]!, after: [shot("after", "home", 1440, [msg("console error")]), { width: 390, signals: [], error: msg("shot") }] },
+      ];
+      const captured: CaptureResult = {
+        ...result,
+        pages: leaky,
+        beforeProblem: "git worktree add failed: fatal: C:/Users/alice/repo/.git is locked",
+        walkthrough: { ...result.walkthrough!, problem: msg("walkthrough"), narrationProblem: msg("narration") },
+      };
+      const full = screenshotsSection({ result: captured, urls, mediaFallback: msg("fallback") }, "r1", paths);
+      for (const where of ["console error", "shot", "walkthrough", "narration", "fallback"]) expect(full).toContain(`${where}: cannot read ~/repo/x.js`);
+      expect(full).toContain("fatal: ~/repo/.git is locked");
+      expect(screenshotsSection({ result, uploadProblem: "gh: open D:\\work\\repo\\round-1\\a.png: denied" }, "r1", paths)).toContain("`gh: open round-1\\a.png: denied`");
+      for (const text of [pr, full]) {
+        expect(text).not.toContain("alice");
+        expect(text).not.toContain("D:\\work");
+      }
+    });
+
+    it("leave routes and URLs as they are", () => {
+      const text = screenshotsSection({ result, urls }, "r1", paths);
+      expect(text).toBe(screenshotsSection({ result, urls }, "r1"));
+      expect(text).toContain("| **invoices** `/invoices` 1440px");
+      expect(text).toContain("- no before shot of invoices (/invoices): it is a new screen");
+      expect(screenshotsSection({ problem: "the app did not answer at http://localhost:4700/x" }, "r1", paths)).toContain("`the app did not answer at http://localhost:4700/x`");
+    });
+
+    it("stay whole in the report", () => {
+      const report = renderCaptureReport({ problem: win });
+      expect(report).toContain(`## Details\n\n\`\`\`text\n${win}\n\`\`\``);
+      const short = "Cannot find package 'playwright' imported from /home/alice/repo/browser.js";
+      expect(renderCaptureReport({ problem: short })).toContain(`- screenshots could not be taken: ${short}\n`);
+    });
+  });
 });

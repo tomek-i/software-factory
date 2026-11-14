@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { redactPaths, type RedactOptions } from "../util/redact.js";
 import type { CaptureResult, PageCapture, Shot } from "./capture.js";
 
 /** What the capture stage ended with: the capture itself and where its media went. */
@@ -124,8 +125,9 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
     ...(outcome.restored?.length ? [`the app left changes in the worktree, which were undone: ${outcome.restored.join(", ")}`] : []),
   ];
   if (notes.length) lines.push("", "## Notes", ...notes.map((n) => `- ${n}`));
-  // Whole messages of more than one line, e.g. the end of the app's output when it did not start.
-  const details = [...(failed ? [problem] : []), outcome.uploadProblem, result?.beforeProblem].filter((d): d is string => d !== undefined && d.trim().includes("\n"));
+  // Whole messages the summary cuts short: more than one line (the end of the app's output when it
+  // did not start), or one line longer than the summary keeps (a Playwright error and its paths).
+  const details = [...(failed ? [problem] : []), outcome.uploadProblem, result?.beforeProblem].filter((d): d is string => d !== undefined && d.trim() !== firstLine(d));
   // The browser's own error behind the PR's fixed reason; it can name local paths, so only here.
   if (outcome.mediaFallbackDetail) details.push(`why the media is not attached to the PR:\n${outcome.mediaFallbackDetail}`);
   if (details.length) lines.push("", "## Details", ...details.flatMap((d) => ["", "```text", d.trim().replace(/```/g, "'''"), "```"]));
@@ -135,14 +137,6 @@ export function renderCaptureReport(outcome: CaptureOutcome): string {
 /** Text from the app (error messages) as inline code, so GitHub renders none of it as markup. */
 function code(text: string): string {
   return `\`${text.replace(/`/g, "'").replace(/\r?\n/g, " ")}\``;
-}
-
-/**
- * A message for the PR: its first line only, as inline code. The rest (log tails, git output) can
- * hold local paths and environment values, and any of it could carry @mentions or markup.
- */
-function brief(text: string): string {
-  return code(firstLine(text));
 }
 
 /** A markdown table cell: no pipes or line breaks. */
@@ -162,10 +156,15 @@ function image(urls: Record<string, string>, shot: Shot | undefined, alt: string
 
 /**
  * The PR description's `## Screenshots`: a before/after table of the uploaded shots and the
- * walkthrough video, or why there are none. Every message in it is briefed (first line, inline code).
+ * walkthrough video, or why there are none. Every message in it is briefed (first line, inline code)
+ * with local paths shortened; `paths` says which folders (the repository) and home folder to shorten.
  */
-export function screenshotsSection(outcome: CaptureOutcome, runId: string): string {
+export function screenshotsSection(outcome: CaptureOutcome, runId: string, paths: RedactOptions = {}): string {
   const { result } = outcome;
+  // Text from a tool, the browser or the app, with local paths shortened (before the first line is cut).
+  const quote = (text: string) => code(redactPaths(text, paths));
+  // A message: its first line only. The rest (log tails, git output) can hold environment values.
+  const brief = (text: string) => code(firstLine(redactPaths(text, paths)));
   const where = `Details: \`factory show ${runId} capture\`.`;
   if (outcome.skipped) return `## Screenshots\nNo screenshots: ${brief(outcome.skipped)}`;
   if (outcome.problem || !result || result.status !== "captured") {
@@ -193,7 +192,7 @@ export function screenshotsSection(outcome: CaptureOutcome, runId: string): stri
   if (w?.problem) parts.push(`The walkthrough stopped early: ${brief(w.problem)}`);
   const fresh = newErrors(result.pages);
   if (fresh.length) {
-    parts.push(`**New browser errors**\n${fresh.flatMap((e) => e.errors.map((s) => `- ${e.page} at ${e.width}px: ${code(s)}`)).join("\n")}`);
+    parts.push(`**New browser errors**\n${fresh.flatMap((e) => e.errors.map((s) => `- ${e.page} at ${e.width}px: ${quote(s)}`)).join("\n")}`);
   }
   const notes = [
     ...result.notes.map((n) => `- ${n}`),
