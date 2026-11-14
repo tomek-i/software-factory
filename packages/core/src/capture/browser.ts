@@ -15,8 +15,10 @@ const STEP_TIMEOUT_MS = 10_000;
 type PlaywrightModule = typeof import("playwright");
 
 /**
- * Playwright from the factory's own install, or else the copy the narrate plugin ships with, so a
- * machine that has the plugin needs no separate install. Throws the first error when neither loads.
+ * Playwright from the factory's own install, or else, when `app.narrate` allows it, the copy the
+ * narrate plugin ships with. So the plugin saves a separate install only under `auto` or a path, and
+ * only when the plugin picked ships Playwright; with `off`, or a path to a plugin without it, the
+ * factory needs its own install. Throws the first error when neither loads.
  *
  * `narrate` is the `app.narrate` setting, so the plugin is only reached into when it is allowed:
  * `off` uses the factory's own Playwright alone, a path only the plugin that path belongs to, and
