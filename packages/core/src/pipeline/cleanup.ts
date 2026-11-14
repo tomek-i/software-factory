@@ -38,6 +38,25 @@ export interface CleanupOptions {
   run?: CommandRunner;
   /** Say what would happen, change nothing. */
   dryRun?: boolean;
+  /** How many times removing the worktree is tried before the cleanup gives up; defaults to REMOVE_TRIES. */
+  removeTries?: number;
+  /** The wait before the first retry, doubled for each one after; defaults to REMOVE_RETRY_DELAY_MS. */
+  removeRetryDelayMs?: number;
+  /** Deletes the worktree folder on a retry; for tests, defaults to `rmSync`. */
+  removeFolder?: (path: string) => void;
+}
+
+/**
+ * A worktree removal right after a run often hits a short-lived file lock on Windows, so it is
+ * tried a few times (waits of 1 s and 2 s) before it is left to the next sweep. Bounded: the
+ * cleanup also runs inside `factory status`.
+ */
+export const REMOVE_TRIES = 3;
+export const REMOVE_RETRY_DELAY_MS = 1_000;
+
+/** A blocking wait: the cleanup is synchronous (the driver's `finally`, the CLI's sweeps). */
+function sleepSync(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** For the calls that reach the remote: a hung remote or a credential prompt must not hang a worker or `factory status`. */
@@ -111,6 +130,35 @@ function unsafeToRemove(root: string, worktree: Worktree, target: Run, options: 
 }
 
 /**
+ * Remove the run's worktree, trying again a few times when it fails (see REMOVE_TRIES). A failed
+ * `git worktree remove` has usually unregistered the worktree already and left only the folder, so
+ * a retry deletes the folder and prunes git's record of it, which lets `git branch -D` go ahead.
+ * Called only once the removal was judged safe, under the CLEANUP_PENDING marker. Throws the first
+ * failure when every try failed.
+ */
+function removeWorktreeRetrying(root: string, worktree: Worktree, registered: boolean, options: CleanupOptions, run: CommandRunner): void {
+  const tries = Math.max(1, options.removeTries ?? REMOVE_TRIES);
+  const removeFolder = options.removeFolder ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
+  let first: unknown;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    if (attempt > 1) sleepSync((options.removeRetryDelayMs ?? REMOVE_RETRY_DELAY_MS) * 2 ** (attempt - 2));
+    try {
+      if (attempt === 1 && (registered || !existsSync(worktree.path))) removeWorktree(root, worktree, { run });
+      else {
+        removeFolder(worktree.path);
+        const pruned = git(run, root, ["worktree", "prune"]);
+        if (!pruned.ok) throw new Error(`git worktree prune failed: ${pruned.err}`);
+      }
+      if (existsSync(worktree.path)) throw new Error(`the worktree folder ${worktree.path} is still there`);
+      return;
+    } catch (err) {
+      first ??= err;
+    }
+  }
+  throw first;
+}
+
+/**
  * Remove a finished run's worktree and branches, never its run folder.
  * - done (its PR was merged): the worktree and the local branch; the remote branch too, unless
  *   GitHub already deleted it or someone pushed to it after the merge.
@@ -148,22 +196,27 @@ export function cleanupRun(target: Run, options: CleanupOptions): CleanupResult 
       if (remote && options.mergedHead && remote === options.mergedHead) deleteRemote = true;
       else if (remote) result.kept = `the remote branch ${worktree.branch} is not what was merged, so it is kept`;
     }
-    if (present) result.removed.push("worktree");
-    if (localBranch) result.removed.push(`local branch ${worktree.branch}`);
-    if (deleteRemote) result.removed.push(`remote branch ${worktree.branch}`);
-    if (options.dryRun) return result;
+    if (options.dryRun) {
+      if (present) result.removed.push("worktree");
+      if (localBranch) result.removed.push(`local branch ${worktree.branch}`);
+      if (deleteRemote) result.removed.push(`remote branch ${worktree.branch}`);
+      return result;
+    }
 
+    // Each item is listed only once its step succeeded: a failure part way reports what really went.
     if (existsSync(runDir)) writeFileSync(pending, `${JSON.stringify({ at: new Date().toISOString() })}\n`);
-    if (registered || !present) removeWorktree(root, worktree, { run });
-    else rmSync(worktree.path, { recursive: true, force: true });
+    removeWorktreeRetrying(root, worktree, registered, options, run);
+    if (present) result.removed.push("worktree");
     if (localBranch) {
       const deleted = git(run, root, ["branch", "-D", worktree.branch]);
       if (!deleted.ok) throw new Error(`git branch -D ${worktree.branch} failed: ${deleted.err}`);
+      result.removed.push(`local branch ${worktree.branch}`);
     }
     if (deleteRemote) {
       // Only while it still points at what was merged: a commit pushed meanwhile is never deleted.
       const pushed = git(run, root, ["push", "--quiet", `--force-with-lease=refs/heads/${worktree.branch}:${options.mergedHead}`, "origin", "--delete", worktree.branch], NETWORK_TIMEOUT_MS);
       if (!pushed.ok) throw new Error(`git push --delete ${worktree.branch} failed: ${pushed.err}`);
+      result.removed.push(`remote branch ${worktree.branch}`);
     }
     writeMarker(runDir, result, run, root, worktree.branch);
     rmSync(pending, { force: true });

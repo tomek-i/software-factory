@@ -400,7 +400,7 @@ What `factory run` does today:
   - the worker that finished the run, once it has stopped;
   - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
   - `factory status` and `factory run`: right away, runs they themselves finish because their PR was merged or closed on GitHub; and finished runs the cleanup has not handled yet, 2 minutes after they finished and only once no worker holds them, so a worker that is still stopping is never disturbed.
-- **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach), it's a warning in the output and the run's events, never a failure of the run. The next `factory status` or `factory run` tries again, and finishes a removal that stopped half way.
+- **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach), it's a warning in the output and the run's events, never a failure of the run. A worktree that can't be removed is tried again a few times over a few seconds first, and the output lists only what was really removed. The next `factory status` or `factory run` tries again, and finishes a removal that stopped half way.
 - **`factory cleanup`** removes what older runs left behind; `factory cleanup --dry-run` lists it first. Like the sweep, it waits 2 minutes after a run finished. It also looks again at runs that were kept, so after you push their work, `factory cleanup` removes them.
 
 **When a run escalates** (agent failed, builder blocked, loop cap reached, loop stalled), `factory run` tells you why.
