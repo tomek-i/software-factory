@@ -35,8 +35,17 @@ export class NotSignedInError extends Error {
  * a GitHub session. `%LOCALAPPDATA%` on Windows, `$XDG_CONFIG_HOME` or `~/.config` elsewhere.
  */
 export function githubProfileDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home = homedir()): string {
+  return join(factoryDataDir(env, platform, home), "github-browser");
+}
+
+/**
+ * The factory's per-user folder (the GitHub browser profile, the project list). `FACTORY_DATA_DIR`
+ * moves it, which tests use so they never touch the real one.
+ */
+export function factoryDataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home = homedir()): string {
+  if (env.FACTORY_DATA_DIR) return env.FACTORY_DATA_DIR;
   const base = platform === "win32" ? (env.LOCALAPPDATA ?? join(home, "AppData", "Local")) : (env.XDG_CONFIG_HOME ?? join(home, ".config"));
-  return join(base, "software-factory", "github-browser");
+  return join(base, "software-factory");
 }
 
 /** The first attachment link in the comment box that is not in `seen`: a late one belongs to an earlier file. */

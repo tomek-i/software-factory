@@ -14,6 +14,8 @@ export default defineConfig({
     include: ["{apps,packages}/*/src/**/*.test.ts", "packages/*/test/**/*.test.ts"],
     // Builds the template repos that repoWithRemote copies once per run, for every test file.
     globalSetup: ["packages/core/test/global-setup.ts"],
+    // Points FACTORY_DATA_DIR at a temp folder, so no test touches the real project list.
+    setupFiles: ["packages/core/test/setup-data-dir.ts"],
     // Several suites drive real git repos and child processes, which are slow on Windows.
     testTimeout: 30_000,
   },

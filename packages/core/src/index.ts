@@ -35,3 +35,5 @@ export * from "./service/reconcile.js";
 export * from "./service/show.js";
 export * from "./service/lessons.js";
 export * from "./service/drafts.js";
+export * from "./service/project.js";
+export * from "./registry.js";

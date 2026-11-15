@@ -5,6 +5,7 @@ import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
 import { runLogin } from "./commands/login.js";
 import { runNew, type NewOptions } from "./commands/new.js";
+import { runProjects, runProjectsRemove } from "./commands/projects.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
 import { refuseRunningOnItself } from "./self.js";
@@ -21,6 +22,21 @@ export function buildProgram(): Command {
     .description("set up the factory in the current git repository")
     .action(() => {
       console.log(runInit(process.cwd()));
+    });
+
+  const projects = program
+    .command("projects")
+    .description("list the repositories the factory manages (added by `factory init`)")
+    .action(() => {
+      console.log(runProjects({}, styleFor(process.stdout)));
+    });
+
+  projects
+    .command("remove")
+    .description("drop a repository from the list; the repository and its database are untouched")
+    .argument("<path>", "the repository's folder")
+    .action((path: string) => {
+      console.log(runProjectsRemove(process.cwd(), path));
     });
 
   program
