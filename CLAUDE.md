@@ -13,6 +13,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `config.ts`: the `.factory/config.yaml` schema and defaults, `AGENT_ROLES` for per-role models
 - `verdict.ts`: agent output headers (`verdictHeaderSchemas`), `parseVerdict`, findings, lessons
 - `capture.ts`: the capture agent's plan (`capturePlanSchema`), data only, same-origin paths
+- `registry.ts`: the per-user project list's file format (`registryFileSchema`)
 
 `packages/core/src`: the engine, exported through `index.ts`
 - `pipeline/transitions.ts`: `RunMachine`, the forward edges and the guards on them
@@ -36,6 +37,8 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `drafts/`: issue writer drafts for `factory new`
 - `init/`: `factory init`, project detection and the config template
 - `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
+- `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
+- `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
 - `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
@@ -44,8 +47,8 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `apps/cli/src`: the `factory` command
 - `main.ts` and `program.ts`: entry point and commander wiring
-- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`: formatting over `packages/core/src/service/`
-- `context.ts`: `openProject`, and `withProject`, which turns a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
+- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`: formatting over `packages/core/src/service/`
+- `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
 
 ## Core invariants
 
@@ -94,6 +97,7 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 - Shared setups: `packages/core/test/driver-setup.ts` for the driver, `apps/cli/test/runs-setup.ts` for the CLI run commands.
 - Driver tests live next to the source as `packages/core/src/pipeline/driver.<area>.test.ts`. Put new ones in their own file so they run in parallel.
 - Run the targeted tests while working (`pnpm vitest run <file>`) and the full suite once at the end, with `pnpm lint` and `pnpm typecheck`.
+- Every test file gets its own temp `FACTORY_DATA_DIR` (`packages/core/test/setup-data-dir.ts`), so `factory init` in a test never adds to the user's project list.
 - `FACTORY_REQUIRE_BROWSER=1` makes the real-browser tests fail rather than skip without Chromium; `FACTORY_TEST_NARRATE=1` runs the real narrate plugin tests. See [Development](README.md#development).
 - `packages/core/test/claude-md.test.ts` checks that every path, symbol and link in this file exists.
 

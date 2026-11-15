@@ -115,9 +115,16 @@ node <path-to-this-repo>/apps/cli/dist/main.js init
 - writes `.factory/lessons.md`, which agents read before every run.
 - adds runtime state (`.factory/runs/`, `.factory/factory.db*`, `.worktrees/`, `.factory/drafts/`) to `.gitignore`.
 - registers the project in `.factory/factory.db`.
+- adds the repo to your project list (see below).
 - creates GitHub status labels only if you enabled `github.status_labels` (off by default; see below).
 
 It is safe to re-run. An existing config is never overwritten.
+
+The project list holds every repo you ran `factory init` in, so a worker or the web UI (planned, #23) can find them. It is one file per user: `%LOCALAPPDATA%\software-factory\projects.json` on Windows, or `~/.config/software-factory/projects.json` (`$XDG_CONFIG_HOME`) elsewhere. `FACTORY_DATA_DIR` moves that folder, together with the GitHub browser profile. The list only holds paths and names; each repo keeps its own state.
+
+- `factory projects` lists the repos and flags one whose folder has gone, or that has no `.factory/factory.db`.
+- `factory projects remove <path>` drops a repo from the list. The repo and its database are not touched.
+- A repo set up before the list existed joins it when you run `factory init` there again.
 
 `factory login github` opens a browser and waits for you to sign in to GitHub there. The factory then attaches screenshots and videos to its PRs. Run it again to check who is signed in.
 
