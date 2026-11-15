@@ -72,7 +72,12 @@ export const factoryConfigSchema = z.object({
   project: z
     .object({
       name: z.string().optional(),
-      default_branch: z.string().default("main"),
+      // Goes into git commands as a ref, so a name git would read as an option (`--upload-pack=…`)
+      // or would refuse as a branch name is rejected here.
+      default_branch: z
+        .string()
+        .regex(/^(?!-)(?!.*\.\.)[^\s~^:?*[\\\p{Cc}]+(?<![./])$/u, "not a valid git branch name")
+        .default("main"),
     })
     .prefault({}),
   checks: z.array(checkSchema).default([]),

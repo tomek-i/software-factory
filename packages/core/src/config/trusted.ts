@@ -11,7 +11,7 @@ export type TrustedReader = (relPath: string) => string | undefined;
  * checks, trust list, gates or prompts. Fetches once when created.
  */
 export function trustedReader(root: string, defaultBranch: string, run: CommandRunner = runCommand): TrustedReader {
-  const fetched = run("git", ["fetch", "--quiet", "origin", defaultBranch], { cwd: root });
+  const fetched = run("git", ["fetch", "--quiet", "--end-of-options", "origin", defaultBranch], { cwd: root });
   if (fetched.code !== 0) throw new ConfigError(root, [`git fetch origin ${defaultBranch} failed: ${fetched.stderr}`]);
   return (relPath) => {
     const spec = `origin/${defaultBranch}:${relPath.replace(/\\/g, "/")}`;
