@@ -27,6 +27,7 @@ pnpm test
 
 - Tests never spend real Claude usage: they use a fake `claude` and fake GitHub calls.
 - Browser tests run only when Playwright's Chromium is installed (`pnpm exec playwright install chromium`).
+- Tests against the real narrate plugin run only with `FACTORY_TEST_NARRATE=1`, and then need the plugin, ffmpeg and Chromium. See the README's [Development](README.md#development) section.
 
 ## Pull requests
 

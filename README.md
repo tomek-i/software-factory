@@ -540,6 +540,14 @@ pnpm factory init   # run the CLI from source
 
 The capture tests that drive a real browser run only where Playwright's Chromium is installed (`pnpm exec playwright install chromium`). They are skipped otherwise. Set `FACTORY_REQUIRE_BROWSER=1` (for example in CI) to make a missing browser fail the tests instead.
 
+The tests that render with the real narrate plugin are skipped unless you set `FACTORY_TEST_NARRATE=1`, because they test the narrate version installed on your machine, not this repo. With the flag they need the plugin (in `~/.claude/plugins/cache`), ffmpeg on `PATH` and Playwright's Chromium, and fail if any of them is missing. They use narrate's silent mock voice, so they cost nothing:
+
+```sh
+FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.test.ts
+```
+
+The quality gate runs `pnpm test` with your environment, so leave the flag unset in the shell that runs the factory, or an old narrate install can fail a run's `test` check.
+
 Layout:
 
 ```
