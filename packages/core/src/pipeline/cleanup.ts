@@ -74,6 +74,15 @@ function remoteHead(run: CommandRunner, root: string, branch: string): string {
   return listed.out.split(/\s+/)[0] ?? "";
 }
 
+/** Whether the remote surely has no such branch; false when it still has it or cannot be asked. */
+function goneFromRemote(run: CommandRunner, root: string, branch: string): boolean {
+  try {
+    return remoteHead(run, root, branch) === "";
+  } catch {
+    return false;
+  }
+}
+
 /** Whether `commit` is `target` or in its history; false when either is unknown here. */
 function within(run: CommandRunner, root: string, commit: string, target: string): boolean {
   return commit === target || (target !== "" && git(run, root, ["merge-base", "--is-ancestor", commit, target]).ok);
@@ -161,7 +170,8 @@ function removeWorktreeRetrying(root: string, worktree: Worktree, registered: bo
 /**
  * Remove a finished run's worktree and branches, never its run folder.
  * - done (its PR was merged): the worktree and the local branch; the remote branch too, unless
- *   GitHub already deleted it or someone pushed to it after the merge.
+ *   GitHub already deleted it or someone pushed to it after the merge. A remote branch deleted by
+ *   someone else (GitHub, on merge) while the cleanup runs counts as removed.
  * - rejected, cancelled, failed: the worktree and the local branch; the remote branch stays, so a
  *   closed PR can be reopened.
  * Either way only when no work would be lost (see unsafeToRemove); otherwise both are kept and the
@@ -215,7 +225,8 @@ export function cleanupRun(target: Run, options: CleanupOptions): CleanupResult 
     if (deleteRemote) {
       // Only while it still points at what was merged: a commit pushed meanwhile is never deleted.
       const pushed = git(run, root, ["push", "--quiet", `--force-with-lease=refs/heads/${worktree.branch}:${options.mergedHead}`, "origin", "--delete", worktree.branch], NETWORK_TIMEOUT_MS);
-      if (!pushed.ok) throw new Error(`git push --delete ${worktree.branch} failed: ${pushed.err}`);
+      // GitHub deleting the merged branch itself can win the race: gone is what was wanted.
+      if (!pushed.ok && !goneFromRemote(run, root, worktree.branch)) throw new Error(`git push --delete ${worktree.branch} failed: ${pushed.err}`);
       result.removed.push(`remote branch ${worktree.branch}`);
     }
     writeMarker(runDir, result, run, root, worktree.branch);

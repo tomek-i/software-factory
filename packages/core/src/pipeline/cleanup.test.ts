@@ -213,6 +213,44 @@ describe("cleanupRun", () => {
     expect(remoteHas()).toBe(true);
   });
 
+  /** GitHub deleting the merged branch between the cleanup's check and its own delete. */
+  function githubDeletesFirst(root: string) {
+    let pushed = false;
+    const run: CommandRunner = (cmd, args, opts) => {
+      if (args[0] !== "push") return runCommand(cmd, args, opts);
+      git(root, "push", "--quiet", "origin", "--delete", BRANCH);
+      pushed = true;
+      return { code: 1, stdout: "", stderr: `error: unable to delete '${BRANCH}': remote ref does not exist` };
+    };
+    return { run, pushed: () => pushed };
+  }
+
+  it("counts a remote branch deleted by someone else during the cleanup as removed", () => {
+    const { root, run, runDir, options, localHas, remoteHas } = finishedRun("done", { commit: true, push: true });
+    const raced = githubDeletesFirst(root);
+    const result = cleanupRun(run, { ...options, run: raced.run });
+    expect(raced.pushed()).toBe(true);
+    expect(result).toEqual({ removed: ["worktree", `local branch ${BRANCH}`, `remote branch ${BRANCH}`], warnings: [] });
+    expect(localHas()).toBe(false);
+    expect(remoteHas()).toBe(false);
+    expect(JSON.parse(readFileSync(join(runDir, CLEANUP_MARKER), "utf8"))).toMatchObject({ removed: result.removed, kept: null });
+    expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(false);
+  });
+
+  it("does not take a failed delete for a removed branch when the remote is out of reach afterwards", () => {
+    const { root, run, runDir, options } = finishedRun("done", { commit: true, push: true });
+    const raced = githubDeletesFirst(root);
+    const offlineAfterPush: CommandRunner = (cmd, args, opts) =>
+      raced.pushed() && args[0] === "ls-remote" ? { code: 128, stdout: "", stderr: "fatal: unable to access 'origin': Could not resolve host" } : raced.run(cmd, args, opts);
+    const result = cleanupRun(run, { ...options, run: offlineAfterPush });
+    expect(result).toEqual({
+      removed: ["worktree", `local branch ${BRANCH}`],
+      warnings: [`could not clean up ${run.id}: git push --delete ${BRANCH} failed: error: unable to delete '${BRANCH}': remote ref does not exist`],
+    });
+    expect(existsSync(join(runDir, CLEANUP_MARKER))).toBe(false);
+    expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(true);
+  });
+
   it("keeps a folder that is no longer a git worktree when it did not start removing it", () => {
     const { root, run, worktree, runDir, options } = finishedRun("cancelled", { commit: true, push: true });
     cleanupRun(run, { ...options, ...stillLocked(root, worktree.path).options });
