@@ -106,6 +106,30 @@ describe("ensureQueued", () => {
 });
 
 describe("driveIssue", () => {
+  it("continues only the run it was given: one that ended since is left, and no new run is made", async () => {
+    const s = context();
+    const picked = s.store.createRun({ project_id: s.project.id, title: "Add the feature", issue_number: 12 });
+    s.store.writeState(picked.id, "cancelled");
+
+    const driven = await driveIssue(s.ctx, 12, { runId: picked.id }, { owner: "work-test", env: s.fake.env, github: s.github });
+
+    expect(driven.outcome).toMatchObject({ kind: "stopped", state: "cancelled" });
+    expect(s.store.listRuns({ project_id: s.project.id })).toHaveLength(1);
+    expect(s.fake.calls()).toEqual([]);
+    await expect(driveIssue(s.ctx, 13, { runId: picked.id }, { owner: "work-test", env: s.fake.env, github: s.github })).rejects.toThrow(ServiceError);
+  });
+
+  it("leaves a run waiting for its author parked when told not to retriage", async () => {
+    const s = context();
+    const run = s.store.createRun({ project_id: s.project.id, title: "Add the feature", issue_number: 12 });
+    s.store.writeState(run.id, "needs_info");
+
+    const driven = await driveIssue(s.ctx, 12, { retriage: false }, { owner: "work-test", env: s.fake.env, github: s.github });
+
+    expect(driven.outcome).toMatchObject({ kind: "parked", state: "needs_info" });
+    expect(s.fake.calls()).toEqual([]);
+  });
+
   it("reports what happens before the run moves, streams events, and returns the outcome and run", async () => {
     const s = context([{ output: TRIAGE() }], HUMAN_TRIAGE.replace(/checks:\n.*\n.*\n/, ""));
 

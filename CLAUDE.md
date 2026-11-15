@@ -39,6 +39,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
+- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `stop.ts` for `factory stop`
 - `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
@@ -47,7 +48,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `apps/cli/src`: the `factory` command
 - `main.ts` and `program.ts`: entry point and commander wiring
-- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`: formatting over `packages/core/src/service/`
+- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`, `work.ts`: formatting over `packages/core/src/service/`
 - `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
 
 ## Core invariants

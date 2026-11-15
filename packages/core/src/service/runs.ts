@@ -1,6 +1,6 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, isTrustedIssue, STAGES, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
 import { createAgentRunner } from "../agents/runner.js";
 import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
 import type { FactoryEvents } from "../events.js";
@@ -115,6 +115,18 @@ export interface DriveDeps extends ServiceDeps {
   onNotice?: (notice: DriveNotice) => void;
 }
 
+export interface DriveOptions {
+  /** Lift hard rules for a run this creates (`--unsafe`). */
+  unsafe?: boolean;
+  /**
+   * Continue exactly this run. If it has ended or moved out of a working stage since it was picked,
+   * nothing is driven and no new run is created: a scheduler picked it, not a person.
+   */
+  runId?: string;
+  /** Send a run waiting for its author's answers back to triage (default). `factory run` means "they answered"; a scheduler can't know. */
+  retriage?: boolean;
+}
+
 export interface Driven {
   outcome: DriveOutcome;
   /** The run as it is after driving. */
@@ -122,7 +134,7 @@ export interface Driven {
 }
 
 /** Drive a queued issue's run (starting one if needed) until it needs someone. */
-export async function driveIssue(ctx: ServiceContext, number: number, options: { unsafe?: boolean }, deps: DriveDeps): Promise<Driven> {
+export async function driveIssue(ctx: ServiceContext, number: number, options: DriveOptions, deps: DriveDeps): Promise<Driven> {
   const { store, project } = ctx;
   const issue = store.getIssue(project.id, number)!;
   const defaultBranch = ctx.config.project.default_branch;
@@ -142,10 +154,20 @@ export async function driveIssue(ctx: ServiceContext, number: number, options: {
   });
 
   if (config.checks.length === 0) deps.onNotice?.({ type: "no_checks" });
-  let run = driver.startRun(number, { unsafe: options.unsafe });
+  let run: Run;
+  if (options.runId) {
+    const picked = store.getRun(options.runId);
+    if (!picked || picked.issue_number !== number) throw new ServiceError(`Run ${options.runId} is not a run of issue #${number}.`);
+    if (!(STAGES as readonly string[]).includes(picked.state)) {
+      return { outcome: { kind: "stopped", state: picked.state, reason: `the run is ${picked.state} now, not in a working stage` }, run: picked };
+    }
+    run = picked;
+  } else {
+    run = driver.startRun(number, { unsafe: options.unsafe });
+  }
   if (options.unsafe && !run.unsafe) deps.onNotice?.({ type: "unsafe_ignored", runId: run.id });
   // Running an issue that was waiting for its author means "they answered": triage it again.
-  if (run.state === "needs_info") run = driver.retriage(run.id);
+  if (run.state === "needs_info" && options.retriage !== false) run = driver.retriage(run.id);
 
   // Only rows still running are ours: this process holds the run's lease.
   const stop = () => {

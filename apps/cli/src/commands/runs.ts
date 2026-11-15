@@ -77,7 +77,7 @@ export function showHint(run: Pick<Run, "id" | "waiting_gate">): string {
   return `See it with: \`factory show ${run.id}${file ? ` ${file}` : ""}\`.`;
 }
 
-function describeOutcome(outcome: DriveOutcome, run: Run, issue: number, style: Style): string {
+export function describeOutcome(outcome: DriveOutcome, run: Run, issue: number, style: Style): string {
   const id = style.detail(run.id);
   switch (outcome.kind) {
     case "parked":

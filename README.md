@@ -188,6 +188,28 @@ factory unqueue 15         # take one back out
 
 Issues closed on GitHub drop out of the queue on the next sync.
 
+### Working through the queue
+
+```sh
+factory work               # work through the queues of every registered project until stopped; --max-runs <n> (default 3)
+factory stop               # ask running workers to start no more runs, finish the ones going on, and exit
+factory stop --now         # ask them to interrupt their runs instead and exit; the runs can be continued
+```
+
+`factory work` runs in the foreground and prints each run's progress prefixed with `[project#issue]`. Every few seconds it picks work from every project in the project list (see `factory projects`):
+
+1. **Stopped runs first.** A run in a working stage whose issue is still queued and that nobody is working on is continued where it stopped. That covers a worker that was killed (once its 15-minute lease expires), a run interrupted with Ctrl+C or `factory stop --now`, and a run stopped by the usage limit. A run started with `--unsafe` is left for you to continue with `factory run`. Runs waiting for you (`needs_human`) or for the issue's author (`needs_info`) are never picked up, and the worker never sends a `needs_info` run back to triage. To keep the worker off a run, unqueue its issue or cancel the run.
+2. **Then queued issues**, in queue order. Each issue is fetched from GitHub just before its run starts or continues, and work on one closed there stops. An issue starts once per time it is queued: after its run failed, was rejected or cancelled, the worker leaves it alone. To try it again, `factory unqueue` and `factory queue` it, or `factory run` it.
+
+Runs are driven exactly as with `factory run`: the same gates, hard rules and trusted authors. The worker never lifts hard rules (no `--unsafe`). Its limits:
+- `concurrency.max_runs` per project. This counts runs other processes are driving too, such as a `factory run` in another terminal.
+- `--max-runs` for the worker, across projects.
+- `github.max_starts_per_day` per project: new runs in the last 24 hours, by anyone. Continuing a run doesn't count, and 0 means the worker starts nothing new in that project.
+
+When an agent hits the subscription's usage limit, the worker starts and continues nothing more (runs already going carry on, and stop when they hit it too) until the reset time the agent reported, or for 30 minutes when it didn't say. Then it continues the stopped runs before anything new.
+
+`factory stop` works through a `stop.json` in the factory's data folder, so it reaches workers in other terminals. A worker obeys only a request made after it started. Ctrl+C in the worker's terminal interrupts its runs like `factory stop --now` and exits.
+
 ### Running an issue
 
 ```sh
