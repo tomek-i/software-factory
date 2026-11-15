@@ -39,6 +39,33 @@ describe("redactPaths", () => {
     expect(redactPaths("imported from C:\\Users\\ali", other)).toBe("imported from ~");
   });
 
+  it("shortens the Git Bash form of a Windows path", () => {
+    expect(redactPaths("fatal: /c/Users/alice/repo/.git is locked", windows)).toBe("fatal: ~/repo/.git is locked");
+    expect(redactPaths("fatal: /C/Users/alice/repo/.git is locked", windows)).toBe("fatal: ~/repo/.git is locked");
+    expect(redactPaths("mkdir '/c/Users/alice'", windows)).toBe("mkdir '~'");
+    // Anyone's profile, not only the home folder it was given.
+    const other = { home: "/nowhere" };
+    expect(redactPaths("from /c/Users/bob/x.js and /C/Users/carol/y.js", other)).toBe("from ~/x.js and ~/y.js");
+    // A repository root given with a drive letter.
+    expect(redactPaths("cannot read /d/work/repo/packages/core/x.js", windows)).toBe("cannot read packages/core/x.js");
+    expect(redactPaths("cwd /d/work/repo", windows)).toBe("cwd .");
+    expect(redactPaths("cwd /D/Work/Repo/x.js", windows)).toBe("cwd x.js");
+    expect(redactPaths("/d/work/repository/x", windows)).toBe("/d/work/repository/x");
+    // Not inside another path.
+    expect(redactPaths("/x/d/work/repo/y", windows)).toBe("/x/d/work/repo/y");
+  });
+
+  it("shortens a Windows path with a long-path or device prefix", () => {
+    const other = { home: "/nowhere" };
+    for (const prefix of ["\\\\?\\", "\\\\.\\"]) {
+      const err = String.raw`EPERM: operation not permitted, unlink '${prefix}C:\Users\alice\x.js'`;
+      const expected = String.raw`EPERM: operation not permitted, unlink '~\x.js'`;
+      expect(redactPaths(err, windows)).toBe(expected);
+      expect(redactPaths(err, other)).toBe(expected);
+      expect(redactPaths(String.raw`unlink ${prefix}D:\work\repo\x.js`, windows)).toBe("unlink x.js");
+    }
+  });
+
   it("leaves app routes and URLs alone", () => {
     for (const text of [
       "HTTP 404: GET /invoices",
@@ -46,6 +73,8 @@ describe("redactPaths", () => {
       "HTTP 404: GET /home/settings",
       "console error: fetch http://localhost:4700/x failed",
       "console error: fetch http://localhost:4700/home/alice failed",
+      "HTTP 404: GET /c/Users/x",
+      "console error: fetch http://localhost:4700/c/Users/x failed",
       "no before shot of invoices (/invoices): it is a new screen",
       "narrate failed (exit 1); see narrate/narrate.log",
     ]) {
