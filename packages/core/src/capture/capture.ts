@@ -196,7 +196,7 @@ async function withBeforeWorktree(
   };
   // A leftover from a run that was killed mid-capture.
   if (existsSync(path)) remove();
-  const fetched = git(["fetch", "--quiet", "--end-of-options", "origin", defaultBranch]);
+  const fetched = git(["fetch", "--quiet", "--", "origin", defaultBranch]);
   if (fetched.code !== 0) return `could not fetch origin/${defaultBranch} for the before shots: ${fetched.stderr}`;
   const added = git(["-c", "core.longpaths=true", "worktree", "add", "--quiet", "--detach", path, `origin/${defaultBranch}`]);
   if (added.code !== 0) return `could not check out origin/${defaultBranch} for the before shots: ${added.stderr}`;

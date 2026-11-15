@@ -1650,7 +1650,7 @@ export class PipelineDriver {
     // is kept: it still proves its commit passed.
     const checksFile = join(resyncDir, "checks.md");
     if (readValid("checks", checksFile, (v) => (v.header.GATE === "FAIL" ? [] : ["passed"]))) rmSync(checksFile);
-    const fetched = git(["fetch", "--quiet", "--end-of-options", "origin", this.defaultBranch]);
+    const fetched = git(["fetch", "--quiet", "--", "origin", this.defaultBranch]);
     if (fetched.code !== 0) throw new Error(`git fetch failed: ${fetched.stderr || fetched.stdout}`);
     const merged = git(["merge", "--no-edit", `origin/${this.defaultBranch}`]);
     if (merged.code === 0) return undefined;
