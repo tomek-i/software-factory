@@ -59,7 +59,7 @@ export function createWorktree(options: CreateWorktreeOptions): Worktree {
   const path = join(root, WORKTREES_DIR, options.runId);
   if (existsSync(path)) throw new GitError(`worktree ${path} already exists`);
 
-  git(run, root, ["fetch", "--quiet", "origin", options.defaultBranch]);
+  git(run, root, ["fetch", "--quiet", "--", "origin", options.defaultBranch]);
 
   // Never reuse (or reset) a branch an earlier run left behind: it may hold work or an open PR.
   let branch = options.branch;

@@ -1,4 +1,4 @@
-import { ghPort, publishLessons, type CommandRunner, type PublishedLessons, type GithubPort, type Project, type StoredLesson, type Store } from "@factory/core";
+import { approveLessons, listLessons, rejectLessons, type CommandRunner, type GithubPort, type LessonEntry, type Project, type Store } from "@factory/core";
 import { isUnprintable } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 
@@ -18,20 +18,6 @@ function parseIds(values: string[]): number[] {
   return [...new Set(ids)];
 }
 
-/** The project's proposed lessons with these ids, or a CliError naming every one that is not. */
-function proposedLessons(store: Store, project: Project, ids: number[]): StoredLesson[] {
-  const problems: string[] = [];
-  const lessons = ids.flatMap((id) => {
-    const lesson = store.getLesson(id);
-    if (!lesson || lesson.project_id !== project.id) problems.push(`No lesson ${id}.`);
-    else if (lesson.status !== "proposed") problems.push(`Lesson ${id} is already ${lesson.status}.`);
-    else return [lesson];
-    return [];
-  });
-  if (problems.length) throw new CliError(`${problems.join("\n")}\nSee \`factory lessons --all\`.`);
-  return lessons;
-}
-
 /**
  * Text written by an agent, made safe to print: whitespace runs become one space, and control and
  * invisible-direction characters are shown as `[U+001B]`, so a terminal escape cannot hide or reorder
@@ -44,8 +30,8 @@ export function printable(text: string): string {
   }).join("");
 }
 
-function describeLesson(store: Store, lesson: StoredLesson): string {
-  const issue = store.getRun(lesson.run_id)?.issue_number;
+function describeLesson(lesson: LessonEntry): string {
+  const issue = lesson.issue_number;
   const status =
     lesson.status === "approved" && lesson.pull_request !== null
       ? `approved (PR #${lesson.pull_request})`
@@ -65,11 +51,11 @@ export function runLessons(cwd: string, options: { all?: boolean } = {}, run?: C
   return withProject(
     cwd,
     ({ store, project }) => {
-      const lessons = store.listLessons({ project_id: project.id, status: options.all ? undefined : "proposed" });
+      const lessons = listLessons(store, project, options);
       if (lessons.length === 0) return options.all ? "No lessons yet." : "No lessons waiting. `factory lessons --all` shows decided ones.";
       const waiting = lessons.some((l) => l.status === "proposed");
       return [
-        ...lessons.map((l) => describeLesson(store, l)),
+        ...lessons.map(describeLesson),
         ...(waiting ? ['Approve with `factory lessons approve <id...>`, or reject with `factory lessons reject <id...> -m "<why>"`.'] : []),
       ].join("\n\n");
     },
@@ -86,33 +72,10 @@ export function runLessonsApprove(cwd: string, values: string[], deps: LessonDep
   const ids = parseIds(values);
   return withProject(
     cwd,
-    ({ store, project, config }) => {
-      const lessons = proposedLessons(store, project, ids);
-      const defaultBranch = config.project.default_branch;
-      const withIssue = (l: StoredLesson) => ({ ...l, issue_number: store.getRun(l.run_id)?.issue_number });
-      let published: PublishedLessons;
-      try {
-        published = publishLessons({
-          root: project.repo_path,
-          defaultBranch,
-          lessons: lessons.map(withIssue),
-          github: deps.github ?? ghPort(project, deps.run),
-          inPullRequest: (number) =>
-            store
-              .listLessons({ project_id: project.id, status: "approved" })
-              .filter((l) => l.pull_request === number)
-              .map(withIssue),
-          run: deps.run,
-          now: deps.now,
-        });
-      } catch (err) {
-        throw new CliError(`Could not publish the lessons; nothing was approved: ${(err as Error).message}`);
-      }
-      try {
-        store.decideLessons(ids, "approved", { pull_request: published.number });
-      } catch (err) {
-        throw new CliError(`Pushed the lessons to PR #${published.number}, but could not record the approval: ${(err as Error).message}`);
-      }
+    (ctx) => {
+      const published = approveLessons(ctx, ids, deps);
+      const { project } = ctx;
+      const defaultBranch = ctx.config.project.default_branch;
       const url = project.github_repo ? ` https://github.com/${project.github_repo}/pull/${published.number}` : "";
       const which = ids.length === 1 ? `lesson ${ids[0]}` : `lessons ${ids.join(", ")}`;
       const them = ids.length === 1 ? "it" : "them";
@@ -134,8 +97,7 @@ export function runLessonsReject(cwd: string, values: string[], options: { messa
   return withProject(
     cwd,
     ({ store, project }) => {
-      proposedLessons(store, project, ids);
-      store.decideLessons(ids, "rejected", { comment: options.message?.trim() || undefined });
+      rejectLessons(store, project, ids, options.message);
       return `Rejected ${ids.length === 1 ? `lesson ${ids[0]}` : `lessons ${ids.join(", ")}`}.`;
     },
     run,

@@ -104,7 +104,7 @@ export function publishLessons(options: PublishLessonsOptions): PublishedLessons
   const open = github.findOpenPullRequests(LESSONS_BRANCH_PREFIX)[0];
   const branch = open?.head ?? lessonsBranch(options.now ?? new Date());
   const base = open ? branch : defaultBranch;
-  git(["fetch", "--quiet", "origin", base]);
+  git(["fetch", "--quiet", "--", "origin", base]);
   const dir = mkdtempSync(join(tmpdir(), "factory-lessons-"));
   const worktree = join(dir, "worktree");
   let added = false;

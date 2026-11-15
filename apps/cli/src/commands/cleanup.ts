@@ -1,6 +1,5 @@
-import type { CommandRunner } from "@factory/core";
+import { sweepFinishedRuns, type CommandRunner } from "@factory/core";
 import { withProject } from "../context.js";
-import { sweepFinishedRuns } from "./reconcile.js";
 
 /**
  * `factory cleanup [--dry-run]`: remove the worktrees and branches of finished runs that still have

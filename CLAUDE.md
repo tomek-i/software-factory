@@ -35,6 +35,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `lessons/publish.ts`: the lessons PR (`publishLessons`)
 - `drafts/`: issue writer drafts for `factory new`
 - `init/`: `factory init`, project detection and the config template
+- `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
 - `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
@@ -43,8 +44,8 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `apps/cli/src`: the `factory` command
 - `main.ts` and `program.ts`: entry point and commander wiring
-- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`
-- `context.ts`: `openProject`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
+- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`: formatting over `packages/core/src/service/`
+- `context.ts`: `openProject`, and `withProject`, which turns a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
 
 ## Core invariants
 
@@ -60,7 +61,7 @@ A stage:
 - Add its edges to `FORWARD` and any guards to `GUARDS` in `packages/core/src/pipeline/transitions.ts`.
 - Add a step method and a `case` in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
 - If it has a gate, add it to `GATES` and handle it in `approveTarget`.
-- Show its output file in `apps/cli/src/commands/show.ts`.
+- Summarise its output file in `runOverview` (`packages/core/src/service/show.ts`) and format it in `apps/cli/src/commands/show.ts`.
 - Update the README [Pipeline](README.md#pipeline) diagram and text.
 
 An agent role:

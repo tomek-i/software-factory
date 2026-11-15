@@ -1,7 +1,6 @@
-import { fetchIssue, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
+import { fetchIssue, reconcileRuns, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
 import { isTrustedIssue, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
-import { reconcileRuns } from "./reconcile.js";
 import { plain, type Style } from "../style.js";
 
 /** `factory sync`: pull issues from GitHub, and finish runs whose PR was merged or closed there. */

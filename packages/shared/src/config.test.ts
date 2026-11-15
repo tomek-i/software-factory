@@ -135,3 +135,17 @@ describe("merge config", () => {
     expect(factoryConfigSchema.safeParse({ version: 1, merge: { checks_timeout_min: 0 } }).success).toBe(false);
   });
 });
+
+describe("project.default_branch", () => {
+  const parse = (name: string) => factoryConfigSchema.safeParse({ version: 1, project: { default_branch: name } });
+
+  it("takes ordinary branch names", () => {
+    for (const name of ["main", "master", "develop", "release/2.x", "feature_x-1"]) expect(parse(name).success).toBe(true);
+  });
+
+  it("refuses names git would read as an option or refuse as a branch", () => {
+    for (const name of ["--upload-pack=calc", "-x", "a..b", "has space", "a:b", "a~1", "a^", "ends/", "ends.", "a\b", ""]) {
+      expect(parse(name).success).toBe(false);
+    }
+  });
+});
