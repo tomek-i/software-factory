@@ -112,10 +112,10 @@ export function permissionProfile(
         ...web,
         "Edit(.factory/**)",
         "Write(.factory/**)",
-        // The engine pushes after scanning the commits for secrets, and opens the PR itself.
+        // The engine pushes after scanning the commits for secrets, and talks to GitHub itself:
+        // the builder has no use for gh at all (and no login for it, see agentEnv).
         "Bash(git push:*)",
-        "Bash(gh pr:*)",
-        "Bash(gh api:*)",
+        "Bash(gh:*)",
         "Bash(git reset --hard:*)",
         "Bash(git rebase:*)",
       ],

@@ -41,6 +41,9 @@ export interface FakeInvocation {
   stdin: string;
   role: string;
   hasApiKey: boolean;
+  hasGithubToken: boolean;
+  ghConfigDir: string | null;
+  ghConfigEntries: number | null;
 }
 
 export function tempDir(prefix = "factory-test-"): string {

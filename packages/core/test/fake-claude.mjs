@@ -16,7 +16,7 @@
  * Every invocation is appended to FAKE_CLAUDE_LOG as one JSON line for assertions.
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,10 @@ if (process.env.FAKE_CLAUDE_LOG) {
       stdin,
       role: systemPromptFile.split(/[/\\]/).pop()?.replace(/\.md$/, ""),
       hasApiKey: Object.keys(process.env).some((k) => k.toUpperCase() === "ANTHROPIC_API_KEY"),
+      hasGithubToken: Object.keys(process.env).some((k) => ["GH_TOKEN", "GITHUB_TOKEN"].includes(k.toUpperCase())),
+      ghConfigDir: process.env.GH_CONFIG_DIR ?? null,
+      // Entries in that folder while the agent runs; null when there is no such folder.
+      ghConfigEntries: process.env.GH_CONFIG_DIR && existsSync(process.env.GH_CONFIG_DIR) ? readdirSync(process.env.GH_CONFIG_DIR).length : null,
     }) + "\n",
   );
 }
