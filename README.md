@@ -12,7 +12,7 @@ Give it a GitHub issue, or just an idea. Get back a reviewed, tested pull reques
 It runs in two modes on one engine:
 
 - **CLI mode**: install into a single repo and drive it from the terminal.
-- **Web mode** *(planned)*: a local dashboard that manages several repos, syncs GitHub issues both ways and runs issues in parallel.
+- **Web mode**: `factory serve` opens a local web app over every registered repo: queue issues, watch runs going on in parallel, and decide at gates (see [Web mode](#web-mode)).
 
 > **Status: early development.** What works today:
 >
@@ -20,6 +20,7 @@ It runs in two modes on one engine:
 > - `factory run` takes a queued issue all the way to a merged PR (see [Pipeline](#pipeline)).
 > - After the merge, a learner proposes lessons for you to approve (`factory lessons`).
 > - By default the run waits for you at the `merge` gate.
+> - `factory work` and `factory serve` work through every registered repo's queue; `factory serve` adds a local web app to queue issues, watch runs and decide at gates.
 
 ## Pipeline
 
@@ -120,7 +121,7 @@ node <path-to-this-repo>/apps/cli/dist/main.js init
 
 It is safe to re-run. An existing config is never overwritten.
 
-The project list holds every repo you ran `factory init` in, so a worker or the web UI (planned, #23) can find them. It is one file per user: `%LOCALAPPDATA%\software-factory\projects.json` on Windows, or `~/.config/software-factory/projects.json` (`$XDG_CONFIG_HOME`) elsewhere. `FACTORY_DATA_DIR` moves that folder, together with the GitHub browser profile. The list only holds paths and names; each repo keeps its own state.
+The project list holds every repo you ran `factory init` in, so `factory work` and `factory serve` can find them. It is one file per user: `%LOCALAPPDATA%\software-factory\projects.json` on Windows, or `~/.config/software-factory/projects.json` (`$XDG_CONFIG_HOME`) elsewhere. `FACTORY_DATA_DIR` moves that folder, together with the GitHub browser profile. The list only holds paths and names; each repo keeps its own state.
 
 - `factory projects` lists the repos and flags one whose folder has gone, or that has no `.factory/factory.db`.
 - `factory projects remove <path>` drops a repo from the list. The repo and its database are not touched.
@@ -192,7 +193,7 @@ Issues closed on GitHub drop out of the queue on the next sync.
 
 ```sh
 factory work               # work through the queues of every registered project until stopped; --max-runs <n> (default 3)
-factory stop               # ask running workers to start no more runs, finish the ones going on, and exit
+factory stop               # ask running workers (`factory work`, `factory serve`) to start no more runs, finish the ones going on, and exit
 factory stop --now         # ask them to interrupt their runs instead and exit; the runs can be continued
 ```
 
@@ -209,6 +210,23 @@ Runs are driven exactly as with `factory run`: the same gates, hard rules and tr
 When an agent hits the subscription's usage limit, the worker starts and continues nothing more (runs already going carry on, and stop when they hit it too) until the reset time the agent reported, or for 30 minutes when it didn't say. Then it continues the stopped runs before anything new.
 
 `factory stop` works through a `stop.json` in the factory's data folder, so it reaches workers in other terminals. A worker obeys only a request made after it started. Ctrl+C in the worker's terminal interrupts its runs like `factory stop --now` and exits.
+
+### Web mode
+
+```sh
+factory serve              # the web app on http://127.0.0.1:4180, plus the worker of `factory work`
+factory serve --port 4181 --max-runs 2 --no-open
+```
+
+`factory serve` does what `factory work` does (same picking, limits and stopping: `factory stop`, `factory stop --now`, Ctrl+C) and serves a web app for every project in the project list. It prints a link with a session token and opens it in your browser (`--no-open` only prints it). The screens:
+
+- **Inbox**: runs waiting for you. A run at a gate can be approved (with an optional note) or rejected (with a reason). A run parked for you outside a gate, such as a failed agent, can be resumed to a stage you pick, with a reason. Any of them can be cancelled. Runs waiting for the issue's author are listed below. An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued.
+- **Runs**: the runs going on across projects, with their state, round, cost, whether a worker drives them and the agent's latest activity, live. "All" shows finished runs too.
+- **Backlog**: each project's open issues, with their place in the queue, whether the author is trusted and the state of the latest run. Queue and unqueue them, and "Sync now" pulls issues from GitHub and finishes runs whose PR was merged or closed.
+
+The project picker in the header narrows every screen to one project. The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`) with the same rules; `factory show <run>` has a run's details. Live updates cover the runs `factory serve` itself drives: a `factory run` in another terminal shows on the next refresh.
+
+The server can start agents and merge pull requests, so it answers only your own browser: it listens on 127.0.0.1, refuses requests whose `Host` isn't its own address, needs the session cookie the printed link sets on every API call, and takes changes only from its own page (`Origin`). A new `factory serve` prints a new link. Settings, `--unsafe` and config can't be changed through it.
 
 ### Running an issue
 
@@ -569,9 +587,11 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 pnpm test        # vitest
 pnpm typecheck   # tsc, including tests
 pnpm lint        # eslint
-pnpm build       # tsc -b
+pnpm build       # tsc -b, then the web app with Vite
 pnpm factory init   # run the CLI from source
 ```
+
+To work on the web app with hot reload, run `factory serve --no-open` from the built CLI, then `pnpm -C apps/web dev`. Vite proxies `/api` to the server (`FACTORY_SERVE_URL`, default `http://127.0.0.1:4180`); open the printed link with Vite's port instead of 4180 to get the session cookie. The web tests run in jsdom with a fake server and event stream.
 
 The capture tests that drive a real browser run only where Playwright's Chromium is installed (`pnpm exec playwright install chromium`). They are skipped otherwise. Set `FACTORY_REQUIRE_BROWSER=1` (for example in CI) to make a missing browser fail the tests instead.
 
@@ -587,6 +607,8 @@ Layout:
 
 ```
 apps/cli          the `factory` command
+apps/server       `factory serve`'s local HTTP server: API over the run actions, event stream, session token
+apps/web          the web app (React, Vite, Tailwind), served by apps/server
 packages/core     engine: config, SQLite store, state machine, gates, agent runner, prompts,
                   worktrees, quality gate, capture (app, browser), pipeline driver, init, GitHub issue sync, lessons PR,
                   and the run actions the CLI formats (run, approve, reject, resume, cancel, show, lessons, drafts)
