@@ -11,7 +11,8 @@ export default defineConfig({
   resolve: { conditions: SERVER_CONDITIONS },
   ssr: { resolve: { conditions: SERVER_CONDITIONS, externalConditions: EXTERNAL_CONDITIONS } },
   test: {
-    include: ["{apps,packages}/*/src/**/*.test.ts", "packages/*/test/**/*.test.ts"],
+    // The web app's tests (.tsx) pick jsdom themselves with a @vitest-environment comment.
+    include: ["{apps,packages}/*/src/**/*.test.ts", "apps/web/src/**/*.test.tsx", "packages/*/test/**/*.test.ts"],
     // Builds the template repos that repoWithRemote copies once per run, for every test file.
     globalSetup: ["packages/core/test/global-setup.ts"],
     // Points FACTORY_DATA_DIR at a temp folder, so no test touches the real project list.
