@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { FactoryConfig } from "@factory/shared";
 import { FACTORY_DIR, loadConfig } from "../config/load.js";
-import { projectStatus, samePath } from "../registry.js";
+import { projectStatus, sameProjectPath } from "../registry.js";
 import { Store, type Project } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 import { findRepoRoot } from "../util/git.js";
@@ -40,7 +40,7 @@ export function openRegisteredProject(entry: { path: string }): ProjectContext {
 
 function openStore(root: string, config: FactoryConfig, notFound: string): ProjectContext {
   const store = new Store(join(root, FACTORY_DIR, "factory.db"));
-  const project = store.listProjects().find((p) => samePath(p.repo_path, root));
+  const project = store.listProjects().find((p) => sameProjectPath(p.repo_path, root));
   if (!project) {
     store.close();
     throw new ServiceError(notFound);

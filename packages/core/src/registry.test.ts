@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../test/helpers.js";
 import { factoryDataDir } from "./github/attachments.js";
-import { listRegistered, registerProject, registryPath, samePath, unregisterProject } from "./registry.js";
+import { listRegistered, registerProject, registryPath, sameProjectPath, unregisterProject } from "./registry.js";
 import { ServiceError } from "./service/errors.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -88,9 +88,9 @@ describe("registry", () => {
   });
 
   it("matches paths across separators, and across case on Windows", () => {
-    expect(samePath("C:/Repos/Demo", "c:\\repos\\demo", "win32")).toBe(process.platform === "win32");
-    expect(samePath("/a/b/../c", "/a/c", process.platform)).toBe(true);
-    expect(samePath("/a/Demo", "/a/demo", "linux")).toBe(false);
+    expect(sameProjectPath("C:/Repos/Demo", "c:\\repos\\demo", "win32")).toBe(process.platform === "win32");
+    expect(sameProjectPath("/a/b/../c", "/a/c", process.platform)).toBe(true);
+    expect(sameProjectPath("/a/Demo", "/a/demo", "linux")).toBe(false);
   });
 
   it.runIf(process.platform === "win32")("finds a Windows repo however its path is spelled", () => {
@@ -107,6 +107,7 @@ describe("registry", () => {
     expect(() => listRegistered(opts)).toThrow(/is not valid/);
     expect(() => registerProject({ path: "/x", name: "x" }, opts)).toThrow(ServiceError);
     expect(readFileSync(file, "utf8")).toBe("{ not json");
+    expect(existsSync(`${file}.lock`)).toBe(false);
 
     writeFileSync(file, JSON.stringify({ version: 2, projects: [] }));
     expect(() => listRegistered(opts)).toThrow(/version/);
@@ -114,22 +115,36 @@ describe("registry", () => {
 
   it("takes over a lock left by a process that died", () => {
     const { file, opts } = setup();
-    writeFileSync(`${file}.lock`, "");
     const old = new Date(Date.now() - 60_000);
+    writeFileSync(`${file}.lock`, "dead-holder");
     utimesSync(`${file}.lock`, old, old);
 
     expect(registerProject({ path: "/x", name: "x" }, opts)).toBe("added");
     expect(existsSync(`${file}.lock`)).toBe(false);
   });
 
-  it("gives up on a lock another process holds, and says which file", () => {
-    const { file, opts } = setup();
-    writeFileSync(`${file}.lock`, "");
+  it("gives up on a lock another process holds, says which file, and leaves that lock alone", () => {
+    const { file } = setup();
+    writeFileSync(`${file}.lock`, "other-holder");
     const started = Date.now();
 
-    expect(() => registerProject({ path: "/x", name: "x" }, opts)).toThrow(/locked by another factory process/);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(4_000);
+    expect(() => registerProject({ path: "/x", name: "x" }, { file, lockTimeoutMs: 300 })).toThrow(/locked by another factory process/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
     expect(existsSync(file)).toBe(false);
+    expect(readFileSync(`${file}.lock`, "utf8")).toBe("other-holder");
+  });
+
+  it("keeps fields it doesn't know, so an older factory doesn't drop what a newer one wrote", () => {
+    const { file, opts } = setup();
+    writeFileSync(file, JSON.stringify({ version: 1, projects: [{ path: "/a", name: "a", added_at: "t", colour: "blue" }] }));
+    registerProject({ path: "/b", name: "b" }, opts);
+    expect(JSON.parse(readFileSync(file, "utf8")).projects[0]).toMatchObject({ path: "/a", colour: "blue" });
+  });
+
+  it("leaves no temp file behind", () => {
+    const { file, opts } = setup();
+    registerProject({ path: "/x", name: "x" }, opts);
+    expect(readdirSync(dirname(file)).sort()).toEqual(["projects.json"]);
   });
 
   it("keeps every project when several processes register at once", async () => {
