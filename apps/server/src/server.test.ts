@@ -45,7 +45,7 @@ function server(contexts: ProjectContext[], options: Partial<ServerOptions> = {}
   const hub = new EventHub();
   const byPath = new Map(contexts.map((c) => [c.root, c]));
   const projects = new ProjectSet(
-    () => contexts.map((c) => ({ path: c.root, name: c.project.name })),
+    () => contexts.map((c) => ({ path: c.root, name: c.project.name, added_at: "t" })),
     (entry) => byPath.get(entry.path)!,
   );
   const app = createServer({ projects, hub, token: TOKEN, port: PORT, log: () => {}, ...options });
@@ -132,7 +132,7 @@ describe("security", () => {
     const lines: string[] = [];
     const hub = new EventHub();
     const projects = new ProjectSet(
-      () => [{ path: "/repo", name: "demo" }],
+      () => [{ path: "/repo", name: "demo", added_at: "t" }],
       () => {
         throw new Error("disk on fire at C:\\Users\\someone\\secret");
       },
