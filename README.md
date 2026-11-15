@@ -434,11 +434,11 @@ What `factory run` does today:
 - Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`).
 - They ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`), so nothing outside the profile applies to an agent reading issue text.
 - They don't get your GitHub login. The engine pushes, opens PRs and merges itself; agents never need to.
-  - GitHub tokens (`GH_TOKEN`, `GITHUB_TOKEN` and the enterprise ones) and `SSH_AUTH_SOCK` are removed from their environment.
+  - GitHub tokens (`GH_TOKEN`, `GITHUB_TOKEN`, the enterprise and PAT variants), `SSH_AUTH_SOCK` and `GIT_CONFIG_PARAMETERS` are removed from their environment.
   - `gh` gets an empty config folder of its own, so its GitHub calls are not logged in.
-  - git's credential helpers (Git Credential Manager) are switched off for them, and git never prompts for a login, so a push from an agent's shell has no credentials. Your git config is not touched.
-  - The builder's profile denies `gh` outright.
-  - This is a barrier, not a sandbox: agents run as you, so one that goes looking can still read your OS keyring (`gh auth token` reads it directly). Protect your default branch on GitHub.
+  - git's credential helpers (Git Credential Manager) and askpass program are switched off for them, git never prompts for a login, and ssh may use no key file or agent. So a plain `git push` from an agent's shell has no credentials, over https or ssh. Your git config is not touched.
+  - The builder's profile denies `gh` and `git push` outright.
+  - This is a barrier, not a sandbox: agents run as you, so one that goes looking can undo it, for example `git -c credential.helper=manager push` or reading your OS keyring (`gh auth token` reads it directly). Protect your default branch on GitHub.
 - Agent text the factory posts on an issue (the spec, the critic's problems and questions) has its `@mentions` in backticks, so it never notifies anyone.
 - The engine, not an agent, runs the app and the browser.
 - Bash deny rules are prefix matches, so also protect your default branch on GitHub.

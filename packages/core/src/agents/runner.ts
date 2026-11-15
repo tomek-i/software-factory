@@ -78,10 +78,12 @@ export function claudeCommand(env: NodeJS.ProcessEnv = process.env): { file: str
  * issue text must not act as the user. `gh` keeps its login in the keyring or its config folder, not
  * in the environment, so removing the token variables is not enough: `ghConfigDir` (an empty
  * folder) leaves `gh`'s GitHub calls unauthenticated. git's credential helpers (Git Credential
- * Manager) are cleared through GIT_CONFIG_COUNT, which outranks every config file without touching
- * them, and nothing may prompt for a login. This is a barrier, not a sandbox: an agent with a shell
- * runs as the user, so it could still read the OS keyring on purpose (`gh auth token` does exactly
- * that, which is why the builder's profile also denies `gh` outright).
+ * Manager) and askpass program are cleared through GIT_CONFIG_COUNT, which outranks every config
+ * file without touching them (GIT_CONFIG_PARAMETERS, read after it, is removed), nothing may prompt
+ * for a login, and ssh may use no key file or agent. This is a barrier, not a sandbox: an agent with
+ * a shell runs as the user, so it could still undo it on purpose, for example `git -c
+ * credential.helper=manager push` or reading the OS keyring (`gh auth token` does exactly that,
+ * which is why the builder's profile also denies `gh` outright).
  */
 export function agentEnv(env: NodeJS.ProcessEnv = process.env, options: { ghConfigDir?: string } = {}): NodeJS.ProcessEnv {
   const configVars = Object.keys(env).filter((key) => /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/i.test(key));
@@ -94,16 +96,22 @@ export function agentEnv(env: NodeJS.ProcessEnv = process.env, options: { ghConf
       "GH_CONFIG_DIR",
       "GIT_TERMINAL_PROMPT",
       "GCM_INTERACTIVE",
+      "GIT_SSH_COMMAND",
     ]),
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     NoDefaultCurrentDirectoryInExePath: "1",
     ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
-    // An empty value resets the list of helpers from every config file before it.
-    GIT_CONFIG_COUNT: "1",
+    // An empty helper resets the list from every config file before it, URL-scoped ones included;
+    // an empty askPass turns off the program git would otherwise ask once no helper answers.
+    GIT_CONFIG_COUNT: "2",
     GIT_CONFIG_KEY_0: "credential.helper",
     GIT_CONFIG_VALUE_0: "",
+    GIT_CONFIG_KEY_1: "core.askPass",
+    GIT_CONFIG_VALUE_1: "",
     GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "never",
+    // Overrides core.sshCommand: no key file, no agent, no prompt, so an ssh remote has no login either.
+    GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none",
   };
 }
 
@@ -117,9 +125,14 @@ export const AGENT_ENV_DENYLIST = [
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
+  "GH_PAT",
+  "GITHUB_PAT",
+  "GITHUB_API_TOKEN",
   "GIT_ASKPASS",
   "SSH_ASKPASS",
   "SSH_AUTH_SOCK",
+  "GIT_SSH",
+  "GIT_CONFIG_PARAMETERS",
 ];
 
 /** Copy of env without the given variables, matched case-insensitively (Windows env is case-insensitive). */
@@ -208,53 +221,58 @@ export function createAgentRunner(deps: { store?: Store; events?: FactoryEvents;
     });
 
     const { file, args } = claudeCommand(env);
-    // An empty gh config folder per agent: `gh` finds no login there (see agentEnv).
+    // An empty gh config folder per agent: `gh` finds no login there (see agentEnv). Removed on
+    // every path out of the turn below.
     const ghConfigDir = mkdtempSync(join(tmpdir(), "factory-gh-"));
-    const child = execa(file, [...args, ...claudeArgs(options, sessionId)], {
-      cwd: options.cwd,
-      env: agentEnv(env, { ghConfigDir }),
-      extendEnv: false,
-      input: options.prompt,
-      reject: false,
-      windowsHide: true,
-      buffer: { stdout: false, stderr: true },
-      maxBuffer: { stderr: 1_000_000 },
-    });
-    if (record && child.pid !== undefined) deps.store?.setAgentPid(record.id, child.pid);
-
-    // Timeouts and cancellation kill the whole tree while the parent is still alive; once it has
-    // exited, its children can no longer be found from its pid.
     let stopped: "timeout" | "cancelled" | undefined;
-    const stop = (why: "timeout" | "cancelled") => {
-      if (stopped || child.pid === undefined) return;
-      stopped = why;
-      killTree(child.pid);
-    };
-    const timer = options.timeoutMs ? setTimeout(() => stop("timeout"), options.timeoutMs) : undefined;
-    const onAbort = () => stop("cancelled");
-    if (options.signal?.aborted) onAbort();
-    options.signal?.addEventListener("abort", onAbort);
-
     const summary = emptySummary();
-    const log = createWriteStream(logPath, { flags: "a" });
-    const lines = createInterface({ input: child.stdout! });
-    lines.on("line", (line) => {
-      log.write(line + "\n");
-      for (const activity of applyStreamLine(summary, line)) {
-        deps.events?.emit({ type: "agent:activity", runId: options.runId, agentRunId, summary: activity });
-      }
-    });
-
-    const closed = new Promise<void>((resolve) => lines.once("close", resolve));
-    const finished = await child;
-    clearTimeout(timer);
-    options.signal?.removeEventListener("abort", onAbort);
-    await closed;
-    await new Promise<void>((resolve) => log.end(resolve));
+    let finished: Awaited<ReturnType<typeof execa>>;
     try {
-      rmSync(ghConfigDir, { recursive: true, force: true, maxRetries: 3 });
-    } catch {
-      // A leftover folder in the temp dir (Windows can hold it for a moment) is harmless and must not fail the turn.
+      const child = execa(file, [...args, ...claudeArgs(options, sessionId)], {
+        cwd: options.cwd,
+        env: agentEnv(env, { ghConfigDir }),
+        extendEnv: false,
+        input: options.prompt,
+        reject: false,
+        windowsHide: true,
+        buffer: { stdout: false, stderr: true },
+        maxBuffer: { stderr: 1_000_000 },
+      });
+      if (record && child.pid !== undefined) deps.store?.setAgentPid(record.id, child.pid);
+
+      // Timeouts and cancellation kill the whole tree while the parent is still alive; once it has
+      // exited, its children can no longer be found from its pid.
+      const stop = (why: "timeout" | "cancelled") => {
+        if (stopped || child.pid === undefined) return;
+        stopped = why;
+        killTree(child.pid);
+      };
+      const timer = options.timeoutMs ? setTimeout(() => stop("timeout"), options.timeoutMs) : undefined;
+      const onAbort = () => stop("cancelled");
+      if (options.signal?.aborted) onAbort();
+      options.signal?.addEventListener("abort", onAbort);
+
+      const log = createWriteStream(logPath, { flags: "a" });
+      const lines = createInterface({ input: child.stdout! });
+      lines.on("line", (line) => {
+        log.write(line + "\n");
+        for (const activity of applyStreamLine(summary, line)) {
+          deps.events?.emit({ type: "agent:activity", runId: options.runId, agentRunId, summary: activity });
+        }
+      });
+
+      const closed = new Promise<void>((resolve) => lines.once("close", resolve));
+      finished = await child;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      await closed;
+      await new Promise<void>((resolve) => log.end(resolve));
+    } finally {
+      try {
+        rmSync(ghConfigDir, { recursive: true, force: true, maxRetries: 3 });
+      } catch {
+        // A leftover folder in the temp dir (Windows can hold it for a moment) is harmless and must not fail the turn.
+      }
     }
 
     const stderr = typeof finished.stderr === "string" ? finished.stderr : "";
