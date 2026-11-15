@@ -103,7 +103,8 @@ describe("agentEnv", () => {
     // Refused before any request is sent (exit 4: not logged in), so this needs no network.
     const result = spawnSync("gh", ["api", "user"], { cwd: empty, env: agentEnv(process.env, { ghConfigDir: empty }), encoding: "utf8", windowsHide: true, timeout: 60_000 });
     expect(result.status).toBe(4);
-    expect(result.stderr).toContain("gh auth login");
+    // Locally gh says to run `gh auth login`; inside GitHub Actions it says to set GH_TOKEN.
+    expect(result.stderr).toMatch(/gh auth login|GH_TOKEN/);
   });
 
   it("gives git no credential helper, askpass or prompt, so a push from an agent's shell has no login", () => {
