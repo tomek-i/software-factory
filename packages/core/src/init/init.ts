@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_FILE, FACTORY_DIR, loadConfig } from "../config/load.js";
 import { factoryLabels } from "../github/labels.js";
+import { registerProject } from "../registry.js";
 import { Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { findRepoRoot, githubLogin, githubRepoOf } from "../util/git.js";
@@ -13,6 +14,8 @@ export const GITIGNORE_ENTRIES = [".factory/runs/", ".factory/factory.db*", ".wo
 export interface InitOptions {
   cwd: string;
   run?: CommandRunner;
+  /** The project list to add the repo to; defaults to the user's (`registryPath()`). */
+  registryFile?: string;
 }
 
 export interface InitResult {
@@ -80,13 +83,27 @@ export function initRepo(options: InitOptions): InitResult {
       : { status: "skipped", message: ".gitignore already ignores factory state" },
   );
 
+  const name = config.project.name ?? detection.projectName;
   const store = new Store(join(factoryDir, "factory.db"));
   try {
-    store.upsertProject({ name: config.project.name ?? detection.projectName, repo_path: root, github_repo: githubRepo });
+    store.upsertProject({ name, repo_path: root, github_repo: githubRepo });
   } finally {
     store.close();
   }
   steps.push({ status: "done", message: `Registered project in ${FACTORY_DIR}/factory.db` });
+
+  // The repo itself is set up by now, so a project list that can't be written is a warning:
+  // running init again adds it.
+  try {
+    const listed = registerProject({ path: root, name }, { file: options.registryFile });
+    steps.push(
+      listed === "unchanged"
+        ? { status: "skipped", message: "Already in the factory's project list" }
+        : { status: "done", message: listed === "added" ? "Added to the factory's project list" : "Updated its name in the factory's project list" },
+    );
+  } catch (err) {
+    steps.push({ status: "warning", message: `Could not add it to the factory's project list: ${err instanceof Error ? err.message : String(err)}` });
+  }
 
   if (!config.github.status_labels) {
     steps.push({ status: "skipped", message: "GitHub status labels (off; set github.status_labels to enable)" });

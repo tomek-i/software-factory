@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveModel } from "@factory/shared";
 import { loadConfig } from "../config/load.js";
+import { listRegistered } from "../registry.js";
 import { Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { parseGithubRemote } from "../util/git.js";
@@ -165,6 +166,39 @@ describe("initRepo", () => {
     const store = new Store(join(dir, ".factory", "factory.db"));
     expect(store.listProjects()).toHaveLength(1);
     store.close();
+  });
+
+  it("adds the repo to the factory's project list once, however often it runs", () => {
+    const dir = gitRepo();
+    const registryFile = join(tempDir(), "projects.json");
+
+    const first = initRepo({ cwd: dir, registryFile });
+    const second = initRepo({ cwd: dir, registryFile });
+
+    expect(first.steps).toContainEqual({ status: "done", message: "Added to the factory's project list" });
+    expect(second.steps).toContainEqual({ status: "skipped", message: "Already in the factory's project list" });
+    const listed = listRegistered({ file: registryFile });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ path: first.root, status: "ok" });
+  });
+
+  it("uses the user's project list by default", () => {
+    const dir = gitRepo();
+    const { root } = initRepo({ cwd: dir });
+    expect(listRegistered().map((p) => p.path)).toContain(root);
+  });
+
+  it("warns rather than fails when the project list can't be written", () => {
+    const dir = gitRepo();
+    const registryFile = join(tempDir(), "projects.json");
+    writeFileSync(registryFile, "{ broken");
+
+    const result = initRepo({ cwd: dir, registryFile });
+
+    const step = result.steps.find((s) => s.message.includes("project list"));
+    expect(step).toMatchObject({ status: "warning" });
+    expect(step!.message).toContain("is not valid");
+    expect(existsSync(join(dir, ".factory", "factory.db"))).toBe(true);
   });
 
   it("reports an invalid existing config instead of ignoring it", () => {
