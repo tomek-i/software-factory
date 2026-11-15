@@ -343,7 +343,7 @@ What `factory run` does today:
      - The PR links the narrated video instead of the silent one, and only that one is uploaded. Without the plugin the silent video is used and nothing is said about it; a narration that was tried and failed is noted in the PR and the report.
    - <a id="where-the-media-goes"></a>**Where the media goes.** It is attached to the run's PR, the way dragging a file into a GitHub comment box does, and never committed.
      - GitHub has no API for attachments, so the engine does it in a headless browser signed in to GitHub. Sign it in once with `factory login github`.
-     - The browser keeps its own profile in `%LOCALAPPDATA%\software-factory\github-browser` on Windows, or `~/.config/software-factory/github-browser` (`$XDG_CONFIG_HOME`) elsewhere. It holds your GitHub session, so it gives access to your account: keep it private. It is never in a repository.
+     - The browser keeps its own profile in `%LOCALAPPDATA%\software-factory\github-browser` on Windows, or `~/.config/software-factory/github-browser` (`$XDG_CONFIG_HOME`) elsewhere. `FACTORY_DATA_DIR` moves it. It holds your GitHub session, so it gives access to your account: keep it private. It is never in a repository.
      - The comment is never posted. Each upload leaves a `github.com/user-attachments/...` link, and the engine empties the box again.
      - The PR shows them to everyone who can see the repo: anyone for a public repo, only people with access for a private one. GitHub serves each viewer a signed link from the PR page; the bare `user-attachments` link itself only opens for signed-in users. Videos play inline in the PR.
      - Limits: 10 MB per image, 100 MB per video (GitHub's free plans refuse videos over 10 MB).
