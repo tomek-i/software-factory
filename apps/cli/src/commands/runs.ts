@@ -1,40 +1,35 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import {
-  approveTarget,
   applyStreamLine,
-  createAgentRunner,
-  deleteMedia,
+  approveRun,
+  cancelRun,
+  continuation,
+  driveIssue,
   emptySummary,
+  ensureQueued,
   FactoryEvents,
-  fetchIssue,
-  ghPort,
-  killTree,
-  loadTrustedConfig,
-  MEDIA_MARKER,
-  mediaTag,
-  nextAfterTriage,
-  PipelineDriver,
-  RunMachine,
-  resumeTargets,
-  runDirOf,
-  trustedReader,
-  waitingCommit,
+  findRun,
+  reconcileAndSweep,
+  rejectRun,
+  reportLines,
+  resumeRun,
+  runCost,
+  trustedConfig,
   type CommandRunner,
   type DriveOutcome,
+  type DroppedMedia,
   type FactoryEvent,
   type GithubPort,
   type Issue,
-  type Project,
   type Run,
+  type ServiceContext,
   type Store,
 } from "@factory/core";
-import { isTerminal, isTrustedIssue, type FactoryConfig, type Gate, type RunState } from "@factory/shared";
+import { isTerminal, type Gate, type RunState } from "@factory/shared";
 import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
 import { lessonsNote } from "./lessons.js";
-import { cleanUpNow, reconcileAndSweep } from "./reconcile.js";
 
 export interface RunDeps {
   run?: CommandRunner;
@@ -50,22 +45,6 @@ function parseIssueNumber(value: string): number {
   const n = Number(value.replace(/^#/, ""));
   if (!Number.isInteger(n) || n <= 0) throw new CliError(`"${value}" is not an issue number`);
   return n;
-}
-
-/** A run by full id, unique id prefix, or `#<issue>` (that issue's latest run). */
-export function findRun(store: Store, project: Project, ref: string): Run {
-  const runs = store.listRuns({ project_id: project.id });
-  if (/^#?\d+$/.test(ref)) {
-    const issue = parseIssueNumber(ref);
-    const latest = runs.find((r) => r.issue_number === issue);
-    if (!latest) throw new CliError(`No run for issue #${issue}.`);
-    return latest;
-  }
-  const matches = runs.filter((r) => r.id === ref || r.id.startsWith(ref));
-  if (matches.length === 1) return matches[0]!;
-  const exact = matches.find((r) => r.id === ref);
-  if (exact) return exact;
-  throw new CliError(matches.length ? `"${ref}" matches several runs; use more of the id.` : `No run "${ref}". See \`factory status\`.`);
 }
 
 export function formatEvent(event: FactoryEvent, style: Style): string | undefined {
@@ -123,27 +102,17 @@ function describeOutcome(outcome: DriveOutcome, run: Run, issue: number, style: 
 }
 
 /**
- * Make sure the issue is synced and queued. Typing `factory run <n>` is itself the local decision
- * to work on it, so it queues the issue the same way `factory queue <n>` would; nobody on GitHub
- * can trigger this.
+ * Make sure the issue is synced and queued (see ensureQueued in core): typing `factory run <n>` is
+ * itself the local decision to work on it. Says so when it queued the issue just now.
  */
-function ensureQueued(store: Store, project: Project, config: FactoryConfig, number: number, deps: RunDeps): Issue {
+function queueForRun(ctx: ServiceContext, number: number, deps: RunDeps): Issue {
   const print = deps.print ?? console.log;
-  const known = store.getIssue(project.id, number);
-  if (known?.queued_at) return known;
-  // Fetch fresh before queueing: the local copy may be missing, or stale since the last sync
-  // (closed or edited on GitHub), and this is about to start agents on it.
-  try {
-    fetchIssue(store, project, number, deps.run);
-  } catch (err) {
-    throw new CliError(`Could not fetch issue #${number}: ${(err as Error).message}`);
+  const { issue, queued, trusted } = ensureQueued(ctx, number, deps.run);
+  if (queued) {
+    print(`Queued #${number} ${issue.title}`);
+    if (!trusted) print(UNTRUSTED_NOTE);
   }
-  const issue = store.getIssue(project.id, number)!;
-  if (issue.state !== "open") throw new CliError(`Issue #${number} is closed.`);
-  store.setQueued(project.id, number, true);
-  print(`Queued #${number} ${issue.title}`);
-  if (!isTrustedIssue(config, issue)) print(UNTRUSTED_NOTE);
-  return store.getIssue(project.id, number)!;
+  return issue;
 }
 
 /**
@@ -155,27 +124,20 @@ export async function runRun(cwd: string, values: string[], options: { unsafe?: 
   const numbers = [...new Set(values.map(parseIssueNumber))];
   return withProjectAsync(
     cwd,
-    async ({ store, project, config }) => {
-      for (const line of reconcileAndSweep(store, project, config, deps)) (deps.print ?? console.log)(line);
+    async (ctx) => {
+      for (const line of reportLines(reconcileAndSweep(ctx.store, ctx.project, ctx.config, deps))) (deps.print ?? console.log)(line);
       if (numbers.length === 1) {
-        ensureQueued(store, project, config, numbers[0]!, deps);
-        return driveIssue(store, project, config, numbers[0]!, options, deps);
+        queueForRun(ctx, numbers[0]!, deps);
+        return (await driveAndReport(ctx, numbers[0]!, options, deps)).message;
       }
-      return runMany(store, project, config, numbers, options, deps);
+      return runMany(ctx, numbers, options, deps);
     },
     deps.run,
   );
 }
 
 /** Drive several issues concurrently; every line, live or final, is prefixed with its issue. */
-async function runMany(
-  store: Store,
-  project: Project,
-  workingConfig: FactoryConfig,
-  numbers: number[],
-  options: { unsafe?: boolean },
-  deps: RunDeps,
-): Promise<string> {
+async function runMany(ctx: ServiceContext, numbers: number[], options: { unsafe?: boolean }, deps: RunDeps): Promise<string> {
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
   const prefix = (n: number) => (text: string) =>
@@ -190,7 +152,7 @@ async function runMany(
   let failed = false;
   for (const n of numbers) {
     try {
-      ensureQueued(store, project, workingConfig, n, depsFor(n));
+      queueForRun(ctx, n, depsFor(n));
       ready.push(n);
     } catch (err) {
       results.set(n, prefix(n)(`Skipped: ${(err as Error).message}`));
@@ -199,16 +161,14 @@ async function runMany(
   }
 
   // The cap comes from the trusted config, like everything else that steers a run.
-  const defaultBranch = workingConfig.project.default_branch;
-  const limit = loadTrustedConfig(trustedReader(project.repo_path, defaultBranch, deps.run), defaultBranch).concurrency.max_runs;
+  const limit = trustedConfig(ctx.project, ctx.config, deps.run).concurrency.max_runs;
   const pending = [...ready];
   let limited = false;
   const worker = async () => {
     for (let n = pending.shift(); n !== undefined; n = pending.shift()) {
       try {
-        const message = await driveIssue(store, project, workingConfig, n, options, depsFor(n), (outcome) => {
-          if (outcome.kind === "rate_limited") limited = true;
-        });
+        const { message, outcome } = await driveAndReport(ctx, n, options, depsFor(n));
+        if (outcome.kind === "rate_limited") limited = true;
         results.set(n, prefix(n)(message));
       } catch (err) {
         results.set(n, prefix(n)(`Failed: ${(err as Error).message}`));
@@ -249,73 +209,52 @@ function onSigint() {
 }
 
 /** Drive the issue's run (starting one if needed) until it needs someone, printing progress. */
-async function driveIssue(
-  store: Store,
-  project: Project,
-  workingConfig: FactoryConfig,
+async function driveAndReport(
+  ctx: ServiceContext,
   number: number,
   options: { unsafe?: boolean },
   deps: RunDeps,
-  onOutcome?: (outcome: DriveOutcome) => void,
-): Promise<string> {
+): Promise<{ message: string; outcome: DriveOutcome }> {
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
-  const issue = store.getIssue(project.id, number)!;
-  const defaultBranch = workingConfig.project.default_branch;
-  const read = trustedReader(project.repo_path, defaultBranch, deps.run);
-  const config = loadTrustedConfig(read, defaultBranch);
-
   const events = new FactoryEvents();
   events.on((e) => {
     const line = formatEvent(e, style);
     if (line) print(line);
   });
-  const owner = `cli-${process.pid}`;
-  const driver = new PipelineDriver({
-    store,
-    project,
-    config,
-    read,
-    runAgent: createAgentRunner({ store, events, env: deps.env }),
-    github: deps.github ?? ghPort(project, deps.run),
-    owner,
-    events,
-    run: deps.run,
-  });
 
-  if (config.checks.length === 0) {
-    print("Warning: no checks are configured in .factory/config.yaml on the default branch; the quality gate only scans for secrets.");
-  }
-  let run = driver.startRun(number, { unsafe: options.unsafe });
-  if (options.unsafe && !run.unsafe) print(`--unsafe ignored: run ${run.id} already exists without it.`);
-  // Running an issue that was waiting for its author means "they answered": triage it again.
-  if (run.state === "needs_info") run = driver.retriage(run.id);
-  print(`Run ${style.detail(run.id)} (${style.state(run.state)}) for #${number} ${issue.title}`);
-
-  // Ctrl+C: stop this process's agent and give the lease back so the run can be continued
-  // right away. Only rows still running are ours: this process holds the run's lease.
-  const stop = () => {
-    for (const agent of store.listAgentRuns(run.id)) {
-      if (agent.status !== "running") continue;
-      if (agent.pid) killTree(agent.pid);
-      store.finishAgentRun(agent.id, { status: "cancelled" });
-    }
-    store.releaseLease(run.id, owner);
-  };
-  if (interrupts.size === 0) process.once("SIGINT", onSigint);
-  interrupts.add(stop);
+  let stop: (() => void) | undefined;
   try {
-    const outcome = await driver.drive(run.id);
-    onOutcome?.(outcome);
-    return describeOutcome(outcome, store.getRun(run.id)!, number, style);
+    const { outcome, run } = await driveIssue(ctx, number, options, {
+      run: deps.run,
+      env: deps.env,
+      github: deps.github,
+      owner: `cli-${process.pid}`,
+      events,
+      onNotice: (notice) => {
+        switch (notice.type) {
+          case "no_checks":
+            print("Warning: no checks are configured in .factory/config.yaml on the default branch; the quality gate only scans for secrets.");
+            return;
+          case "unsafe_ignored":
+            print(`--unsafe ignored: run ${notice.runId} already exists without it.`);
+            return;
+          case "started":
+            print(`Run ${style.detail(notice.run.id)} (${style.state(notice.run.state)}) for #${number} ${notice.issue.title}`);
+            // Ctrl+C: stop this process's agent and give the lease back so the run can be continued right away.
+            stop = notice.stop;
+            if (interrupts.size === 0) process.once("SIGINT", onSigint);
+            interrupts.add(stop);
+        }
+      },
+    });
+    return { message: describeOutcome(outcome, run, number, style), outcome };
   } finally {
-    interrupts.delete(stop);
-    if (interrupts.size === 0) process.off("SIGINT", onSigint);
+    if (stop) {
+      interrupts.delete(stop);
+      if (interrupts.size === 0) process.off("SIGINT", onSigint);
+    }
   }
-}
-
-function cost(store: Store, runId: string): number {
-  return store.listAgentRuns(runId).reduce((sum, a) => sum + (a.cost_usd ?? 0), 0);
 }
 
 /** `factory status`: one line per run, after finishing runs whose PR was merged or closed on GitHub. */
@@ -324,7 +263,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
   return withProject(
     cwd,
     ({ store, project, config }) => {
-      const reconciled = reconcileAndSweep(store, project, config, deps);
+      const reconciled = reportLines(reconcileAndSweep(store, project, config, deps));
       const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
       const lessons = lessonsNote(store, project);
       const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
@@ -336,7 +275,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
         r.issue_number ? `#${r.issue_number}` : "-",
         r.state,
         `b${r.build_iterations + 1} r${r.review_rounds + 1}`,
-        `$${cost(store, r.id).toFixed(2)}`,
+        `$${runCost(store, r.id).toFixed(2)}`,
         r.waiting_gate ?? "",
       ]);
       const widths = header.map((_, i) => Math.max(...[header, ...rows].map((row) => row[i]!.length)));
@@ -423,33 +362,15 @@ export async function runLogs(
  * After approve or resume, carry on driving the run in this terminal, like `factory run`, unless
  * the caller said --no-run or the run went somewhere the driver cannot take further.
  */
-async function continueRun(
-  store: Store,
-  project: Project,
-  config: FactoryConfig,
-  run: Run,
-  to: RunState,
-  done: string,
-  options: { run?: boolean },
-  deps: RunDeps,
-): Promise<string> {
-  if (isTerminal(to) || run.issue_number === null) return done;
+async function continueRun(ctx: ServiceContext, run: Run, to: RunState, done: string, options: { run?: boolean }, deps: RunDeps): Promise<string> {
+  const next = continuation(ctx.store, ctx.project, run, to);
+  if (next === "ended" || run.issue_number === null) return done;
   if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
-  // Not re-queued here: the issue may have been unqueued on purpose, or closed on GitHub since.
-  if (!store.getIssue(project.id, run.issue_number)?.queued_at) {
+  if (next === "not_queued") {
     return `${done}\nIssue #${run.issue_number} is no longer queued, so the run was not continued. \`factory run ${run.issue_number}\` queues it again and continues.`;
   }
   (deps.print ?? console.log)(done);
-  return driveIssue(store, project, config, run.issue_number, {}, deps);
-}
-
-/**
- * The config from the default branch, as `factory run` uses it. A human's decision at a gate is
- * applied by these rules too, so a local edit cannot change where an approved run goes next.
- */
-function trustedConfig(project: Project, workingConfig: FactoryConfig, run?: CommandRunner): FactoryConfig {
-  const defaultBranch = workingConfig.project.default_branch;
-  return loadTrustedConfig(trustedReader(project.repo_path, defaultBranch, run), defaultBranch);
+  return (await driveAndReport(ctx, run.issue_number, {}, deps)).message;
 }
 
 /** `factory approve <run>`: let a run waiting at a gate continue, and keep driving it unless --no-run. */
@@ -461,21 +382,10 @@ export async function runApprove(
 ): Promise<string> {
   return withProjectAsync(
     cwd,
-    async ({ store, project, config }) => {
-      const target = findRun(store, project, ref);
-      if (target.state !== "needs_human" || !target.waiting_gate) {
-        throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
-      }
-      const trusted = trustedConfig(project, config, deps.run);
-      // An approved triage goes where it would have gone on its own: refine, the spec critic or build.
-      const to = approveTarget(target, nextAfterTriage(runDirOf(project.repo_path, target.id), trusted));
-      if (!to) throw new CliError(`Approving the ${target.waiting_gate} gate is not supported yet.`);
-      const gate = target.waiting_gate;
-      // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
-      const commitSha = gate === "merge" ? waitingCommit(store.listEvents(target.id)) : undefined;
-      new RunMachine(store, trusted).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
-      const done = `Approved the ${gate} gate of ${target.id}; it moves to ${to}.`;
-      return continueRun(store, project, config, target, to, done, options, deps);
+    async (ctx) => {
+      const { run, gate, to } = approveRun(ctx, ref, options, deps.run);
+      const done = `Approved the ${gate} gate of ${run.id}; it moves to ${to}.`;
+      return continueRun(ctx, run, to, done, options, deps);
     },
     deps.run,
   );
@@ -494,53 +404,30 @@ export async function runResume(
 ): Promise<string> {
   return withProjectAsync(
     cwd,
-    async ({ store, project, config }) => {
-      if (!options.message?.trim()) throw new CliError("Say why with -m.");
-      const target = findRun(store, project, ref);
-      if (target.state !== "needs_human") throw new CliError(`Run ${target.id} is not waiting for you (it is ${target.state}).`);
-      const allowed = resumeTargets(target);
-      if (!allowed.includes(options.to as RunState)) {
-        throw new CliError(`Run ${target.id} can resume to: ${allowed.join(", ")}.`);
-      }
-      const to = options.to as RunState;
-      new RunMachine(store, trustedConfig(project, config, deps.run)).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
+    async (ctx) => {
+      const { run, to } = resumeRun(ctx, ref, options, deps.run);
       const loops = options.resetLoops ? " with a fresh loop budget" : "";
-      return continueRun(store, project, config, target, to, `Resumed ${target.id} to ${to}${loops}.`, options, deps);
+      return continueRun(ctx, run, to, `Resumed ${run.id} to ${to}${loops}.`, options, deps);
     },
     deps.run,
   );
 }
 
-/**
- * Best effort: a run that ends without being merged takes its screenshots release (a draft, see
- * uploadMedia) with it. Returns a line for the command's output, or "" when it had none.
- */
-function dropMedia(project: Project, runId: string, run?: CommandRunner): string {
-  const marker = join(runDirOf(project.repo_path, runId), MEDIA_MARKER);
-  if (!existsSync(marker)) return "";
-  try {
-    deleteMedia(project, runId, run);
-    rmSync(marker);
-    return `\nDeleted its screenshots release ${mediaTag(runId)}.`;
-  } catch (err) {
-    return `\nCould not delete its screenshots release (${(err as Error).message.split("\n")[0]}); delete it with \`gh release delete ${mediaTag(runId)}\`.`;
-  }
+/** A line for the command's output about the run's screenshots release, or "" when it had none. */
+function describeMedia(media: DroppedMedia | undefined): string {
+  if (!media) return "";
+  if (media.error === undefined) return `\nDeleted its screenshots release ${media.tag}.`;
+  return `\nCould not delete its screenshots release (${media.error}); delete it with \`gh release delete ${media.tag}\`.`;
 }
 
 /** `factory reject <run> -m <why>`: end a run waiting at a gate. */
 export function runReject(cwd: string, ref: string, options: { message: string }, run?: CommandRunner): string {
   return withProject(
     cwd,
-    ({ store, project, config }) => {
-      if (!options.message?.trim()) throw new CliError("Say why with -m.");
-      const target = findRun(store, project, ref);
-      if (target.state !== "needs_human" || !target.waiting_gate) {
-        throw new CliError(`Run ${target.id} is not waiting at a gate (it is ${target.state}).`);
-      }
-      new RunMachine(store, trustedConfig(project, config, run)).resume(target.id, "rejected", { comment: options.message });
-      // A run waiting at a gate has no worker, so nothing runs in its worktree.
-      const cleaned = cleanUpNow(store, project, config, target.id, run).map((l) => `\n${l}`).join("");
-      return `Rejected ${target.id} at the ${target.waiting_gate} gate.${dropMedia(project, target.id, run)}${cleaned}`;
+    (ctx) => {
+      const rejected = rejectRun(ctx, ref, options, run);
+      const cleaned = rejected.cleaned.map((l) => `\n${l}`).join("");
+      return `Rejected ${rejected.run.id} at the ${rejected.gate} gate.${describeMedia(rejected.media)}${cleaned}`;
     },
     run,
   );
@@ -553,19 +440,11 @@ export function runReject(cwd: string, ref: string, options: { message: string }
 export function runCancel(cwd: string, ref: string, options: { message?: string }, run?: CommandRunner): string {
   return withProject(
     cwd,
-    ({ store, project, config }) => {
-      const target = findRun(store, project, ref);
-      if (isTerminal(target.state)) throw new CliError(`Run ${target.id} is already ${target.state}.`);
-      // A pid is only trusted while a worker holds the lease: after a crash the agent row can
-      // still say "running" and its pid may since belong to an unrelated process.
-      const driven = target.lease_expires_at !== null && target.lease_expires_at > new Date().toISOString();
-      const running = driven ? store.listAgentRuns(target.id).filter((a) => a.status === "running" && a.pid) : [];
-      for (const agent of running) killTree(agent.pid!);
-      new RunMachine(store, config).cancel(target.id, options.message?.trim() || "cancelled from the CLI");
-      const stopped = running.length ? ` Stopped ${running.length} agent process${running.length > 1 ? "es" : ""}.` : "";
-      // A driven run's worker may still be stopping in the worktree; it cleans up once it has.
-      const cleaned = driven ? [] : cleanUpNow(store, project, config, target.id, run);
-      return `Cancelled ${target.id}.${stopped}${dropMedia(project, target.id, run)}${cleaned.map((l) => `\n${l}`).join("")}`;
+    (ctx) => {
+      const cancelled = cancelRun(ctx, ref, options.message?.trim() || "cancelled from the CLI", run);
+      const { stopped: count } = cancelled;
+      const stopped = count ? ` Stopped ${count} agent process${count > 1 ? "es" : ""}.` : "";
+      return `Cancelled ${cancelled.run.id}.${stopped}${describeMedia(cancelled.media)}${cancelled.cleaned.map((l) => `\n${l}`).join("")}`;
     },
     run,
   );

@@ -1,9 +1,14 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { findRepoRoot, loadConfig, Store, type Project, type CommandRunner } from "@factory/core";
+import { findRepoRoot, loadConfig, ServiceError, Store, type Project, type CommandRunner } from "@factory/core";
 import type { FactoryConfig } from "@factory/shared";
 
 export class CliError extends Error {}
+
+/** A core ServiceError as a CliError with the same message, so it prints and exits like one. */
+function asCliError(err: unknown): unknown {
+  return err instanceof ServiceError ? new CliError(err.message) : err;
+}
 
 export interface ProjectContext {
   root: string;
@@ -34,6 +39,8 @@ export function withProject<T>(cwd: string, fn: (ctx: ProjectContext) => T, run?
   const ctx = openProject(cwd, run);
   try {
     return fn(ctx);
+  } catch (err) {
+    throw asCliError(err);
   } finally {
     ctx.store.close();
   }
@@ -43,6 +50,8 @@ export async function withProjectAsync<T>(cwd: string, fn: (ctx: ProjectContext)
   const ctx = openProject(cwd, run);
   try {
     return await fn(ctx);
+  } catch (err) {
+    throw asCliError(err);
   } finally {
     ctx.store.close();
   }
