@@ -16,7 +16,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `packages/core/src`: the engine, exported through `index.ts`
 - `pipeline/transitions.ts`: `RunMachine`, the forward edges and the guards on them
-- `pipeline/driver.ts`: `PipelineDriver`, with one private step method per stage; `approveTarget`, `prBody`
+- `pipeline/driver.ts`: `PipelineDriver`, whose private `step` has a `case` per stage; `approveTarget`, `prBody`
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
@@ -82,7 +82,7 @@ A `GithubPort` method:
 From the adversarial reviews of #58 to #61. The protections are summarised in [SECURITY.md](SECURITY.md).
 - Issue text, comments and agent output derived from them are untrusted data. Frame them as data (`issueBlock`), and never let them become a trusted spec without a human. See [Trusted authors](README.md#trusted-authors).
 - Never read trust, config or progress from files a branch can plant in the working tree. Use the trusted reader, the store or the run folder.
-- Child processes get a minimal environment from an allowlist, such as `APP_ENV_ALLOWLIST` in `packages/core/src/capture/server.ts`, especially when their output is published. Agents never get `ANTHROPIC_API_KEY` (`agentEnv`), and checks never get tokens (`CHECK_ENV_DENYLIST`).
+- Know what each child process's environment holds. Only the app started for capture gets an allowlist (`APP_ENV_ALLOWLIST` in `packages/core/src/capture/server.ts`). Checks get the full environment minus `CHECK_ENV_DENYLIST`, so no tokens. Agents get the full environment minus `ANTHROPIC_API_KEY` (`agentEnv`), so an agent with a shell can see `GH_TOKEN`. A new child process whose output is published gets an allowlist.
 - Clean up processes, worktrees and temp dirs on every path: success, error, timeout, cancel and signal. Kill whole process trees with `killTree`.
 - Anything posted to GitHub: quote `@mentions` (`quietMentions`), and keep logs and local paths out of PR bodies and comments (`redactPaths`).
 - Commit hooks and signing are never skipped (no `--no-verify`, no `--no-gpg-sign`).
