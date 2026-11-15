@@ -56,7 +56,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
 
-`apps/web/src`: the web app (React, Vite, Tailwind), built into `apps/web/dist` and served by the server
+`apps/web/src`: the web app (React, Vite, Tailwind), built by Vite into its `dist` folder and served by the server
 - `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, Backlog; `components/ui/`: shadcn-style parts
 
 ## Core invariants
