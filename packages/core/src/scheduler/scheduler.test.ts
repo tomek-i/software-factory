@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema, isTerminal, type FactoryConfigInput, type RunState } from "@factory/shared";
 import type { DriveOutcome } from "../pipeline/driver.js";
 import type { ProjectContext } from "../service/project.js";
+import type { DriveOptions } from "../service/runs.js";
 import { Store, type Run } from "../store/store.js";
 import { Scheduler, type DriveFn, type SchedulerEvent, type SchedulerOptions } from "./scheduler.js";
 import type { StopRequest } from "./stop.js";
@@ -11,6 +12,7 @@ const MINUTE = 60_000;
 interface Drive {
   project: string;
   issue: number;
+  options: DriveOptions;
   run: Run;
   stop: ReturnType<typeof vi.fn>;
   finish(outcome?: DriveOutcome, state?: RunState): Promise<void>;
@@ -20,7 +22,7 @@ interface Drive {
 /** A drive that starts or picks up the issue's run, holds its lease, and ends when the test says so. */
 function fakeDrive() {
   const drives: Drive[] = [];
-  const drive: DriveFn = (ctx, number, deps) =>
+  const drive: DriveFn = (ctx, number, options, deps) =>
     new Promise((resolve, reject) => {
       const { store, project } = ctx;
       const existing = store.listRuns({ project_id: project.id }).find((r) => r.issue_number === number && !isTerminal(r.state));
@@ -33,6 +35,7 @@ function fakeDrive() {
       drives.push({
         project: project.name,
         issue: number,
+        options,
         run,
         stop,
         finish: async (outcome = { kind: "parked", state: "needs_human", reason: "gate" }, state) => {
@@ -107,6 +110,7 @@ describe("Scheduler: starting queued issues", () => {
     t.s.tick();
     expect(t.issues()).toEqual([7, 3]);
     expect(t.fetched).toEqual([7, 3]);
+    expect(t.drives[0]!.options).toEqual({ runId: undefined, retriage: false });
 
     t.s.tick();
     expect(t.issues()).toEqual([7, 3]);
@@ -243,7 +247,22 @@ describe("Scheduler: recovery", () => {
     t.s.tick();
 
     expect(t.drives.map((d) => d.run.id)).toEqual([dead.id]);
+    // That exact run, never a new one, and never sent back to triage.
+    expect(t.drives[0]!.options).toEqual({ runId: dead.id, retriage: false });
     expect(t.events.find((e) => e.type === "started")).toMatchObject({ recovered: true, issue: 1 });
+    // Fetched first, like a new start: an issue closed on GitHub stops being worked on.
+    expect(t.fetched).toEqual([1]);
+  });
+
+  it("never continues a run started with --unsafe, which was meant for someone watching", () => {
+    const shop = project("shop");
+    shop.queue(1);
+    shop.store.createRun({ project_id: shop.row.id, title: "Issue 1", issue_number: 1, unsafe: true });
+    const t = scheduler([shop]);
+
+    t.s.tick();
+
+    expect(t.drives).toEqual([]);
   });
 
   it("never picks up a run waiting for a human or for information", () => {
@@ -277,7 +296,7 @@ describe("Scheduler: recovery", () => {
     t.s.tick();
 
     expect(t.issues()).toEqual([2]);
-    expect(t.fetched).toEqual([]);
+    expect(t.drives[0]!.options.runId).toBeDefined();
   });
 
   it("leaves a run that comes back stopped alone for a while, instead of spinning on it", async () => {
@@ -350,6 +369,45 @@ describe("Scheduler: usage limit", () => {
   });
 });
 
+describe("Scheduler: errors", () => {
+  it("survives a tick that throws, says why, and tries again next time", () => {
+    const shop = project("shop");
+    shop.queue(1);
+    let broken = true;
+    const t = scheduler([shop], {
+      projects: () => {
+        if (broken) throw new Error("The project list is not valid");
+        return [shop.entry];
+      },
+    });
+
+    expect(() => t.s.tick()).not.toThrow();
+    expect(t.events).toContainEqual({ type: "error", message: "The project list is not valid" });
+    broken = false;
+    t.s.tick();
+    expect(t.issues()).toEqual([1]);
+  });
+
+  it("reports a drive that throws before it starts, and carries on", () => {
+    const shop = project("shop");
+    shop.queue(1, 2);
+    const t = scheduler([shop], {
+      drive: () => {
+        throw new Error("sync boom");
+      },
+    });
+
+    expect(() => t.s.tick()).not.toThrow();
+    return new Promise<void>((done) =>
+      setTimeout(() => {
+        expect(t.events.filter((e) => e.type === "failed").map((e) => e.type === "failed" && e.error)).toEqual(["sync boom", "sync boom"]);
+        expect(t.s.status().running).toEqual([]);
+        done();
+      }, 0),
+    );
+  });
+});
+
 describe("Scheduler: stopping", () => {
   it("on a stop request, starts nothing more and finishes when its runs are done", async () => {
     const shop = project("shop");
@@ -381,6 +439,18 @@ describe("Scheduler: stopping", () => {
     expect(t.drives.map((d) => d.stop.mock.calls.length)).toEqual([1, 1]);
     expect(shop.store.listRuns().map((r) => r.lease_owner)).toEqual([null, null]);
     expect(t.events).toContainEqual({ type: "stopping", now: true, interrupted: 2 });
+  });
+
+  it("obeys a stop request made after the given start time, even before it was created", () => {
+    const shop = project("shop");
+    shop.queue(1);
+    const startedAt = Date.now() - MINUTE;
+    const t = scheduler([shop], { startedAt, stopRequest: () => ({ at: startedAt + 1, now: false }) });
+
+    t.s.tick();
+
+    expect(t.drives).toEqual([]);
+    expect(t.s.status().stopping).toBe("drain");
   });
 
   it("ignores a stop request from before it started", () => {

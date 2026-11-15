@@ -53,15 +53,22 @@ export function refuseRunningOnAnyProject(projects: () => RegistryEntry[] = list
  * Resolves with the last line to print; `interrupted` says the runs were stopped mid-way.
  */
 export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+  // A `factory stop` sent while it is still starting up (reconciling below) counts.
+  const startedAt = Date.now();
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
   const projects = deps.projects ?? listRegistered;
+  const openProject = deps.scheduler?.open ?? openRegisteredProject;
+  // Checked on every open, not only at start: a project can be registered while the worker runs.
+  const open = (entry: RegistryEntry): ProjectContext => {
+    refuseRunningOnItself(entry.path);
+    return openProject(entry);
+  };
   const entries = projects();
   if (entries.length === 0) throw new CliError("No projects registered. Run `factory init` in a repository first.");
 
   const reconcile = deps.reconcile ?? ((ctx) => reportLines(reconcileAndSweep(ctx.store, ctx.project, ctx.config, { run: deps.run, github: deps.github?.(ctx.project) })));
   for (const entry of entries) {
-    const open = deps.scheduler?.open ?? openRegisteredProject;
     let ctx: ProjectContext;
     try {
       ctx = open(entry);
@@ -81,6 +88,7 @@ export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}
   print(style.hint("Stop with `factory stop` (finishes the runs going on) or `factory stop --now`; Ctrl+C interrupts."));
   const scheduler = new Scheduler({
     maxRuns,
+    startedAt,
     projects,
     run: deps.run,
     env: deps.env,
@@ -90,6 +98,7 @@ export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}
       if (line) print(line);
     },
     ...deps.scheduler,
+    open,
   });
   const result = await scheduler.run(deps.signal);
   return result === "drained"
@@ -123,6 +132,8 @@ function describe(event: SchedulerEvent, style: Style): string | undefined {
       return prefix(event.project, event.issue)(`Skipped: ${event.reason}`);
     case "notice":
       return prefix(event.project, event.issue)(`Warning: ${event.message}`);
+    case "error":
+      return style.attention(`Error: ${event.message}. Trying again shortly.`);
     case "paused":
       return style.attention(`Usage limit reached: starting and continuing nothing until ${event.until}.`);
     case "resumed":

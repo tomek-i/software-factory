@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { isTerminal, STAGES, type FactoryConfig, type RunState } from "@factory/shared";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
 import { fetchIssue } from "../github/issues.js";
@@ -5,7 +6,7 @@ import type { GithubPort } from "../github/port.js";
 import type { DriveOutcome } from "../pipeline/driver.js";
 import { listRegistered, type RegistryEntry } from "../registry.js";
 import { openRegisteredProject, type ProjectContext } from "../service/project.js";
-import { driveIssue, trustedConfig, type DriveDeps, type Driven } from "../service/runs.js";
+import { driveIssue, trustedConfig, type DriveDeps, type Driven, type DriveOptions } from "../service/runs.js";
 import type { Project, Run } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 import { readStopRequest, type StopRequest } from "./stop.js";
@@ -18,7 +19,7 @@ import { readStopRequest, type StopRequest } from "./stop.js";
  */
 
 /** Drives one issue's run until it needs someone; `driveIssue` outside tests. */
-export type DriveFn = (ctx: ProjectContext, number: number, deps: DriveDeps) => Promise<Driven>;
+export type DriveFn = (ctx: ProjectContext, number: number, options: DriveOptions, deps: DriveDeps) => Promise<Driven>;
 
 export type SchedulerEvent =
   /** Progress of a run the scheduler drives. */
@@ -29,6 +30,8 @@ export type SchedulerEvent =
   /** Something the scheduler could not use: a project that doesn't open, an issue it couldn't fetch. */
   | { type: "skipped"; project: string; issue?: number; reason: string }
   | { type: "notice"; project: string; issue: number; message: string }
+  /** A tick went wrong (the project list or a database could not be read); the next one tries again. */
+  | { type: "error"; message: string }
   | { type: "paused"; until: string }
   | { type: "resumed" }
   | { type: "stopping"; now: boolean; interrupted: number };
@@ -42,8 +45,10 @@ export interface SchedulerStatus {
 }
 
 export interface SchedulerOptions {
-  /** Lease owner name; `work-<pid>` by default. */
+  /** Lease owner name; `work-<pid>-<random>` by default. */
   owner?: string;
+  /** When this worker started: a stop request from before then is old. Defaults to construction time. */
+  startedAt?: number;
   /** Runs this worker drives at once, across projects. */
   maxRuns?: number;
   projects?: () => RegistryEntry[];
@@ -52,7 +57,7 @@ export interface SchedulerOptions {
   now?: () => number;
   /** The project's config from its default branch. Cached here, since reading it fetches. */
   trustedConfig?: (ctx: ProjectContext) => FactoryConfig;
-  /** Refreshes an issue from GitHub before it starts; closes and unqueues it when it was closed there. */
+  /** Refreshes an issue from GitHub before its run starts or continues; closes and unqueues it when it was closed there. */
   fetchIssue?: (ctx: ProjectContext, number: number) => void;
   stopRequest?: () => StopRequest | undefined;
   run?: CommandRunner;
@@ -87,7 +92,8 @@ interface InFlight {
 interface Candidate {
   project: Opened;
   issue: number;
-  recovered: boolean;
+  /** The run to continue; a new start has none. */
+  runId?: string;
 }
 
 export class Scheduler {
@@ -104,10 +110,11 @@ export class Scheduler {
   private wake?: () => void;
 
   constructor(private readonly options: SchedulerOptions = {}) {
-    this.owner = options.owner ?? `work-${process.pid}`;
+    // The suffix keeps a new worker that reuses a dead one's pid from sharing its leases.
+    this.owner = options.owner ?? `work-${process.pid}-${randomBytes(3).toString("hex")}`;
     this.maxRuns = options.maxRuns ?? DEFAULT_MAX_RUNS;
     this.now = options.now ?? Date.now;
-    this.startedAt = this.now();
+    this.startedAt = options.startedAt ?? this.now();
   }
 
   status(): SchedulerStatus {
@@ -135,6 +142,8 @@ export class Scheduler {
     this.stopping = "now";
     let interrupted = 0;
     for (const flight of this.inFlight.values()) {
+      // driveIssue hands out `stop` before it awaits anything, so every run that holds a lease has
+      // one; a flight without it returned before taking the lease.
       if (!flight.stop) continue;
       flight.stop();
       interrupted++;
@@ -143,8 +152,16 @@ export class Scheduler {
     return interrupted;
   }
 
-  /** Pick and start runs, without waiting for them. */
+  /** Pick and start runs, without waiting for them. Never throws: a worker that died here would leave its agents running. */
   tick(): void {
+    try {
+      this.pick();
+    } catch (err) {
+      this.emit({ type: "error", message: (err as Error).message ?? String(err) });
+    }
+  }
+
+  private pick(): void {
     this.checkStopRequest();
     if (this.stopping) return;
     const now = this.now();
@@ -162,7 +179,8 @@ export class Scheduler {
       const config = this.config(candidate.project, now);
       if (!config) continue;
       if (this.runningIn(candidate.project, now) >= config.concurrency.max_runs) continue;
-      if (!candidate.recovered && !this.mayStart(candidate, config, now)) continue;
+      if (!candidate.runId && this.startedToday(candidate.project, now) >= config.github.max_starts_per_day) continue;
+      if (!this.stillOpen(candidate, now)) continue;
       this.launch(candidate);
     }
   }
@@ -234,7 +252,9 @@ export class Scheduler {
         if (run.issue_number === null || this.cooling(project, run.issue_number, now)) continue;
         if (run.lease_owner !== null && run.lease_expires_at !== null && run.lease_expires_at >= nowIso) continue;
         if (!store.getIssue(row.id, run.issue_number)?.queued_at) continue;
-        found.push({ candidate: { project, issue: run.issue_number, recovered: true }, updated: run.updated_at });
+        // Hard rules were lifted for a person watching that run; carrying on without them would be unattended.
+        if (run.unsafe) continue;
+        found.push({ candidate: { project, issue: run.issue_number, runId: run.id }, updated: run.updated_at });
       }
     }
     return found.sort((a, b) => compare(a.updated, b.updated)).map((f) => f.candidate);
@@ -254,17 +274,20 @@ export class Scheduler {
         const own = runs.filter((r) => r.issue_number === issue.number);
         // A run still going or waiting belongs to recovery or to a human, whenever it was created.
         if (own.some((r) => r.created_at >= issue.queued_at! || !isTerminal(r.state))) continue;
-        found.push({ candidate: { project, issue: issue.number, recovered: false }, queuedAt: issue.queued_at, seq: issue.queue_seq ?? 0 });
+        found.push({ candidate: { project, issue: issue.number }, queuedAt: issue.queued_at, seq: issue.queue_seq ?? 0 });
       }
     }
     return found.sort((a, b) => compare(a.queuedAt, b.queuedAt) || a.seq - b.seq).map((f) => f.candidate);
   }
 
-  private mayStart(candidate: Candidate, config: FactoryConfig, now: number): boolean {
-    const { store, project: row } = candidate.project.ctx;
+  private startedToday(project: Opened, now: number): number {
     const since = new Date(now - 24 * 60 * 60_000).toISOString();
-    if (store.listRuns({ project_id: row.id }).filter((r) => r.created_at >= since).length >= config.github.max_starts_per_day) return false;
-    // The local copy may be stale: an issue closed on GitHub since the last sync must not start.
+    return project.ctx.store.listRuns({ project_id: project.ctx.project.id }).filter((r) => r.created_at >= since).length;
+  }
+
+  private stillOpen(candidate: Candidate, now: number): boolean {
+    const { store, project: row } = candidate.project.ctx;
+    // The local copy may be stale: work on an issue closed on GitHub since the last sync must stop.
     try {
       (this.options.fetchIssue ?? ((ctx, n) => fetchIssue(ctx.store, ctx.project, n, this.options.run)))(candidate.project.ctx, candidate.issue);
     } catch (err) {
@@ -302,15 +325,18 @@ export class Scheduler {
   }
 
   private launch(candidate: Candidate): void {
-    const { project, issue, recovered } = candidate;
+    const { project, issue, runId } = candidate;
+    const recovered = runId !== undefined;
     const name = project.ctx.project.name;
     const key = keyOf(project, issue);
     const flight: InFlight = { project, issue };
     this.inFlight.set(key, flight);
     const events = new FactoryEvents();
     events.on((event) => this.emit({ type: "run", project: name, issue, event }));
-    const drive = this.options.drive ?? ((ctx, n, deps) => driveIssue(ctx, n, {}, deps));
-    void drive(project.ctx, issue, {
+    const drive = this.options.drive ?? driveIssue;
+    // Never re-triage: only a person (or the issue's author, #21) can say the questions were answered.
+    const options: DriveOptions = { runId, retriage: false };
+    const deps: DriveDeps = {
       owner: this.owner,
       run: this.options.run,
       env: this.options.env,
@@ -325,7 +351,14 @@ export class Scheduler {
           this.emit({ type: "notice", project: name, issue, message: "no checks are configured on the default branch; the quality gate only scans for secrets" });
         }
       },
-    })
+    };
+    let driving: Promise<Driven>;
+    try {
+      driving = drive(project.ctx, issue, options, deps);
+    } catch (err) {
+      driving = Promise.reject(err);
+    }
+    void driving
       .then(({ outcome, run }) => {
         this.emit({ type: "finished", project: name, issue, run, outcome });
         if (outcome.kind === "rate_limited") this.pause(outcome.resetsAt);

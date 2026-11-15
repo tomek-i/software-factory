@@ -18,7 +18,7 @@ function setup(outcomes: DriveOutcome[], issues = [12]) {
   const ctx: ProjectContext = { root: row.repo_path, config: factoryConfigSchema.parse({ version: 1 }), store, project: row };
   const lines: string[] = [];
   let stop: StopRequest | undefined;
-  const drive: DriveFn = async (c, number, deps) => {
+  const drive: DriveFn = async (c, number, _options, deps) => {
     const existing = c.store.listRuns({ project_id: row.id }).find((r) => r.issue_number === number && !isTerminal(r.state));
     const run = existing ?? c.store.createRun({ project_id: row.id, title: `Add thing ${number}`, issue_number: number });
     deps.events?.emit({ type: "run:state", runId: run.id, from: "intake", to: "triage", reason: "start triage" });
@@ -72,6 +72,34 @@ describe("runWork", () => {
     expect(lines).toContain("[shop#12] Usage limit reached; the run continues once it resets.");
     expect(lines).toContain("Usage limit reached: starting and continuing nothing until 2099-01-01T00:00:00.000Z.");
   });
+
+  it("obeys a factory stop sent while it was still starting up", async () => {
+    const { deps, lines } = setup([{ kind: "finished", state: "done" }, { kind: "finished", state: "done" }], [12, 13]);
+    let stop: StopRequest | undefined;
+    const reconcile = () => {
+      stop = { at: Date.now(), now: false };
+      // The scheduler is created a few milliseconds later, as after a slow reconcile.
+      const until = Date.now() + 5;
+      while (Date.now() < until);
+      return [];
+    };
+
+    await runWork({}, { ...deps, reconcile, scheduler: { ...deps.scheduler, stopRequest: () => stop } });
+
+    expect(lines.some((l) => l.includes("Run "))).toBe(false);
+    expect(lines).toContain("Stopping: finishing the runs going on, starting no more.");
+  });
+
+  it("refuses to work on a project that contains this copy of the factory, whenever it was registered", async () => {
+    const { deps, lines } = setup([{ kind: "finished", state: "done" }]);
+    const here = findRepoRoot(process.cwd())!;
+
+    // Nothing to run, so stop once the refusal has been printed.
+    const stopRequest = () => (lines.some((l) => l.includes("Skipped")) ? { at: Date.now() + 1, now: false } : undefined);
+    await runWork({}, { ...deps, projects: () => [{ path: here, name: "self", added_at: "t" }], scheduler: { ...deps.scheduler, stopRequest } });
+
+    expect(lines.some((l) => /^\[self\] Skipped: This copy of the factory is inside the repository/.test(l))).toBe(true);
+  }, 30_000);
 
   it("is interrupted when the signal aborts", async () => {
     const { deps } = setup([]);
