@@ -364,13 +364,15 @@ export async function runLogs(
  */
 async function continueRun(ctx: ServiceContext, run: Run, to: RunState, done: string, options: { run?: boolean }, deps: RunDeps): Promise<string> {
   const next = continuation(ctx.store, ctx.project, run, to);
-  if (next === "ended" || run.issue_number === null) return done;
-  if (options.run === false) return `${done}\nContinue with \`factory run ${run.issue_number}\`.`;
+  if (next === "ended") return done;
+  // Set: continuation says "ended" for a run without an issue.
+  const issue = run.issue_number!;
+  if (options.run === false) return `${done}\nContinue with \`factory run ${issue}\`.`;
   if (next === "not_queued") {
-    return `${done}\nIssue #${run.issue_number} is no longer queued, so the run was not continued. \`factory run ${run.issue_number}\` queues it again and continues.`;
+    return `${done}\nIssue #${issue} is no longer queued, so the run was not continued. \`factory run ${issue}\` queues it again and continues.`;
   }
   (deps.print ?? console.log)(done);
-  return (await driveAndReport(ctx, run.issue_number, {}, deps)).message;
+  return (await driveAndReport(ctx, issue, {}, deps)).message;
 }
 
 /** `factory approve <run>`: let a run waiting at a gate continue, and keep driving it unless --no-run. */
