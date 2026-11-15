@@ -35,6 +35,12 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - Hard rules: protected paths, new dependencies or new dependency sources, any lockfile change, package-source config, `.env`, key and certificate files, and deletions the issue does not name. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
 - The merge gate, by default. The factory merges only the exact commit that passed the gate (`gh pr merge --match-head-commit`).
 
+**The web app** (`factory serve`):
+- It listens on 127.0.0.1 only, and refuses a request whose `Host` isn't its own address, so a web page can't reach it through DNS rebinding.
+- Every API call needs the session token from the printed link, sent in a header, never a cookie (a browser would send a cookie to any server on 127.0.0.1). The link carries it after `#`, so it never reaches a server; it is new each start and compared in constant time. Which routes are open is decided on the route matched, not the raw URL.
+- Changes need the server's own `Origin`, and its pages can't be framed, so another site can't make your browser approve or cancel a run. A decision names the state and gate the page showed, and is refused if the run has moved on.
+- It offers the CLI's actions with the CLI's rules, and nothing more: no `--unsafe`, no config.
+
 ## Out of scope
 
 - Running a run with `--unsafe`, adding a hostile author to `trust.authors`, or setting `trust.everyone: true` on a public repo.

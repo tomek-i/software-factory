@@ -9,8 +9,8 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "build": "tsc -b && pnpm --filter @factory/web build",
+    "typecheck": "tsc -p tsconfig.test.json && tsc -p apps/web/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",

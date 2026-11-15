@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
+import { DEFAULT_PORT } from "@factory/server";
 import { runCleanup } from "./commands/cleanup.js";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
@@ -8,6 +9,7 @@ import { runLogin } from "./commands/login.js";
 import { runNew, type NewOptions } from "./commands/new.js";
 import { runProjects, runProjectsRemove } from "./commands/projects.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
+import { parsePort, runServe } from "./commands/serve.js";
 import { runShow } from "./commands/show.js";
 import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork } from "./commands/work.js";
 import { refuseRunningOnItself } from "./self.js";
@@ -120,8 +122,24 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("serve")
+    .description("open the web app on this machine, and work through the queues as `factory work` does")
+    .option("--port <n>", `port on 127.0.0.1 (default ${DEFAULT_PORT})`, parsePort)
+    .option("--max-runs <n>", `runs at once, across projects (default ${DEFAULT_MAX_RUNS})`, parseMaxRuns)
+    .option("--no-open", "print the link without opening the browser")
+    .action(async (options: { port?: number; maxRuns?: number; open: boolean }) => {
+      refuseRunningOnAnyProject();
+      const interrupt = new AbortController();
+      process.once("SIGINT", () => interrupt.abort());
+      const { message } = await runServe(options, { style: styleFor(process.stdout), signal: interrupt.signal });
+      console.log(message);
+      // As for `work`: interrupted drives are left behind, so end the process here.
+      process.exit(interrupt.signal.aborted ? 130 : 0);
+    });
+
+  program
     .command("stop")
-    .description("ask running `factory work` processes to finish their runs and exit")
+    .description("ask running `factory work` and `factory serve` processes to finish their runs and exit")
     .option("--now", "interrupt their runs instead (they can be continued later)")
     .action((options: { now?: boolean }) => {
       console.log(runStop(options));

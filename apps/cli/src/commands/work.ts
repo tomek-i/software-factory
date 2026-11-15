@@ -94,7 +94,7 @@ export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}
     env: deps.env,
     github: deps.github,
     onEvent: (event) => {
-      const line = describe(event, style);
+      const line = describeSchedulerEvent(event, style);
       if (line) print(line);
     },
     ...deps.scheduler,
@@ -106,7 +106,8 @@ export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}
     : { message: "Interrupted. The runs continue on the next `factory work`, or with `factory run <n>`.", interrupted: true };
 }
 
-function describe(event: SchedulerEvent, style: Style): string | undefined {
+/** A scheduler event as a terminal line, or undefined for one not worth a line. */
+export function describeSchedulerEvent(event: SchedulerEvent, style: Style): string | undefined {
   const prefix = (project: string, issue?: number) => (text: string) =>
     text
       .split("\n")
@@ -145,10 +146,10 @@ function describe(event: SchedulerEvent, style: Style): string | undefined {
   }
 }
 
-/** `factory stop`: asks every running `factory work` to stop, through a file they check. */
+/** `factory stop`: asks every running `factory work` and `factory serve` to stop, through a file they check. */
 export function runStop(options: { now?: boolean }, file?: string): string {
   requestStop({ now: options.now }, file);
   return options.now
-    ? "Asked any running `factory work` to interrupt its runs and exit. The runs continue on the next `factory work`, or with `factory run <n>`."
-    : "Asked any running `factory work` to start no more runs, finish the ones going on, and exit.";
+    ? "Asked any running `factory work` or `factory serve` to interrupt its runs and exit. The runs continue on the next `factory work` or `factory serve`, or with `factory run <n>`."
+    : "Asked any running `factory work` or `factory serve` to start no more runs, finish the ones going on, and exit.";
 }
