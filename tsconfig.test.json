@@ -7,5 +7,7 @@
     "declarationMap": false,
     "noEmit": true
   },
-  "include": ["apps/*/src/**/*.ts", "apps/*/test/**/*.ts", "packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
+  "include": ["apps/*/src/**/*.ts", "apps/*/test/**/*.ts", "packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
+  // The web app runs in a browser: apps/web/tsconfig.json checks it.
+  "exclude": ["apps/web/**"]
 }
