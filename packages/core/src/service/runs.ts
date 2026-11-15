@@ -173,7 +173,9 @@ export function continuation(store: Store, project: Project, run: Run, to: RunSt
 }
 
 export interface Approved {
+  /** The run as it is after the move. */
   run: Run;
+  /** The gate it was waiting at. */
   gate: Gate;
   to: RunState;
 }
@@ -193,7 +195,7 @@ export function approveRun(ctx: ServiceContext, ref: string, options: { message?
   // A merge approval is for the commit that was waiting, so a later change cannot ride on it.
   const commitSha = gate === "merge" ? waitingCommit(store.listEvents(target.id)) : undefined;
   new RunMachine(store, trusted).resume(target.id, to, { comment: options.message?.trim() || "approved", commitSha });
-  return { run: target, gate, to };
+  return { run: store.getRun(target.id)!, gate, to };
 }
 
 /**
@@ -216,7 +218,7 @@ export function resumeRun(
   }
   const to = options.to as RunState;
   new RunMachine(store, trustedConfig(project, ctx.config, run)).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
-  return { run: target, to };
+  return { run: store.getRun(target.id)!, to };
 }
 
 /** What happened to the screenshots release of a run that ended. */
@@ -243,6 +245,7 @@ export function dropMedia(project: Project, runId: string, run?: CommandRunner):
 }
 
 export interface Ended {
+  /** The run as it is after it ended. */
   run: Run;
   media?: DroppedMedia;
   /** Lines about the cleanup of its worktree and branch (see cleanUpNow). */
@@ -261,7 +264,7 @@ export function rejectRun(ctx: ServiceContext, ref: string, options: { message: 
   // A run waiting at a gate has no worker, so nothing runs in its worktree.
   const cleaned = cleanUpNow(store, project, config, target.id, run);
   const media = dropMedia(project, target.id, run);
-  return { run: target, gate: target.waiting_gate, media, cleaned };
+  return { run: store.getRun(target.id)!, gate: target.waiting_gate, media, cleaned };
 }
 
 /**
@@ -281,5 +284,5 @@ export function cancelRun(ctx: ServiceContext, ref: string, reason: string, run?
   // A driven run's worker may still be stopping in the worktree; it cleans up once it has.
   const cleaned = driven ? [] : cleanUpNow(store, project, config, target.id, run);
   const media = dropMedia(project, target.id, run);
-  return { run: target, stopped: running.length, media, cleaned };
+  return { run: store.getRun(target.id)!, stopped: running.length, media, cleaned };
 }

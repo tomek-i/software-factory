@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -45,6 +46,15 @@ async function drive(s: ReturnType<typeof context>, options: { unsafe?: boolean 
   events.on((e) => seen.push(e));
   const driven = await driveIssue(s.ctx, 12, options, { owner: "test-service", env: s.fake.env, github: s.github, events, onNotice: (n) => notices.push(n) });
   return { ...driven, notices, seen };
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Answers `gh issue view` with the given issue, and fails `gh release delete`; git runs for real. */
@@ -113,22 +123,35 @@ describe("driveIssue", () => {
     expect(again.run.unsafe).toBeFalsy();
   });
 
-  it("gives a front end a stop that cancels the run's running agents and frees the lease", async () => {
-    const s = context([{ output: TRIAGE() }]);
+  it("gives a front end a stop that, while the run is driven, kills its agent and frees the lease", async () => {
+    // The triage agent takes long enough that stop comes while it is working, as a Ctrl+C would.
+    const s = context([{ output: TRIAGE(), sleepMs: 60_000 }]);
     let stop: (() => void) | undefined;
-    const notices: DriveNotice[] = [];
-    const { run } = await driveIssue(s.ctx, 12, {}, { owner: "test-service", env: s.fake.env, github: s.github, onNotice: (n) => {
-      notices.push(n);
-      if (n.type === "started") stop = n.stop;
-    } });
-    // As if Ctrl+C came while an agent was working: the run is leased and an agent is running.
-    const agent = s.store.startAgentRun({ run_id: run.id, role: "builder", model: null, session_id: null, log_dir: s.root });
-    expect(s.store.acquireLease(run.id, "test-service", 60_000)).toBe(true);
+    let runId = "";
+    const seen: { pid: number; status: string; leaseOwner: string | null }[] = [];
+    const watch = setInterval(() => {
+      const agent = runId ? s.store.listAgentRuns(runId).find((a) => a.status === "running" && a.pid) : undefined;
+      if (!agent || !stop) return;
+      clearInterval(watch);
+      stop();
+      seen.push({ pid: agent.pid!, status: s.store.getAgentRun(agent.id)!.status, leaseOwner: s.store.getRun(runId)!.lease_owner });
+    }, 20);
 
-    stop!();
+    // What the driver does after its agent is killed under it is not the point: the CLI exits right after stop.
+    await driveIssue(s.ctx, 12, {}, {
+      owner: "test-service",
+      env: s.fake.env,
+      github: s.github,
+      onNotice: (n) => {
+        if (n.type !== "started") return;
+        runId = n.run.id;
+        stop = n.stop;
+      },
+    }).catch(() => undefined);
+    clearInterval(watch);
 
-    expect(s.store.getAgentRun(agent.id)!.status).toBe("cancelled");
-    expect(s.store.getRun(run.id)!.lease_owner).toBeNull();
+    expect(seen).toEqual([{ pid: expect.any(Number), status: "cancelled", leaseOwner: null }]);
+    expect(isAlive(seen[0]!.pid)).toBe(false);
   });
 });
 
@@ -141,8 +164,7 @@ describe("approve, resume, reject and cancel", () => {
 
     const approved = approveRun(s.ctx, "#12", { message: "go" });
 
-    expect(approved).toMatchObject({ run: { id: run.id }, gate: "triage", to: "build" });
-    expect(s.store.getRun(run.id)!.state).toBe("build");
+    expect(approved).toMatchObject({ run: { id: run.id, state: "build", waiting_gate: null }, gate: "triage", to: "build" });
     expect(s.store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "triage", comment: "go" });
     expect(() => approveRun(s.ctx, "#12", {})).toThrow(new ServiceError(`Run ${run.id} is not waiting at a gate (it is build).`));
     expect(() => resumeRun(s.ctx, "#12", { to: "build", message: "go" })).toThrow(new ServiceError(`Run ${run.id} is not waiting for you (it is build).`));
@@ -163,9 +185,12 @@ describe("approve, resume, reject and cancel", () => {
 
     const rejected = rejectRun(s.ctx, run.id, { message: "not now" }, fakeGh());
 
-    expect(rejected).toMatchObject({ run: { id: run.id }, gate: "triage", media: { tag: mediaTag(run.id), error: "gh release delete failed: no access" } });
+    expect(rejected).toMatchObject({
+      run: { id: run.id, state: "rejected", waiting_gate: null },
+      gate: "triage",
+      media: { tag: mediaTag(run.id), error: "gh release delete failed: no access" },
+    });
     expect(Array.isArray(rejected.cleaned)).toBe(true);
-    expect(s.store.getRun(run.id)!.state).toBe("rejected");
     // Kept, so the next try can delete it.
     expect(existsSync(join(runDir, MEDIA_MARKER))).toBe(true);
     expect(() => rejectRun(s.ctx, run.id, { message: "again" })).toThrow(new ServiceError(`Run ${run.id} is not waiting at a gate (it is rejected).`));
@@ -177,10 +202,26 @@ describe("approve, resume, reject and cancel", () => {
 
     const cancelled = cancelRun(ctx, run.id, "changed my mind");
 
-    expect(cancelled).toEqual({ run: expect.objectContaining({ id: run.id }), stopped: 0, media: undefined, cleaned: [] });
-    expect(store.getRun(run.id)!.state).toBe("cancelled");
+    expect(cancelled).toEqual({ run: expect.objectContaining({ id: run.id, state: "cancelled" }), stopped: 0, media: undefined, cleaned: [] });
     expect(store.listEvents(run.id).at(-1)!.reason).toBe("human: changed my mind");
     expect(() => cancelRun(ctx, run.id, "again")).toThrow(new ServiceError(`Run ${run.id} is already cancelled.`));
+  });
+
+  it("stops the running agent of a run a worker drives, and leaves its cleanup to that worker", async () => {
+    const { ctx, store, project, root } = context();
+    const run = store.createRun({ project_id: project.id, title: "Add the feature", issue_number: 12 });
+    expect(store.acquireLease(run.id, "other-worker", 60_000)).toBe(true);
+    // Stands in for the agent process the worker started.
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    const agent = store.startAgentRun({ run_id: run.id, role: "builder", model: null, session_id: null, log_dir: root });
+    store.setAgentPid(agent.id, child.pid!);
+
+    const cancelled = cancelRun(ctx, run.id, "stop it");
+
+    expect(cancelled).toMatchObject({ run: { id: run.id, state: "cancelled" }, stopped: 1, cleaned: [] });
+    await exited;
+    expect(isAlive(child.pid!)).toBe(false);
   });
 });
 
