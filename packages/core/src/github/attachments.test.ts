@@ -18,6 +18,8 @@ describe("githubProfileDir", () => {
     expect(githubProfileDir({ LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" }, "win32", "C:\\Users\\a")).toBe(join("C:\\Users\\a\\AppData\\Local", "software-factory", "github-browser"));
     expect(githubProfileDir({}, "linux", "/home/a")).toBe(join("/home/a", ".config", "software-factory", "github-browser"));
     expect(githubProfileDir({ XDG_CONFIG_HOME: "/cfg" }, "darwin", "/Users/a")).toBe(join("/cfg", "software-factory", "github-browser"));
+    // Moved with the rest of the factory's data folder, as tests do.
+    expect(githubProfileDir({ FACTORY_DATA_DIR: "/data", LOCALAPPDATA: "C:\\L" }, "win32", "C:\\U")).toBe(join("/data", "github-browser"));
   });
 });
 
