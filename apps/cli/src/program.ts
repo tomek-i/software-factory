@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { runCleanup } from "./commands/cleanup.js";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
@@ -8,6 +9,7 @@ import { runNew, type NewOptions } from "./commands/new.js";
 import { runProjects, runProjectsRemove } from "./commands/projects.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { runShow } from "./commands/show.js";
+import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork } from "./commands/work.js";
 import { refuseRunningOnItself } from "./self.js";
 import { styleFor } from "./style.js";
 
@@ -100,6 +102,29 @@ export function buildProgram(): Command {
     .action(async (issues: string[], options: { unsafe?: boolean }) => {
       refuseRunningOnItself(process.cwd());
       console.log(await runRun(process.cwd(), issues, options, { style: styleFor(process.stdout) }));
+    });
+
+  program
+    .command("work")
+    .description("work through the queues of every registered project until stopped: continue stopped runs, start queued issues")
+    .option("--max-runs <n>", `runs at once, across projects (default ${DEFAULT_MAX_RUNS})`, parseMaxRuns)
+    .action(async (options: { maxRuns?: number }) => {
+      refuseRunningOnAnyProject();
+      // Ctrl+C interrupts the runs (kills their agents, gives the leases back) so they can be continued.
+      const interrupt = new AbortController();
+      process.once("SIGINT", () => interrupt.abort());
+      const { message } = await runWork(options, { style: styleFor(process.stdout), signal: interrupt.signal });
+      console.log(message);
+      // The interrupted drives are left behind, not awaited, so end the process here.
+      process.exit(interrupt.signal.aborted ? 130 : 0);
+    });
+
+  program
+    .command("stop")
+    .description("ask running `factory work` processes to finish their runs and exit")
+    .option("--now", "interrupt their runs instead (they can be continued later)")
+    .action((options: { now?: boolean }) => {
+      console.log(runStop(options));
     });
 
   program
