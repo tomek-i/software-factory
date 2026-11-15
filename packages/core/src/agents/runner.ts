@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { execa } from "execa";
@@ -72,14 +73,54 @@ export function claudeCommand(env: NodeJS.ProcessEnv = process.env): { file: str
  * worktree the builder writes to, so a planted claude.cmd would run with the user's environment;
  * NoDefaultCurrentDirectoryInExePath turns that lookup off, for execa and for the agent's own tools.
  * A relative entry in the user's PATH (such as `.`) is still resolved against the worktree.
+ *
+ * No GitHub credentials: the engine pushes, opens PRs and merges itself, so an agent steered by
+ * issue text must not act as the user. `gh` keeps its login in the keyring or its config folder, not
+ * in the environment, so removing the token variables is not enough: `ghConfigDir` (an empty
+ * folder) leaves `gh`'s GitHub calls unauthenticated. git's credential helpers (Git Credential
+ * Manager) are cleared through GIT_CONFIG_COUNT, which outranks every config file without touching
+ * them, and nothing may prompt for a login. This is a barrier, not a sandbox: an agent with a shell
+ * runs as the user, so it could still read the OS keyring on purpose (`gh auth token` does exactly
+ * that, which is why the builder's profile also denies `gh` outright).
  */
-export function agentEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function agentEnv(env: NodeJS.ProcessEnv = process.env, options: { ghConfigDir?: string } = {}): NodeJS.ProcessEnv {
+  const configVars = Object.keys(env).filter((key) => /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/i.test(key));
   return {
-    ...withoutVars(env, ["ANTHROPIC_API_KEY", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "NoDefaultCurrentDirectoryInExePath"]),
+    ...withoutVars(env, [
+      ...AGENT_ENV_DENYLIST,
+      ...configVars,
+      "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+      "NoDefaultCurrentDirectoryInExePath",
+      "GH_CONFIG_DIR",
+      "GIT_TERMINAL_PROMPT",
+      "GCM_INTERACTIVE",
+    ]),
     CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     NoDefaultCurrentDirectoryInExePath: "1",
+    ...(options.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
+    // An empty value resets the list of helpers from every config file before it.
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "never",
   };
 }
+
+/**
+ * Variables an agent never gets: API billing, GitHub tokens (at least the checks' CHECK_ENV_DENYLIST,
+ * which imports from here, so it is not reused) and ways to reach a login another way.
+ */
+export const AGENT_ENV_DENYLIST = [
+  "ANTHROPIC_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "SSH_AUTH_SOCK",
+];
 
 /** Copy of env without the given variables, matched case-insensitively (Windows env is case-insensitive). */
 export function withoutVars(env: NodeJS.ProcessEnv, names: string[]): NodeJS.ProcessEnv {
@@ -167,9 +208,11 @@ export function createAgentRunner(deps: { store?: Store; events?: FactoryEvents;
     });
 
     const { file, args } = claudeCommand(env);
+    // An empty gh config folder per agent: `gh` finds no login there (see agentEnv).
+    const ghConfigDir = mkdtempSync(join(tmpdir(), "factory-gh-"));
     const child = execa(file, [...args, ...claudeArgs(options, sessionId)], {
       cwd: options.cwd,
-      env: agentEnv(env),
+      env: agentEnv(env, { ghConfigDir }),
       extendEnv: false,
       input: options.prompt,
       reject: false,
@@ -208,6 +251,11 @@ export function createAgentRunner(deps: { store?: Store; events?: FactoryEvents;
     options.signal?.removeEventListener("abort", onAbort);
     await closed;
     await new Promise<void>((resolve) => log.end(resolve));
+    try {
+      rmSync(ghConfigDir, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      // A leftover folder in the temp dir (Windows can hold it for a moment) is harmless and must not fail the turn.
+    }
 
     const stderr = typeof finished.stderr === "string" ? finished.stderr : "";
     let outcome = outcomeOf(summary, finished.exitCode, stderr);

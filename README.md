@@ -90,7 +90,7 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 - Git
 - GitHub CLI (`gh`) 2.50 or newer, logged in
 - Claude Code (`claude`), logged in with your subscription.
-  - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing.
+  - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing. It also keeps your GitHub login away from agents (see "Agent permissions" under [Running an issue](#running-an-issue)).
 - Optional, for screenshots and videos of UI changes: Playwright's Chromium.
   - `pnpm install` installs the `playwright` package (an optional dependency) but never downloads browsers.
   - Run `pnpm exec playwright install chromium` once in the factory's checkout.
@@ -433,6 +433,12 @@ What `factory run` does today:
 
 - Agents run with `--permission-mode dontAsk` and a per-role allowlist (in `.factory/runs/<run>/agent/`).
 - They ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`), so nothing outside the profile applies to an agent reading issue text.
+- They don't get your GitHub login. The engine pushes, opens PRs and merges itself; agents never need to.
+  - GitHub tokens (`GH_TOKEN`, `GITHUB_TOKEN` and the enterprise ones) and `SSH_AUTH_SOCK` are removed from their environment.
+  - `gh` gets an empty config folder of its own, so its GitHub calls are not logged in.
+  - git's credential helpers (Git Credential Manager) are switched off for them, and git never prompts for a login, so a push from an agent's shell has no credentials. Your git config is not touched.
+  - The builder's profile denies `gh` outright.
+  - This is a barrier, not a sandbox: agents run as you, so one that goes looking can still read your OS keyring (`gh auth token` reads it directly). Protect your default branch on GitHub.
 - Agent text the factory posts on an issue (the spec, the critic's problems and questions) has its `@mentions` in backticks, so it never notifies anyone.
 - The engine, not an agent, runs the app and the browser.
 - Bash deny rules are prefix matches, so also protect your default branch on GitHub.

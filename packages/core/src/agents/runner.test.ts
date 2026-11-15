@@ -1,10 +1,13 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { fakeClaude, tempDir, type FakeStep } from "../../test/helpers.js";
+import { fakeClaude, GIT_TEST_TIMEOUT, tempDir, type FakeStep } from "../../test/helpers.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
+import { CHECK_ENV_DENYLIST } from "../gate/gate.js";
 import { Store } from "../store/store.js";
-import { agentEnv, claudeArgs, claudeCommand, createAgentRunner, withoutVars, type AgentRunOptions } from "./runner.js";
+import { runCommand } from "../util/exec.js";
+import { AGENT_ENV_DENYLIST, agentEnv, claudeArgs, claudeCommand, createAgentRunner, withoutVars, type AgentRunOptions } from "./runner.js";
 
 function setup(steps: FakeStep[], extraEnv: NodeJS.ProcessEnv = {}) {
   const fake = fakeClaude(steps);
@@ -35,15 +38,79 @@ function setup(steps: FakeStep[], extraEnv: NodeJS.ProcessEnv = {}) {
 }
 
 describe("agentEnv", () => {
+  /** What every agent environment adds: no auto-memory, no cwd lookup, no git credentials or prompts. */
+  const added = {
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    NoDefaultCurrentDirectoryInExePath: "1",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.helper",
+    GIT_CONFIG_VALUE_0: "",
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "never",
+  };
+
   it("removes ANTHROPIC_API_KEY in any casing so runs use the subscription", () => {
     const env = agentEnv({ ANTHROPIC_API_KEY: "sk-ant-x", anthropic_api_key: "y", PATH: "/bin" });
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", NoDefaultCurrentDirectoryInExePath: "1" });
+    expect(env).toEqual({ PATH: "/bin", ...added });
   });
 
   it("switches auto-memory off even if the caller's env tried to enable it", () => {
     const env = agentEnv({ claude_code_disable_auto_memory: "0", PATH: "/bin" });
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", NoDefaultCurrentDirectoryInExePath: "1" });
+    expect(env).toEqual({ PATH: "/bin", ...added });
   });
+
+  it("removes GitHub tokens and other ways to a login, and points gh at the folder it is given", () => {
+    const env = agentEnv(
+      {
+        PATH: "/bin",
+        GH_TOKEN: "a",
+        github_token: "b",
+        GH_ENTERPRISE_TOKEN: "c",
+        GITHUB_ENTERPRISE_TOKEN: "d",
+        GIT_ASKPASS: "/x/askpass",
+        SSH_ASKPASS: "/x/ssh-askpass",
+        SSH_AUTH_SOCK: "/tmp/agent.sock",
+        GH_CONFIG_DIR: "/home/me/.config/gh",
+        GIT_TERMINAL_PROMPT: "1",
+      },
+      { ghConfigDir: "/tmp/empty" },
+    );
+    expect(env).toEqual({ PATH: "/bin", GH_CONFIG_DIR: "/tmp/empty", ...added });
+  });
+
+  it("replaces config the caller passes through GIT_CONFIG_*, which could set a credential helper back", () => {
+    const env = agentEnv({ PATH: "/bin", GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "a.b", GIT_CONFIG_VALUE_0: "c", git_config_key_1: "credential.helper", GIT_CONFIG_VALUE_1: "manager" });
+    expect(env).toEqual({ PATH: "/bin", ...added });
+  });
+
+  it("keeps every token the checks never get", () => {
+    expect(AGENT_ENV_DENYLIST).toEqual(expect.arrayContaining(CHECK_ENV_DENYLIST));
+  });
+
+  // The real tools, so a change in how gh or git find a login fails here and not in a run.
+  const ghInstalled = runCommand("gh", ["--version"], { cwd: process.cwd() }).code === 0;
+
+  // `gh auth token` still reads a keyring login directly; only the builder's `Bash(gh:*)` deny rule stands in its way.
+  it.skipIf(!ghInstalled)("leaves gh's GitHub calls unauthenticated, whatever login the user has", () => {
+    const empty = tempDir("factory-gh-test-");
+    // Refused before any request is sent (exit 4: not logged in), so this needs no network.
+    const result = spawnSync("gh", ["api", "user"], { cwd: empty, env: agentEnv(process.env, { ghConfigDir: empty }), encoding: "utf8", windowsHide: true, timeout: 60_000 });
+    expect(result.status).toBe(4);
+    expect(result.stderr).toContain("gh auth login");
+  });
+
+  it("gives git no credential helper and no prompt, so a push from an agent's shell has no login", () => {
+    const result = spawnSync("git", ["credential", "fill"], {
+      cwd: tempDir("factory-git-test-"),
+      env: agentEnv(process.env),
+      input: "protocol=https\nhost=github.com\n\n",
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 60_000,
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout.includes("password=")).toBe(false);
+  }, GIT_TEST_TIMEOUT);
 });
 
 describe("claudeArgs", () => {
@@ -127,6 +194,7 @@ describe("createAgentRunner", () => {
   it("returns session, cost, tokens and log path, and records the agent run", async () => {
     const { runner, options, store, run, fake, seen } = setup([{ stream: "success", output: "DECISION: APPROVE\n" }], {
       ANTHROPIC_API_KEY: "sk-ant-must-not-leak",
+      GH_TOKEN: "ghp_must-not-leak",
     });
 
     const result = await runner(options());
@@ -142,6 +210,10 @@ describe("createAgentRunner", () => {
 
     const [call] = fake.calls();
     expect(call!.hasApiKey).toBe(false);
+    expect(call!.hasGithubToken).toBe(false);
+    // gh gets an empty config folder of its own while the agent runs, removed afterwards.
+    expect(call!.ghConfigEntries).toBe(0);
+    expect(existsSync(call!.ghConfigDir!)).toBe(false);
     expect(call!.stdin).toContain("Do the thing.");
     expect(call!.argv).toContain(result.sessionId);
 
