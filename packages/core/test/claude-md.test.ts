@@ -42,6 +42,9 @@ const looksLikePath = (span: string) => span.includes("/") || /\.(ts|mjs|md|json
 // Code identifiers only (camelCase, PascalCase, UPPER_SNAKE, dotted members), not plain words like `claude`.
 const looksLikeSymbol = (span: string) => /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.test(span) && /[A-Z_]/.test(span);
 
+/** Text matched literally inside a RegExp: every special character escaped, backslash included. */
+const escapeRegExp = (text: string) => text.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&");
+
 interface Repo {
   entries: string[];
   /** Concatenated TypeScript and .mjs sources, tests included. */
@@ -78,7 +81,7 @@ function problems(text: string, repo: Repo): { problems: string[]; checked: { pa
     } else if (looksLikeSymbol(span)) {
       checked.symbols++;
       for (const part of span.split(".")) {
-        if (!new RegExp(`(?<![\\w$])${part.replace(/\$/g, "\\$")}(?![\\w$])`).test(repo.source)) found.push(`symbol ${span}`);
+        if (!new RegExp(`(?<![\\w$])${escapeRegExp(part)}(?![\\w$])`).test(repo.source)) found.push(`symbol ${span}`);
       }
     }
   }
@@ -109,6 +112,12 @@ describe("CLAUDE.md", () => {
     expect(result.checked.paths).toBeGreaterThan(30);
     expect(result.checked.symbols).toBeGreaterThan(20);
     expect(result.checked.links).toBeGreaterThan(5);
+  });
+
+  it("matches symbol text literally, special characters included", () => {
+    const special = String.raw`a\b^c$d.e*f+g?h(i)j[k]l{m}n|o/p-q`;
+    expect(new RegExp(`^${escapeRegExp(special)}$`).test(special)).toBe(true);
+    expect(new RegExp(escapeRegExp("a.b")).test("axb")).toBe(false);
   });
 
   it("reports a missing path, symbol, link target and anchor", () => {
