@@ -553,7 +553,8 @@ Layout:
 ```
 apps/cli          the `factory` command
 packages/core     engine: config, SQLite store, state machine, gates, agent runner, prompts,
-                  worktrees, quality gate, capture (app, browser), pipeline driver, init, GitHub issue sync, lessons PR
+                  worktrees, quality gate, capture (app, browser), pipeline driver, init, GitHub issue sync, lessons PR,
+                  and the run actions the CLI formats (run, approve, reject, resume, cancel, show, lessons, drafts)
   prompts/        shipped role prompts (override per repo in .factory/prompts/<role>.md)
   test/           fake `claude` binary and fixtures: tests never spend real usage
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
