@@ -559,6 +559,8 @@ packages/core     engine: config, SQLite store, state machine, gates, agent runn
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)
 ```
 
+[CLAUDE.md](CLAUDE.md) has a file-by-file map, the invariants, checklists for adding a stage, an agent role, a migration or a GitHub call, and the security checklist. Read it before changing the engine, whether you are a person or a Claude Code session.
+
 ### Dogfooding
 
 The factory works on its own issues. It runs from a **pinned copy** of `main`, never from the code its runs change.
