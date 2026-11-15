@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { listRegistered, ServiceError, unregisterProject, type ProjectStatus, type RegistryOptions } from "@factory/core";
+import { findRepoRoot, listRegistered, ServiceError, unregisterProject, type CommandRunner, type ProjectStatus, type RegistryOptions } from "@factory/core";
 import { CliError } from "../context.js";
 import { plain, type Style } from "../style.js";
 
@@ -20,8 +21,12 @@ export function runProjects(options: RegistryOptions = {}, style: Style = plain)
     .join("\n");
 }
 
-export function runProjectsRemove(cwd: string, path: string, options: RegistryOptions = {}): string {
-  const removed = cli(() => unregisterProject(resolve(cwd, path), options));
+export function runProjectsRemove(cwd: string, path: string, options: RegistryOptions = {}, run?: CommandRunner): string {
+  const target = resolve(cwd, path);
+  // The list holds repo roots, so `remove .` from a subfolder means its repo. A folder that has
+  // gone (the usual reason to remove one) is taken as it is.
+  const root = existsSync(target) ? (findRepoRoot(target, run) ?? target) : target;
+  const removed = cli(() => unregisterProject(root, options));
   return `Removed ${removed.path} from the project list (the repository and its database are untouched).`;
 }
 

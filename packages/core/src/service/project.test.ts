@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../test/helpers.js";
 import { initRepo } from "../init/init.js";
+import { Store } from "../store/store.js";
 import { runCommand } from "../util/exec.js";
 import { ServiceError } from "./errors.js";
 import { openProject, openRegisteredProject } from "./project.js";
@@ -53,6 +54,15 @@ describe("openRegisteredProject", () => {
     const gone = join(tempDir(), "deleted");
     expect(() => openRegisteredProject({ path: gone })).toThrow(/no longer exists/);
     expect(existsSync(gone)).toBe(false);
+  });
+
+  it("reports a database that doesn't know the repo", () => {
+    const root = initialised();
+    const store = new Store(join(root, ".factory", "factory.db"));
+    store.db.prepare("DELETE FROM projects").run();
+    store.close();
+    expect(() => openRegisteredProject({ path: root })).toThrow(/is not set up in its \.factory\/factory\.db/);
+    expect(() => openProject(root)).toThrow(/not registered. Run `factory init` first/);
   });
 
   it("reports a missing database without creating one", () => {

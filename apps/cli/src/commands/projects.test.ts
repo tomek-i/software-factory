@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { listRegistered, registerProject } from "@factory/core";
+import { findRepoRoot, listRegistered, registerProject, runCommand } from "@factory/core";
 import { CliError } from "../context.js";
 import { runProjects, runProjectsRemove } from "./projects.js";
 
@@ -50,6 +50,19 @@ describe("runProjectsRemove", () => {
       `Removed ${shop} from the project list (the repository and its database are untouched).`,
     );
     expect(listRegistered(opts)).toEqual([]);
+  });
+
+  it("takes a folder inside a repo to mean that repo", () => {
+    const { dir, opts } = setup();
+    const repo = initialisedRepo(dir, "shop");
+    runCommand("git", ["init", "-q"], { cwd: repo });
+    const root = findRepoRoot(repo)!;
+    mkdirSync(join(repo, "src"));
+    registerProject({ path: root, name: "shop" }, opts);
+
+    expect(runProjectsRemove(join(repo, "src"), ".", opts)).toBe(
+      `Removed ${root} from the project list (the repository and its database are untouched).`,
+    );
   });
 
   it("fails as a CLI error for a path that is not listed", () => {
