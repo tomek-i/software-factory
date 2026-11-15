@@ -61,11 +61,11 @@ async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Prom
   process.once("SIGINT", onSigint);
   let outcome: DraftOutcome;
   try {
-    outcome = await draftIssue(ctx, idea, { ...createDeps(deps), env: deps.env, events, signal: controller.signal });
+    outcome = await draftIssue(ctx, idea, { run: deps.run, env: deps.env, events, signal: controller.signal });
   } finally {
     process.off("SIGINT", onSigint);
   }
-  if (outcome.kind === "created") return describePublished(outcome.published, style);
+  if (outcome.kind === "ready") return approve(ctx, outcome.id, deps);
 
   const { id, file, text, reasons } = outcome;
   const fileRef = relative(ctx.root, file);

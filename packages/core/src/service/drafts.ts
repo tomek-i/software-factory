@@ -30,18 +30,20 @@ export function ensureDraftsIgnored(ctx: ServiceContext): string[] {
 }
 
 export type DraftOutcome =
-  | { kind: "created"; published: PublishedDraft }
+  /** The issue writer gate lets it through: create it with approveDraft. */
+  | { kind: "ready"; id: string }
   /** The issue writer gate wants a human: the draft as written, and why it waits. */
   | { kind: "waiting"; id: string; file: string; text: string; reasons: string[] };
 
 /**
- * Draft an issue from an idea with the issue writer, then create it, or leave it waiting for
- * approval as `gates.issue_writer` decides.
+ * Draft an issue from an idea with the issue writer, and say whether `gates.issue_writer` lets it
+ * be created now. Creating it is a separate step (approveDraft), so `signal` covers only the agent:
+ * stopping must not interrupt half-way through creating issues on GitHub.
  */
 export async function draftIssue(
   ctx: ServiceContext,
   idea: string,
-  deps: DraftDeps & { env?: NodeJS.ProcessEnv; events?: FactoryEvents; signal?: AbortSignal },
+  deps: { run?: CommandRunner; env?: NodeJS.ProcessEnv; events?: FactoryEvents; signal?: AbortSignal },
 ): Promise<DraftOutcome> {
   const root = ctx.project.repo_path;
   // The gate, the model and the prompt steer an agent, so they come from the default branch.
@@ -76,7 +78,7 @@ export async function draftIssue(
   const draft = parseDraft(readFileSync(file, "utf8"));
   const mode = config.gates.issue_writer;
   const gate = resolveGate({ mode, agentDecision: { decision: draft.decision, reasons: draft.reasons }, hardRuleHits: [], unsafe: false });
-  if (gate.outcome === "proceed") return { kind: "created", published: approveDraft(ctx, id, deps) };
+  if (gate.outcome === "proceed") return { kind: "ready", id };
   return { kind: "waiting", id, file, text: readFileSync(file, "utf8"), reasons: gate.reasons };
 }
 

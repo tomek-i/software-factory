@@ -62,14 +62,14 @@ describe("drafts", () => {
     expect(pendingDrafts(ctx, deps.run)).toEqual([]);
   });
 
-  it("creates the draft straight away when the gate lets it through", async () => {
+  it("says a draft is ready when the gate lets it through, and creates nothing itself", async () => {
     const { ctx, created, deps } = context([{ role: "issue_writer", output: SINGLE }], "always");
-    const shown: string[] = [];
 
-    const outcome = await draftIssue(ctx, "export the table as CSV", { ...deps, onCreate: (text) => shown.push(text) });
+    const outcome = await draftIssue(ctx, "export the table as CSV", deps);
 
-    expect(outcome).toMatchObject({ kind: "created", published: { issue: { number: 20 } } });
-    expect(shown).toEqual([SINGLE]);
+    expect(outcome).toEqual({ kind: "ready", id: expect.stringMatching(/^draft-[0-9a-f]{8}$/) });
+    expect(created).toEqual([]);
+    expect(approveDraft(ctx, outcome.id, deps).issue).toEqual({ number: 20, title: "Add CSV export" });
     expect(created.map((c) => c.title)).toEqual(["Add CSV export"]);
   });
 
