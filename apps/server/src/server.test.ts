@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { driveIssue, loadConfig, Store, type CommandRunner, type ProjectContext } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
@@ -13,7 +14,7 @@ const TOKEN = "a".repeat(64);
 const PORT = 4180;
 const HOST = `127.0.0.1:${PORT}`;
 const ORIGIN = `http://${HOST}`;
-const COOKIE = `factory_session=${TOKEN}`;
+const AUTH = { "x-factory-token": TOKEN };
 
 const apps: { close(): Promise<unknown> }[] = [];
 afterEach(async () => {
@@ -53,12 +54,12 @@ function server(contexts: ProjectContext[], options: Partial<ServerOptions> = {}
   return { app, hub };
 }
 
-/** A request from the app's own tab: the right Host, the session cookie and, for changes, its Origin. */
+/** A request from the app's own tab: the right Host, the session token and, for changes, its Origin. */
 function call(app: ReturnType<typeof createServer>, method: "GET" | "POST", url: string, payload?: object) {
   return app.inject({
     method,
     url,
-    headers: { host: HOST, cookie: COOKIE, ...(method === "POST" ? { origin: ORIGIN } : {}) },
+    headers: { host: HOST, ...AUTH, ...(method === "POST" ? { origin: ORIGIN } : {}) },
     ...(method === "POST" ? { payload: payload ?? {} } : {}),
   });
 }
@@ -67,47 +68,74 @@ describe("security", () => {
   it("answers only its own Host, so a rebound DNS name can't reach it", async () => {
     const { app } = server([memoryProject()]);
     for (const host of ["evil.example:4180", "127.0.0.1:9999", "localhost", "127.0.0.1"]) {
-      const res = await app.inject({ method: "GET", url: "/api/projects", headers: { host, cookie: COOKIE } });
+      const res = await app.inject({ method: "GET", url: "/api/projects", headers: { host, ...AUTH } });
       expect(res.statusCode, String(host)).toBe(403);
     }
-    expect((await app.inject({ method: "GET", url: "/api/projects", headers: { host: `localhost:${PORT}`, cookie: COOKIE } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/projects", headers: { host: `localhost:${PORT}`, ...AUTH } })).statusCode).toBe(200);
   });
 
-  it("needs the session cookie for every API call", async () => {
+  it("needs the session token for every API call", async () => {
     const { app } = server([memoryProject()]);
     expect((await app.inject({ method: "GET", url: "/api/projects", headers: { host: HOST } })).statusCode).toBe(401);
-    const wrong = await app.inject({ method: "GET", url: "/api/projects", headers: { host: HOST, cookie: "factory_session=bbb" } });
+    const wrong = await app.inject({ method: "GET", url: "/api/projects", headers: { host: HOST, "x-factory-token": "b".repeat(64) } });
     expect(wrong.statusCode).toBe(401);
     expect(wrong.json()).toEqual({ error: "Open the link `factory serve` printed." });
     expect((await app.inject({ method: "GET", url: "/api/events", headers: { host: HOST } })).statusCode).toBe(401);
   });
 
-  it("refuses a change without this server's own Origin, even with the cookie", async () => {
+  it("refuses a change without this server's own Origin, even with the token", async () => {
     const ctx = memoryProject();
     issue(ctx, 5);
     const { app } = server([ctx]);
     const url = `/api/projects/${projectKey(ctx.root)}/issues/5/unqueue`;
     for (const origin of [undefined, "https://evil.example", "http://127.0.0.1:9999"]) {
-      const res = await app.inject({ method: "POST", url, payload: {}, headers: { host: HOST, cookie: COOKIE, ...(origin ? { origin } : {}) } });
+      const res = await app.inject({ method: "POST", url, payload: {}, headers: { host: HOST, ...AUTH, ...(origin ? { origin } : {}) } });
       expect(res.statusCode, String(origin)).toBe(403);
     }
     expect((await call(app, "POST", url)).statusCode).toBe(200);
   });
 
-  it("turns the token in the printed link into an HttpOnly, SameSite=Strict cookie, and refuses a wrong one", async () => {
-    const { app } = server([memoryProject()]);
-    const res = await app.inject({ method: "GET", url: `/?token=${TOKEN}`, headers: { host: HOST } });
-    expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toBe("/");
-    expect(res.headers["set-cookie"]).toBe(`factory_session=${TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
-    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  it("can't be talked out of the token by spelling an API path differently", async () => {
+    const ctx = memoryProject();
+    issue(ctx, 5);
+    ctx.store.setQueued(ctx.project.id, 5, true);
+    const { app } = server([ctx]);
+    const key = projectKey(ctx.root);
 
-    const bad = await app.inject({ method: "GET", url: "/?token=nope", headers: { host: HOST } });
-    expect(bad.statusCode).toBe(401);
-    expect(bad.headers["set-cookie"]).toBeUndefined();
+    for (const url of ["/%61pi/projects", "/%61pi/scheduler", "/%61pi/events", "/api/%70rojects", "/%2561pi/projects", "//api/projects", "/API/projects"]) {
+      const res = await app.inject({ method: "GET", url, headers: { host: HOST } });
+      // Refused, or the app's page (which holds nothing of the user's): never data.
+      expect(res.statusCode === 401 || res.body === "The web app is not built. Run `pnpm build`.", url).toBe(true);
+    }
+    const post = await app.inject({ method: "POST", url: `/%61pi/projects/${key}/issues/5/unqueue`, payload: {}, headers: { host: HOST, origin: ORIGIN } });
+    expect(post.statusCode).toBe(401);
+    expect(ctx.store.getIssue(ctx.project.id, 5)?.queued_at).not.toBeNull();
   });
 
-  it("serves the app without the cookie, falls back to it for its screens, and can't be framed", async () => {
+  it("refuses a request line with an absolute URL", async () => {
+    const { app } = server([memoryProject()], { port: 0 });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const port = (app.server.address() as { port: number }).port;
+
+    const raw = await new Promise<string>((resolve, reject) => {
+      const socket = connect(port, "127.0.0.1", () => socket.end(`GET http://127.0.0.1:${port}/api/projects HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`));
+      let data = "";
+      socket.on("data", (chunk) => (data += chunk));
+      socket.on("end", () => resolve(data));
+      socket.on("error", reject);
+    });
+
+    expect(raw.split("\r\n")[0]).toBe("HTTP/1.1 400 Bad Request");
+  });
+
+  it("keeps the token out of cookies and referrers", async () => {
+    const { app } = server([memoryProject()]);
+    const res = await app.inject({ method: "GET", url: "/api/projects", headers: { host: HOST, ...AUTH } });
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  it("serves the app without the token, falls back to it for its screens, and can't be framed", async () => {
     const webRoot = tempDir();
     writeFileSync(join(webRoot, "index.html"), "<!doctype html><title>factory</title>");
     mkdirSync(join(webRoot, "assets"));
@@ -162,13 +190,19 @@ describe("projects and the backlog", () => {
     ]);
   });
 
-  it("lists open issues with their place in the queue, trust and latest run", async () => {
+  it("lists open issues with their place among the runs still to start, trust and latest run", async () => {
     const ctx = memoryProject();
     issue(ctx, 3);
     issue(ctx, 4, "mallory");
     issue(ctx, 5);
+    issue(ctx, 6);
+    issue(ctx, 7);
+    // #6 was queued first but its run failed, #3's run is going on: neither waits to start.
+    ctx.store.setQueued(ctx.project.id, 6, true);
+    ctx.store.writeState(ctx.store.createRun({ project_id: ctx.project.id, title: "Issue 6", issue_number: 6 }).id, "failed");
     ctx.store.setQueued(ctx.project.id, 5, true);
     ctx.store.setQueued(ctx.project.id, 3, true);
+    ctx.store.setQueued(ctx.project.id, 7, true);
     const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Issue 3", issue_number: 3 });
     const { app } = server([ctx]);
 
@@ -178,9 +212,11 @@ describe("projects and the backlog", () => {
       github: "o/r",
       syncedAt: expect.any(String),
       issues: [
+        { number: 7, queued: true, position: 2 },
+        { number: 6, queued: true, position: null, run: { state: "failed" } },
         { number: 5, queued: true, position: 1, trusted: true, run: null },
         { number: 4, queued: false, position: null, trusted: false, author: "mallory" },
-        { number: 3, queued: true, position: 2, run: { id: run.id, state: "intake", waitingGate: null } },
+        { number: 3, queued: true, position: null, run: { id: run.id, state: "intake", waitingGate: null } },
       ],
     });
   });
@@ -299,27 +335,35 @@ describe("runs", () => {
       const { app } = server([ctx]);
       const base = `/api/projects/${projectKey(s.root)}/runs`;
 
-      expect((await call(app, "POST", `${base}/nope/approve`)).statusCode).toBe(404);
-      const noReason = await call(app, "POST", `${base}/${run.id}/reject`, { message: " " });
+      const atTriage = { state: "needs_human", gate: "triage" };
+      expect((await call(app, "POST", `${base}/nope/approve`, atTriage)).statusCode).toBe(404);
+      const noReason = await call(app, "POST", `${base}/${run.id}/reject`, { ...atTriage, message: " " });
       expect(noReason.statusCode).toBe(400);
       expect(noReason.json()).toEqual({ error: "Say why with -m." });
-      expect((await call(app, "POST", `${base}/${run.id}/approve`, { message: 5 })).json()).toEqual({ error: "message must be text." });
+      expect((await call(app, "POST", `${base}/${run.id}/approve`, { ...atTriage, message: 5 })).json()).toEqual({ error: "message must be text." });
+      expect((await call(app, "POST", `${base}/${run.id}/approve`, { message: "go" })).json()).toEqual({ error: "Say which state the run was in (state)." });
+      // The page showed another gate than the one the run waits at now: nothing is decided.
+      const stale = await call(app, "POST", `${base}/${run.id}/approve`, { state: "needs_human", gate: "merge" });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json().error).toBe(`Run ${run.id} has moved on: it is needs_human at the triage gate now. Look again before deciding.`);
+      expect(s.store.getRun(run.id)?.state).toBe("needs_human");
 
-      const approved = await call(app, "POST", `${base}/${run.id}/approve`, { message: "go" });
+      const approved = await call(app, "POST", `${base}/${run.id}/approve`, { ...atTriage, message: "go" });
       expect(approved.json()).toMatchObject({ run: { id: run.id, state: "build", lease_owner: null }, gate: "triage", to: "build", continuation: "ready" });
       expect(s.store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "triage", comment: "go" });
-      expect((await call(app, "POST", `${base}/${run.id}/approve`)).json().error).toMatch(/is not waiting at a gate \(it is build\)/);
+      expect((await call(app, "POST", `${base}/${run.id}/approve`, atTriage)).statusCode).toBe(409);
+      expect((await call(app, "POST", `${base}/${run.id}/approve`, { state: "build" })).json().error).toMatch(/is not waiting at a gate \(it is build\)/);
 
-      const cancelled = await call(app, "POST", `${base}/${run.id}/cancel`, {});
+      const cancelled = await call(app, "POST", `${base}/${run.id}/cancel`, { state: "build" });
       expect(cancelled.json()).toMatchObject({ run: { state: "cancelled" }, stopped: 0 });
       expect(s.store.listEvents(run.id).at(-1)?.reason).toContain("cancelled from the web");
 
       // A second run of the same issue, parked at triage again, then rejected.
       const second = await driveIssue(ctx, 12, {}, { owner: "test-server", env: s.fake.env, github: s.github });
-      const rejected = await call(app, "POST", `${base}/${second.run.id}/reject`, { message: "not now" });
+      const rejected = await call(app, "POST", `${base}/${second.run.id}/reject`, { ...atTriage, message: "not now" });
       expect(rejected.json()).toMatchObject({ run: { state: "rejected" }, gate: "triage" });
 
-      const resumed = await call(app, "POST", `${base}/${second.run.id}/resume`, { to: "build", message: "go" });
+      const resumed = await call(app, "POST", `${base}/${second.run.id}/resume`, { state: "rejected", to: "build", message: "go" });
       expect(resumed.json().error).toMatch(/is not waiting for you/);
     },
     GIT_TEST_TIMEOUT,
@@ -338,7 +382,7 @@ describe("events", () => {
     await app.listen({ host: "127.0.0.1", port: 0 });
     const port = (app.server.address() as { port: number }).port;
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/events`, { headers: { cookie: COOKIE } });
+    const res = await fetch(`http://127.0.0.1:${port}/api/events`, { headers: { ...AUTH } });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
     const reader = res.body!.getReader();
@@ -363,5 +407,7 @@ describe("events", () => {
 
     await app.close();
     expect(hub.size).toBe(0);
+    // Interrupted runs keep publishing while the server closes; nothing writes to the ended stream.
+    expect(() => hub.publish({ type: "resumed" })).not.toThrow();
   });
 });

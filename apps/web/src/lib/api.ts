@@ -1,4 +1,5 @@
 import type { Gate, RunState } from "@factory/shared";
+import { sessionToken, TOKEN_HEADER } from "./session";
 
 /** The shapes `apps/server` sends. Kept here rather than imported, so the app needs nothing from Node. */
 
@@ -84,10 +85,11 @@ export class ApiError extends Error {
 }
 
 async function request<T>(method: "GET" | "POST", path: string, body?: object): Promise<T> {
+  const headers: Record<string, string> = { [TOKEN_HEADER]: sessionToken() ?? "" };
+  if (method === "POST") headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method,
-    credentials: "same-origin",
-    headers: method === "POST" ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string };
@@ -96,6 +98,8 @@ async function request<T>(method: "GET" | "POST", path: string, body?: object): 
 }
 
 const runPath = (run: Pick<RunRow, "project" | "id">, action: string) => `/api/projects/${run.project}/runs/${encodeURIComponent(run.id)}/${action}`;
+// What the page showed, so the server refuses a decision about a run that has moved on since.
+const shown = (run: RunRow) => ({ state: run.state, gate: run.waitingGate ?? undefined });
 
 export const api = {
   projects: () => request<ProjectInfo[]>("GET", "/api/projects"),
@@ -105,8 +109,8 @@ export const api = {
   backlog: (project: string) => request<Backlog>("GET", `/api/projects/${project}/issues`),
   sync: (project: string) => request<SyncResult>("POST", `/api/projects/${project}/sync`),
   queue: (project: string, issue: number, queued: boolean) => request<object>("POST", `/api/projects/${project}/issues/${issue}/${queued ? "queue" : "unqueue"}`),
-  approve: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "approve"), { message }),
-  reject: (run: RunRow, message: string) => request<object>("POST", runPath(run, "reject"), { message }),
-  resume: (run: RunRow, to: RunState, message: string) => request<object>("POST", runPath(run, "resume"), { to, message }),
-  cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { message }),
+  approve: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "approve"), { ...shown(run), message }),
+  reject: (run: RunRow, message: string) => request<object>("POST", runPath(run, "reject"), { ...shown(run), message }),
+  resume: (run: RunRow, to: RunState, message: string) => request<object>("POST", runPath(run, "resume"), { ...shown(run), to, message }),
+  cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
 };

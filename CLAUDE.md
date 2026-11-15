@@ -52,7 +52,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
 
 `apps/server/src`: `factory serve` (see [Web mode](README.md#web-mode))
-- `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, cookie and Origin checks, the event stream; `security.ts`: the token and those checks
+- `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
 

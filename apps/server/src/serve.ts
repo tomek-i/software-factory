@@ -92,7 +92,12 @@ export async function startServe(options: ServeOptions, deps: ServeDeps = {}): P
     } catch {
       continue; // the projects screen and the scheduler report it
     }
-    for (const line of reconcile(ctx)) print(`[${entry.name}] ${line}`);
+    try {
+      for (const line of reconcile(ctx)) print(`[${entry.name}] ${line}`);
+    } catch (err) {
+      set.close();
+      throw err;
+    }
   }
 
   const hub = new EventHub();
@@ -123,7 +128,7 @@ export async function startServe(options: ServeOptions, deps: ServeDeps = {}): P
     throw err;
   }
   const address = app.server.address();
-  const url = `http://127.0.0.1:${address && typeof address === "object" ? address.port : port}/?token=${token}`;
+  const url = `http://127.0.0.1:${address && typeof address === "object" ? address.port : port}/#token=${token}`;
   print(`Serving ${entries.length} project${entries.length === 1 ? "" : "s"}, up to ${maxRuns} run${maxRuns === 1 ? "" : "s"} at once.`);
   print(`Open ${url}`);
   print("Stop with `factory stop` (finishes the runs going on) or `factory stop --now`; Ctrl+C interrupts.");

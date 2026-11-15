@@ -27,12 +27,12 @@ import { isTerminal, isTrustedIssue } from "@factory/shared";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import type { EventHub } from "./hub.js";
 import { NotFoundError, type ProjectSet } from "./projects.js";
-import { cookieValue, hostAllowed, originAllowed, SESSION_COOKIE, sessionCookie, tokenMatches } from "./security.js";
+import { hostAllowed, originAllowed, TOKEN_HEADER, tokenMatches } from "./security.js";
 
 export interface ServerOptions {
   projects: ProjectSet;
   hub: EventHub;
-  /** The session token: the link `factory serve` prints carries it. */
+  /** The session token: the link `factory serve` prints carries it, and the page sends it with every API call. */
   token: string;
   /** The port the browser uses, for the Host and Origin checks. Once listening, the real one is used. */
   port: number;
@@ -70,9 +70,14 @@ export interface RunRow {
 }
 
 const WAITING: Run["state"][] = ["needs_human", "needs_info"];
+// Routes anyone may fetch: the app's page and its static files, which hold nothing of the user's.
+// Decided on the route Fastify matched, never on the raw URL, which can spell a path many ways.
+const PUBLIC_ROUTES = new Set(["/", "/*"]);
 const ALL_LIMIT = 200;
 
 class BadRequest extends Error {}
+/** The run moved on since the page showed it: the decision was made about something else. */
+class Conflict extends Error {}
 
 function issueNumber(value: string): number {
   const n = Number(value);
@@ -92,6 +97,21 @@ function runOf(ctx: ProjectContext, id: string): Run {
   const run = ctx.store.getRun(id);
   if (!run || run.project_id !== ctx.project.id) throw new NotFoundError(`No run ${id} in ${ctx.project.name}.`);
   return run;
+}
+
+/**
+ * The page says which state and gate it showed. Runs other processes drive change without the page
+ * hearing of it (#133), and approving "the gate it waits at now" could approve a merge the person
+ * thought was a triage.
+ */
+function expectShown(run: Run, body: unknown): void {
+  const state = text(body, "state");
+  const gate = text(body, "gate");
+  if (state === undefined) throw new BadRequest("Say which state the run was in (state).");
+  if (run.state !== state || (run.waiting_gate ?? "") !== (gate ?? "")) {
+    const now = run.waiting_gate ? `${run.state} at the ${run.waiting_gate} gate` : run.state;
+    throw new Conflict(`Run ${run.id} has moved on: it is ${now} now. Look again before deciding.`);
+  }
 }
 
 function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow {
@@ -133,7 +153,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const { projects, hub, token } = options;
   const log = options.log ?? ((line) => console.error(line));
   const app = Fastify({ logger: false });
-  const streams = new Set<ServerResponse>();
+  /** Each open event stream, with what ends it. */
+  const streams = new Map<ServerResponse, () => void>();
 
   const port = () => {
     const address = app.server.address();
@@ -142,11 +163,14 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const changed = (project?: string) => hub.publish({ type: "changed", project });
 
   app.addHook("onRequest", async (req, reply) => {
+    // Only the origin form (`GET /path`): an absolute URL in the request line is a proxy's business.
+    if (!req.raw.url?.startsWith("/")) return reply.code(400).type("text/plain").send("Bad request.");
     if (!hostAllowed(req.headers.host, port())) return reply.code(403).type("text/plain").send("Forbidden host.");
     if (req.method !== "GET" && req.method !== "HEAD" && !originAllowed(req.headers.origin, port())) {
       return reply.code(403).send({ error: "Forbidden origin." });
     }
-    if (req.url.startsWith("/api/") && !tokenMatches(cookieValue(req.headers.cookie, SESSION_COOKIE), token)) {
+    const route = req.routeOptions.url;
+    if (route !== undefined && !PUBLIC_ROUTES.has(route) && !tokenMatches(req.headers[TOKEN_HEADER], token)) {
       return reply.code(401).send({ error: "Open the link `factory serve` printed." });
     }
   });
@@ -156,6 +180,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
     if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
+    if (err instanceof Conflict) return reply.code(409).send({ error: err.message });
     if (err instanceof ServiceError || err instanceof BadRequest) return reply.code(400).send({ error: err.message });
     if (err instanceof GithubError) return reply.code(502).send({ error: `GitHub: ${err.message}` });
     // Fastify's own (a malformed JSON body, say) carry a 4xx status and a message meant for the client.
@@ -170,7 +195,13 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const ctx = projects.byKey(req.params.key);
     const { store, project, config } = ctx;
     const runs = store.listRuns({ project_id: project.id });
-    const queue = store.listIssues({ project_id: project.id, queued: true }).map((i) => i.number);
+    // Numbered in the order new runs start, as the scheduler picks them: an issue whose run is going
+    // on, or that already had its run since it was queued, isn't waiting to start.
+    const queue = store
+      .listIssues({ project_id: project.id, state: "open", queued: true })
+      .filter((i) => !runs.some((r) => r.issue_number === i.number && (r.created_at >= i.queued_at! || !isTerminal(r.state))))
+      .sort((a, b) => (a.queued_at! < b.queued_at! ? -1 : a.queued_at! > b.queued_at! ? 1 : (a.queue_seq ?? 0) - (b.queue_seq ?? 0)))
+      .map((i) => i.number);
     const issues = store.listIssues({ project_id: project.id, state: "open" }).map((issue) => {
       // Newest first, so the first is the latest.
       const latest = runs.find((r) => r.issue_number === issue.number);
@@ -221,21 +252,24 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (!["active", "waiting", "all"].includes(view)) throw new BadRequest(`Unknown view "${view}".`);
     const now = new Date().toISOString();
     const opened = req.query.project ? [{ key: req.query.project, ctx: projects.byKey(req.query.project) }] : projects.openAll();
-    const rows = opened.flatMap(({ key, ctx }) =>
+    const runs = opened.flatMap(({ key, ctx }) =>
       ctx.store
         .listRuns({ project_id: ctx.project.id })
         .filter((run) => inView(run, view))
-        .map((run) => rowOf(key, ctx, run, now)),
+        .map((run) => ({ key, ctx, run })),
     );
-    rows.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
-    return view === "all" ? rows.slice(0, ALL_LIMIT) : rows;
+    runs.sort((a, b) => (a.run.updated_at < b.run.updated_at ? 1 : a.run.updated_at > b.run.updated_at ? -1 : 0));
+    // Rows cost a query or two each, so cut before building them.
+    return (view === "all" ? runs.slice(0, ALL_LIMIT) : runs).map(({ key, ctx, run }) => rowOf(key, ctx, run, now));
   });
 
   type RunAction = { Params: { key: string; id: string }; Body: unknown };
   const runAction = (name: string, act: (ctx: ProjectContext, run: Run, body: unknown) => object) =>
     app.post<RunAction>(`/api/projects/:key/runs/:id/${name}`, async (req) => {
       const ctx = projects.byKey(req.params.key);
-      const result = act(ctx, runOf(ctx, req.params.id), req.body);
+      const run = runOf(ctx, req.params.id);
+      expectShown(run, req.body);
+      const result = act(ctx, run, req.body);
       changed(req.params.key);
       return result;
     });
@@ -265,19 +299,22 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const res = reply.raw;
     res.writeHead(200, { ...SECURITY_HEADERS, "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     res.write(": connected\n\n");
-    streams.add(res);
     const unsubscribe = hub.subscribe(({ id, event }) => res.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`));
     // Keeps proxies and the browser from giving up on a quiet stream.
     const beat = setInterval(() => res.write(": ping\n\n"), options.heartbeatMs ?? 20_000);
-    req.raw.on("close", () => {
+    // Stops writing before it ends: interrupted runs keep publishing while the server closes.
+    const end = () => {
+      if (!streams.delete(res)) return;
       clearInterval(beat);
       unsubscribe();
-      streams.delete(res);
-    });
+      res.end();
+    };
+    streams.set(res, end);
+    req.raw.on("close", end);
   });
   // An open stream would keep close() waiting forever.
   app.addHook("preClose", async () => {
-    for (const res of streams) res.end();
+    for (const end of [...streams.values()]) end();
   });
 
   const webRoot = options.webRoot;
@@ -286,15 +323,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     hasApp ? reply.sendFile("index.html") : reply.type("text/plain").send("The web app is not built. Run `pnpm build`.");
   if (hasApp) app.register(fastifyStatic, { root: webRoot, index: false });
 
-  app.get<{ Querystring: { token?: string } }>("/", async (req, reply) => {
-    const given = req.query.token;
-    if (given !== undefined) {
-      if (!tokenMatches(given, token)) return reply.code(401).type("text/plain").send("This link is out of date. Open the one `factory serve` printed last.");
-      // The token leaves the address bar: the cookie carries the session from here on.
-      return reply.header("Set-Cookie", sessionCookie(token)).redirect("/");
-    }
-    return sendApp(reply);
-  });
+  app.get("/", async (_req, reply) => sendApp(reply));
 
   app.setNotFoundHandler((req: FastifyRequest, reply) => {
     // Paths of the app's own screens get the app, which routes them itself.

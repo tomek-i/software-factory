@@ -5,11 +5,14 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
  * and only a tab that opened the link `factory serve` printed:
  * - it listens on 127.0.0.1;
  * - the Host header must name it, so a web page can't reach it through DNS rebinding;
- * - every API request carries the session cookie, set from the token in that link;
- * - every change comes with this server's own Origin, so another site can't post to it.
+ * - every API request carries the token from that link in a header. The link has it in the
+ *   fragment, which never reaches a server; the page keeps it and sends it itself. Not a cookie: a
+ *   browser sends cookies to every port of 127.0.0.1, so any other local server the user opens would
+ *   get it. Another site can't add the header without a CORS preflight, which this server never allows;
+ * - every change comes with this server's own Origin as well.
  */
 
-export const SESSION_COOKIE = "factory_session";
+export const TOKEN_HEADER = "x-factory-token";
 
 export function newToken(): string {
   return randomBytes(32).toString("hex");
@@ -23,23 +26,10 @@ export function originAllowed(origin: string | undefined, port: number): boolean
   return origin === `http://127.0.0.1:${port}` || origin === `http://localhost:${port}`;
 }
 
-export function cookieValue(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === name) return rest.join("=");
-  }
-  return undefined;
-}
-
 /** Constant time, so the token can't be guessed one character at a time. */
-export function tokenMatches(given: string | undefined, token: string): boolean {
-  if (given === undefined) return false;
+export function tokenMatches(given: string | string[] | undefined, token: string): boolean {
+  if (typeof given !== "string") return false;
   const a = Buffer.from(given);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-export function sessionCookie(token: string): string {
-  return `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/`;
 }

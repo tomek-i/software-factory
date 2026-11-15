@@ -226,7 +226,7 @@ factory serve --port 4181 --max-runs 2 --no-open
 
 The project picker in the header narrows every screen to one project. The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`) with the same rules; `factory show <run>` has a run's details. Live updates cover the runs `factory serve` itself drives: a `factory run` in another terminal shows on the next refresh.
 
-The server can start agents and merge pull requests, so it answers only your own browser: it listens on 127.0.0.1, refuses requests whose `Host` isn't its own address, needs the session cookie the printed link sets on every API call, and takes changes only from its own page (`Origin`). A new `factory serve` prints a new link. Settings, `--unsafe` and config can't be changed through it.
+The server can start agents and merge pull requests, so it answers only your own browser: it listens on 127.0.0.1, refuses requests whose `Host` isn't its own address, needs the session token from the printed link on every API call, and takes changes only from its own page (`Origin`). The token is in the link's `#` part, which never reaches a server: the page keeps it (in this browser's storage for that address) and sends it in a header, so no other site or local server gets it. A decision is refused when the run has moved on since the page showed it. A new `factory serve` prints a new link. Settings, `--unsafe` and config can't be changed through it.
 
 ### Running an issue
 
@@ -591,7 +591,7 @@ pnpm build       # tsc -b, then the web app with Vite
 pnpm factory init   # run the CLI from source
 ```
 
-To work on the web app with hot reload, run `factory serve --no-open` from the built CLI, then `pnpm -C apps/web dev`. Vite proxies `/api` to the server (`FACTORY_SERVE_URL`, default `http://127.0.0.1:4180`); open the printed link with Vite's port instead of 4180 to get the session cookie. The web tests run in jsdom with a fake server and event stream.
+To work on the web app with hot reload, run `factory serve --no-open` from the built CLI, then `pnpm -C apps/web dev`. Vite proxies `/api` to the server (`FACTORY_SERVE_URL`, default `http://127.0.0.1:4180`); open the printed link with Vite's port instead of 4180. The web tests run in jsdom with a fake server and event stream.
 
 The capture tests that drive a real browser run only where Playwright's Chromium is installed (`pnpm exec playwright install chromium`). They are skipped otherwise. Set `FACTORY_REQUIRE_BROWSER=1` (for example in CI) to make a missing browser fail the tests instead.
 

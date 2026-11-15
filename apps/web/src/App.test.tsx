@@ -36,9 +36,25 @@ class FakeServer {
   /** Answers to posts by path suffix, e.g. a refusal. */
   failures = new Map<string, { status: number; error: string }>();
   projectsStatus = 200;
+  /** The token each request carried. */
+  tokens = new Set<string | null>();
+  private stream?: ReadableStreamDefaultController<string>;
+
+  /** Pushes an event down the page's event stream. */
+  send(event: object) {
+    act(() => this.stream?.enqueue(`id: 1
+data: ${JSON.stringify(event)}
+
+`));
+  }
 
   fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input), "http://127.0.0.1:4180");
+    this.tokens.add(new Headers(init?.headers).get("x-factory-token"));
+    if (url.pathname === "/api/events") {
+      const body = new ReadableStream<string>({ start: (controller) => void (this.stream = controller) }).pipeThrough(new TextEncoderStream());
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
     if (init?.method === "POST") {
       this.posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
@@ -57,30 +73,12 @@ class FakeServer {
   };
 }
 
-/** The page's one EventSource, which a test can push events through. */
-class FakeEventSource {
-  static last?: FakeEventSource;
-  onopen?: () => void;
-  onerror?: () => void;
-  onmessage?: (message: MessageEvent<string>) => void;
-  closed = false;
-  constructor(readonly url: string) {
-    FakeEventSource.last = this;
-  }
-  send(event: object) {
-    act(() => this.onmessage?.({ data: JSON.stringify(event) } as MessageEvent<string>));
-  }
-  close() {
-    this.closed = true;
-  }
-}
-
 let server: FakeServer;
 
 beforeEach(() => {
   server = new FakeServer();
   vi.stubGlobal("fetch", server.fetch);
-  vi.stubGlobal("EventSource", FakeEventSource);
+  localStorage.setItem("factory.token", "t".repeat(64));
 });
 
 afterEach(() => {
@@ -100,12 +98,12 @@ function renderAt(path: string) {
 }
 
 describe("layout", () => {
-  it("counts the runs waiting for you on the Inbox tab, and opens the event stream", async () => {
+  it("counts the runs waiting for you on the Inbox tab, sending the session token", async () => {
     server.runs = [runRow(), runRow({ id: "run-2", state: "needs_info", waitingGate: null }), runRow({ id: "run-3", state: "build", waitingGate: null })];
     renderAt("/runs");
 
     expect(await screen.findByLabelText("1 waiting")).toBeTruthy();
-    expect(FakeEventSource.last?.url).toBe("/api/events");
+    expect([...server.tokens]).toEqual(["t".repeat(64)]);
   });
 
   it("asks for the printed link when there is no session", async () => {
@@ -126,7 +124,7 @@ describe("inbox", () => {
     await user.type(screen.getByLabelText("Note"), "looks right");
     await user.click(screen.getByRole("button", { name: "Approve" }));
 
-    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { message: "looks right" } }]));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "triage", message: "looks right" } }]));
   });
 
   it("rejects only with a reason, and shows the server's refusal", async () => {
@@ -142,7 +140,7 @@ describe("inbox", () => {
     await user.click(submit);
 
     expect((await screen.findByRole("alert")).textContent).toBe("Run run-1 is not waiting at a gate (it is build).");
-    expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/reject", body: { message: "not now" } }]);
+    expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/reject", body: { state: "needs_human", gate: "triage", message: "not now" } }]);
   });
 
   it("resumes an escalation to a stage it picks, and lists runs waiting for their author", async () => {
@@ -161,7 +159,7 @@ describe("inbox", () => {
     await user.type(screen.getByLabelText("Reason"), "try again");
     await user.click(screen.getByRole("button", { name: "Resume" }));
 
-    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/resume", body: { to: "triage", message: "try again" } }]));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/resume", body: { state: "needs_human", to: "triage", message: "try again" } }]));
   });
 
   it("cancels a run without a reason", async () => {
@@ -172,7 +170,7 @@ describe("inbox", () => {
     await user.click(await screen.findByRole("button", { name: /Cancel run/ }));
     await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
 
-    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cancel", body: {} }]));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cancel", body: { state: "needs_human", gate: "triage" } }]));
   });
 });
 
@@ -207,7 +205,8 @@ describe("runs", () => {
 
     expect(await screen.findByText("triage approved")).toBeTruthy();
     expect(screen.getByLabelText("working")).toBeTruthy();
-    FakeEventSource.last!.send({ type: "run", project: "shop", issue: 12, event: { type: "agent:activity", runId: "run-1", agentRunId: "a", summary: "Editing feature.txt" } });
+    await waitFor(() => expect(screen.getByTitle("Live")).toBeTruthy());
+    server.send({ type: "run", project: "shop", issue: 12, event: { type: "agent:activity", runId: "run-1", agentRunId: "a", summary: "Editing feature.txt" } });
 
     expect(await screen.findByText("Editing feature.txt")).toBeTruthy();
     expect(screen.queryByText("triage approved")).toBeNull();

@@ -49,7 +49,7 @@ function setup() {
   return { deps, lines, opened, browser, store, url, requestStop: (now = false) => (stop = { at: Date.now() + 1, now }) };
 }
 
-const api = (base: string, path: string) => fetch(new URL(path, base), { headers: { cookie: `factory_session=${TOKEN}` } });
+const api = (base: string, path: string) => fetch(new URL(path, base), { headers: { "x-factory-token": TOKEN } });
 
 describe("parsePort", () => {
   it("takes a port number and nothing else", () => {
@@ -68,7 +68,7 @@ describe("runServe", () => {
     const served = runServe({ port: 0, maxRuns: 2 }, s.deps);
     const url = await s.url;
 
-    expect(url).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:\\d+/\\?token=${TOKEN}$`));
+    expect(url).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:\\d+/#token=${TOKEN}$`));
     expect(s.browser).toEqual([url]);
     expect(s.lines).toEqual([
       "[shop] finished run abc: its PR was merged",
