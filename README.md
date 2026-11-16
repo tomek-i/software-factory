@@ -308,6 +308,7 @@ What `factory run` does today:
 4. **Build**: a builder agent works in its own worktree and commits.
    - The worktree is `.worktrees/<run>`, on branch `factory/<issue>-<slug>`, created from the latest `origin/<default branch>`.
    - It cannot push.
+   - It runs the quick checks and the tests that cover its change, but not the whole test suite: the quality gate runs that once, on the commit it hands over.
    - The engine scans every new commit for secrets (gitleaks if installed, otherwise built-in patterns). If it finds one, it sends the builder back, so a leaked key never reaches GitHub.
    - Then the engine pushes the branch (never forced) and opens a **draft** PR that closes the issue.
    - The PR title is the one the builder hands over: a Conventional Commit subject such as `feat(cli): add x`, so a squash merge leaves a conventional commit on the default branch.

@@ -877,7 +877,7 @@ export class PipelineDriver {
           sections: [...this.triageScope(dir), ...this.acceptedSpec(run)],
           instructions: [
             `Implement issue #${issue.number} in the working directory on branch \`${worktree.branch}\`.`,
-            "Add tests, run the checks, commit (do not push), then write the output file.",
+            "Add tests, run the quick checks and the tests that cover your change, commit (do not push), then write the output file.",
           ].join("\n"),
         });
 
@@ -2045,7 +2045,8 @@ export class PipelineDriver {
     const resynced = back === "merge" && !conflicts ? readValid("checks", join(roundDir, "resync", "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
     if (checks) {
       parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(join(roundDir, "checks.md"), "utf8").trim(), "");
-      parts.push("Fix the cause, run the checks yourself, commit and push, then write the output file again.");
+      // The engine pushes after checking the commits; the builder cannot (see permissionProfile).
+      parts.push("Fix the cause, rerun what failed, commit (do not push), then write the output file again.");
     } else if (verify) {
       const { findings } = verify;
       parts.push(
@@ -2055,13 +2056,13 @@ export class PipelineDriver {
         JSON.stringify(findings, null, 2),
         "```",
         "",
-        "Fix each one (with a test where it fits), run the checks yourself, commit and push, then write the output file again.",
+        "Fix each one (with a test where it fits), run the quick checks and the tests that cover your fixes, commit (do not push), then write the output file again.",
       );
     } else if (conflicts) {
       parts.push(
         readFileSync(join(roundDir, "resync", "conflicts.md"), "utf8").trim(),
         "",
-        `Merge origin/${this.defaultBranch} into your branch with git merge, resolve the conflicts so both sides keep working, run the checks yourself, commit, then write the output file again.`,
+        `Merge origin/${this.defaultBranch} into your branch with git merge, resolve the conflicts so both sides keep working, run the quick checks and the tests that cover the conflicting files, commit, then write the output file again.`,
       );
     } else if (resynced) {
       parts.push(
@@ -2069,7 +2070,7 @@ export class PipelineDriver {
         "",
         readFileSync(join(roundDir, "resync", "checks.md"), "utf8").trim(),
         "",
-        "The merge commit is on your branch. Fix the cause, run the checks yourself, commit, then write the output file again.",
+        "The merge commit is on your branch. Fix the cause, rerun what failed, commit, then write the output file again.",
       );
     }
     // Only decisions made since the builder last ran were meant for it (not, say, the triage approval).
