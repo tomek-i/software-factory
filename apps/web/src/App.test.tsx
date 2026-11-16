@@ -500,6 +500,47 @@ describe("new issue", () => {
     expect(screen.getByText("Excel export")).toBeTruthy();
   });
 
+  it("keeps the newest progress line in view, unless the person scrolled up to read", async () => {
+    const id = "draft-1a2b3c4d";
+    const activity = (summary: string) => ({ type: "agent:activity", runId: id, agentRunId: "a", summary });
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ running: true, draft: null }), text: null },
+      job: { running: true, events: Array.from({ length: 30 }, (_, i) => activity(`step ${i}`)) },
+    };
+    renderAt(`/new/p1/${id}`);
+
+    const list = await screen.findByRole("list", { name: "Issue writer's progress" });
+    // jsdom has no layout: a 16rem box over a taller list, where each line adds 20px.
+    let scrollTop = 0;
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, get: () => 256 },
+      scrollHeight: { configurable: true, get: () => list.querySelectorAll("li").length * 20 },
+      scrollTop: { configurable: true, get: () => scrollTop, set: (v: number) => void (scrollTop = v) },
+    });
+    await waitFor(() => expect(screen.getByTitle("Live")).toBeTruthy());
+
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Reading src/orders.ts") });
+    expect(await within(list).findByText("Reading src/orders.ts")).toBeTruthy();
+    expect(scrollTop).toBe(list.scrollHeight);
+
+    // Scrolled up to an earlier line: a new one does not pull the box back down.
+    scrollTop = 0;
+    act(() => void list.dispatchEvent(new Event("scroll")));
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Writing the draft") });
+    expect(await within(list).findByText("Writing the draft")).toBeTruthy();
+    expect(scrollTop).toBe(0);
+
+    // Back at the bottom: it follows again.
+    scrollTop = list.scrollHeight - list.clientHeight;
+    act(() => void list.dispatchEvent(new Event("scroll")));
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Checking the sections") });
+    expect(await within(list).findByText("Checking the sections")).toBeTruthy();
+    expect(scrollTop).toBe(list.scrollHeight);
+  });
+
   it("shows why the issue writer failed, and discards the draft it left", async () => {
     const id = "draft-1a2b3c4d";
     const error = "The issue writer failed (aborted). Drop the draft with `factory new --discard draft-1a2b3c4d`.";

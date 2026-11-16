@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CircleStop, Save, Send, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -15,11 +15,29 @@ export const draftPath = (project: string, id: string) => `/new/${encodeURICompo
 
 // Drafts are an agent's writing: everything is rendered as React text (escaped), never as HTML or markdown.
 
+/** How close to the bottom still counts as following the newest line. */
+const FOLLOW_PX = 24;
+
 function Progress({ events, running }: { events: AgentEvent[]; running: boolean }) {
   const lines = events.map(activityLine).filter((l): l is string => l !== undefined);
+  const list = useRef<HTMLOListElement>(null);
+  // Follows the newest line, unless the person scrolled up to read an earlier one.
+  const follow = useRef(true);
+  useLayoutEffect(() => {
+    const el = list.current;
+    if (el && follow.current) el.scrollTop = el.scrollHeight;
+  }, [lines.length, running]);
   if (!running && lines.length === 0) return null;
   return (
-    <ol className="max-h-64 space-y-0.5 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs" aria-label="Issue writer's progress">
+    <ol
+      ref={list}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        follow.current = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_PX;
+      }}
+      className="max-h-64 space-y-0.5 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs"
+      aria-label="Issue writer's progress"
+    >
       {lines.map((line, i) => (
         <li key={i} className="whitespace-pre-wrap">
           {line}
