@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, ProjectInfo, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, ProjectInfo, RunDetail, RunRow } from "./lib/api";
+import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
 
@@ -33,6 +35,8 @@ class FakeServer {
   runs: RunRow[] = [];
   backlog: Backlog = { github: "acme/shop", syncedAt: null, issues: [] };
   posts: { path: string; body: unknown }[] = [];
+  /** The paths of every GET, in order. */
+  gets: string[] = [];
   /** Answers to posts by path suffix, e.g. a refusal. */
   failures = new Map<string, { status: number; error: string }>();
   projectsStatus = 200;
@@ -78,6 +82,7 @@ data: ${JSON.stringify(event)}
       const body = new ReadableStream<string>({ start: (controller) => void (this.stream = controller) }).pipeThrough(new TextEncoderStream());
       return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
     }
+    if (init?.method !== "POST") this.gets.push(url.pathname);
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
     if (init?.method === "POST") {
       this.posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
@@ -301,6 +306,86 @@ describe("backlog", () => {
 
     expect(await screen.findByText("Synced: 3 open, 1 closed since last sync, 2 queued.")).toBeTruthy();
     expect(server.posts.map((p) => p.path)).toEqual(["/api/projects/p1/issues/5/unqueue", "/api/projects/p1/issues/4/queue", "/api/projects/p1/sync"]);
+  });
+
+  function issue(patch: Partial<BacklogIssue> & Pick<BacklogIssue, "number" | "title">): BacklogIssue {
+    return {
+      author: "alice",
+      url: `https://github.com/acme/shop/issues/${patch.number}`,
+      labels: [],
+      queued: false,
+      position: null,
+      trusted: true,
+      run: { id: `r${patch.number}`, state: "build", waitingGate: null },
+      ...patch,
+    };
+  }
+
+  it("shows each issue's labels and filters by one label without asking the server", async () => {
+    server.backlog.issues = [
+      issue({ number: 1, title: "Broken checkout", labels: ["bug", "Area: web"] }),
+      issue({ number: 2, title: "New endpoint", labels: ["api"] }),
+      issue({ number: 3, title: "Plain one" }),
+    ];
+    renderAt("/backlog");
+    const user = userEvent.setup();
+
+    const checkout = (await screen.findByText("Broken checkout")).closest("tr")!;
+    expect(screen.getByRole("columnheader", { name: "Labels" })).toBeTruthy();
+    expect([...checkout.querySelectorAll("td")][2]!.textContent).toBe("bugArea: web");
+    expect(within(screen.getByText("New endpoint").closest("tr")!).getByText("api")).toBeTruthy();
+    expect(within(screen.getByText("Plain one").closest("tr")!).getByText("none")).toBeTruthy();
+
+    const filter = screen.getByRole("combobox", { name: "Filter by label" });
+    expect(within(filter).getAllByRole("option").map((o) => o.textContent)).toEqual(["All labels", "api", "Area: web", "bug"]);
+    const gets = server.gets.filter((p) => p === "/api/projects/p1/issues").length;
+
+    await user.selectOptions(filter, "Area: web");
+    expect(screen.getByText("Broken checkout")).toBeTruthy();
+    expect(screen.queryByText("New endpoint")).toBeNull();
+    expect(screen.queryByText("Plain one")).toBeNull();
+
+    await user.selectOptions(filter, "");
+    expect(screen.getByText("Broken checkout")).toBeTruthy();
+    expect(screen.getByText("New endpoint")).toBeTruthy();
+    expect(screen.getByText("Plain one")).toBeTruthy();
+
+    expect(server.posts).toEqual([]);
+    expect(server.gets.filter((p) => p === "/api/projects/p1/issues").length).toBe(gets);
+  });
+
+  it("falls back to all labels when a sync removes the chosen one, and hides the filter without labels", async () => {
+    server.backlog.issues = [issue({ number: 1, title: "Broken checkout", labels: ["bug"] }), issue({ number: 2, title: "New endpoint", labels: ["api"] })];
+    renderAt("/backlog");
+    const user = userEvent.setup();
+
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Filter by label" }), "bug");
+    expect(screen.queryByText("New endpoint")).toBeNull();
+
+    server.backlog = { ...server.backlog, issues: [issue({ number: 2, title: "New endpoint", labels: ["api"] }), issue({ number: 3, title: "Plain one" })] };
+    await user.click(screen.getByRole("button", { name: /Sync now/ }));
+
+    expect(await screen.findByText("Plain one")).toBeTruthy();
+    expect(screen.getByText("New endpoint")).toBeTruthy();
+    expect((screen.getByRole("combobox", { name: "Filter by label" }) as HTMLSelectElement).value).toBe("");
+
+    server.backlog = { ...server.backlog, issues: [issue({ number: 3, title: "Plain one" })] };
+    await user.click(screen.getByRole("button", { name: /Sync now/ }));
+    await waitFor(() => expect(screen.queryByText("New endpoint")).toBeNull());
+    expect(screen.queryByRole("combobox", { name: "Filter by label" })).toBeNull();
+  });
+
+  it("says so when no issue carries the chosen label", () => {
+    const client = newQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <BacklogTable project="p1" issues={[issue({ number: 1, title: "Broken checkout", labels: ["bug"] })]} label="docs" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("No open issues with label docs.")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByText(/No open issues synced/)).toBeNull();
   });
 });
 
