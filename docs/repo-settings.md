@@ -2,6 +2,7 @@
 
 How `main` is protected and how the repo is set up, with the commands to apply it again.
 Run them as a repo admin with the GitHub CLI.
+Back to the [README](../README.md).
 
 ## What is protected
 
@@ -24,7 +25,8 @@ release-please opens its release PR with the workflow's `GITHUB_TOKEN`. GitHub d
 
 ## Repo settings
 
-- Head branches are deleted after a merge. The factory keeps its local worktree and does not need the remote branch after the merge.
+- Head branches are deleted after a merge.
+  The factory does not need the remote branch after the merge, and removes its own worktree and local branch once the run is done (see [Cleaning up finished runs](running.md#cleaning-up-finished-runs)).
 - Merge commits and rebase merges are off; squash only.
 - Wiki and Discussions are off.
 - Topics: `claude-code`, `ai-agents`, `github-automation`, `developer-tools`.

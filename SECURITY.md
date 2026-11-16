@@ -14,9 +14,9 @@ Please **don't open a public issue**. Report it privately through [GitHub's priv
 
 ## How the factory protects you
 
-The factory runs AI agents on issue text, and on a public repo anyone can write an issue. These are the safeguards. The [README](README.md) has the details.
+The factory runs AI agents on issue text, and on a public repo anyone can write an issue. These are the safeguards. The [README](README.md) and the files it links to in `docs/` have the details.
 
-**Who is trusted** ([Trusted authors](README.md#trusted-authors)):
+**Who is trusted** ([Trusted authors](docs/trust.md#trusted-authors)):
 - Only authors in `trust.authors` (and issues the factory wrote from your own idea) are treated as the spec.
 - Anyone else's issue or comment is handled as untrusted data. A run on it always waits for you before anything is built, and the spec reaches the builder marked as untrusted.
 - The factory only works on issues you start (`factory run`). Opening an issue does not start a run.

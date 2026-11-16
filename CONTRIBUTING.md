@@ -38,5 +38,5 @@ pnpm test
 - Commit messages follow the same format.
 - Every change comes with tests. Never weaken, skip or delete a test to make it pass.
 - `pnpm lint`, `pnpm typecheck` and `pnpm test` must pass. CI runs them on Linux and Windows.
-- Update the README when behaviour, config or commands change.
+- Update the README and `docs/` when behaviour, config or commands change. Write one fact per line.
 - Fill in the PR template: what, why, how it was tested.
