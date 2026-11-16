@@ -28,7 +28,7 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - The engine, not an agent, starts the app, drives the browser and records videos, and only on the app's own origin.
 
 **What a branch cannot change:**
-- Config, prompts, checks, the trust list and lessons are read from the default branch on GitHub, never from the run's own branch.
+- Config, prompts, checks, the trust list, lessons and the `CLAUDE.md` given to agents are read from the default branch on GitHub, never from the run's own branch.
 - Your checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN`, and a secret scan runs on every checked commit.
 
 **What always stops for you:**

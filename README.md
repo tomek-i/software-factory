@@ -276,7 +276,7 @@ factory lessons reject 5 -m "why"  # never apply this lesson; -m is optional
 - What each stage does: [Pipeline](docs/pipeline.md).
 - What each agent may do: [Agent permissions](docs/agent-permissions.md).
 - The files a run leaves in `.factory/runs/<run>/`: [Run artifacts](docs/run-artifacts.md).
-- Config, prompts and lessons are read from the default branch: [What steers the agents](docs/runs.md#what-steers-the-agents).
+- Config, prompts, lessons and the `CLAUDE.md` agents get are read from the default branch: [What steers the agents](docs/runs.md#what-steers-the-agents).
 - Approving and rejecting lessons: [Lessons](docs/lessons.md).
 - Whose issues count as the spec: [Trust](docs/trust.md).
 

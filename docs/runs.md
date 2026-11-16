@@ -138,7 +138,8 @@ Stopping:
 
 ## What steers the agents
 
-- `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`.
+- `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md`, `.factory/lessons.md` and the repo's root `CLAUDE.md` from `origin/<default branch>`.
 - It never reads them from your working copy.
 - So a checked-out branch cannot change its own checks, trust list, gates or prompts.
+- A `CLAUDE.md` changed on a run's branch has no effect on that run's agents (see [Project notes](agent-permissions.md#project-notes-claudemd)).
 - Commit and push config changes before they take effect.

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { PROJECT_NOTES_MAX_CHARS } from "../src/agents/prompts.js";
 
 // CLAUDE.md is a map agents trust instead of reading the code, so a renamed file or function must
 // fail here rather than send them looking for something that is gone. Filesystem only: no git.
@@ -103,6 +104,11 @@ describe("CLAUDE.md", () => {
 
   it(`stays under ${MAX_LINES} lines`, () => {
     expect(text.trimEnd().split(/\r?\n/).length).toBeLessThanOrEqual(MAX_LINES);
+  });
+
+  // Factory agents get this file from the default branch, cut at the cap: all of it must fit.
+  it("fits whole under the cap for agents' prompts", () => {
+    expect(text.trimEnd().length).toBeLessThanOrEqual(PROJECT_NOTES_MAX_CHARS);
   });
 
   it("names only paths, symbols and links that exist", () => {

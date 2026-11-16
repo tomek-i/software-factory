@@ -58,6 +58,20 @@ A repo overrides it with `.factory/prompts/<role>.md` on its default branch.
 - For reviewers and the verifier that is `round-N/change.diff`, with the commits and the full diff.
 - `change.diff` is written with external diff programs and textconv switched off.
 
+## Project notes (CLAUDE.md)
+
+- Agents start with `--setting-sources ""`, so Claude Code does not load the repo's `CLAUDE.md` for them.
+- The engine passes the default branch's root `CLAUDE.md` itself, at the end of the role's system prompt.
+- It is framed as the project's own notes, for orientation; it does not change the role's rules, permissions or output format.
+- Triage, refine, the spec critic, the builder, every reviewer, the verifier and the issue writer get it.
+- The approver, capture and the learner don't.
+- It is read from `origin/<default branch>`, so a `CLAUDE.md` changed on a run's branch has no effect on that run's agents.
+- It is read once per drive, so every agent of a drive gets the same text.
+- Without a `CLAUDE.md` (or with an empty one) the prompts are unchanged.
+- Over 20,000 characters, it is cut at a line break, with a note saying so.
+- Its imports (`@path`) are not followed.
+- Other files (`CLAUDE.local.md`, `.claude/CLAUDE.md`, nested ones) are not read.
+
 ## Read access
 
 - Every role may read, search and list any file you can (`Read`, `Grep` and `Glob` without a path limit).

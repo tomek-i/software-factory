@@ -61,7 +61,16 @@ export function passCritic(config: string): string {
   return /^gates:[ \t]*$/m.test(config) ? config.replace(/^gates:[ \t]*$/m, "gates:\n  critic: always") : `${config.trimEnd()}\ngates:\n  critic: always\n`;
 }
 
-export function setup(steps: FakeStep[], options: { author?: string; config?: string; capture?: CapturePort } = {}) {
+export function setup(
+  steps: FakeStep[],
+  options: {
+    author?: string;
+    config?: string;
+    capture?: CapturePort;
+    /** More files on the default branch, e.g. a `CLAUDE.md`. */
+    files?: Record<string, string>;
+  } = {},
+) {
   const config = passCritic(
     options.config ??
       "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  review: human\n",
@@ -71,6 +80,7 @@ export function setup(steps: FakeStep[], options: { author?: string; config?: st
     "check.js": CHECK_JS,
     ".gitignore": ".factory/runs/\n.worktrees/\n",
     ".factory/config.yaml": config,
+    ...options.files,
   });
   const fake = fakeClaude(steps);
   const store = new Store(":memory:");
