@@ -2045,7 +2045,8 @@ export class PipelineDriver {
     const resynced = back === "merge" && !conflicts ? readValid("checks", join(roundDir, "resync", "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
     if (checks) {
       parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(join(roundDir, "checks.md"), "utf8").trim(), "");
-      parts.push("Fix the cause, rerun what failed, commit and push, then write the output file again.");
+      // The engine pushes after checking the commits; the builder cannot (see permissionProfile).
+      parts.push("Fix the cause, rerun what failed, commit (do not push), then write the output file again.");
     } else if (verify) {
       const { findings } = verify;
       parts.push(
@@ -2055,7 +2056,7 @@ export class PipelineDriver {
         JSON.stringify(findings, null, 2),
         "```",
         "",
-        "Fix each one (with a test where it fits), run the tests that cover your fixes, commit and push, then write the output file again.",
+        "Fix each one (with a test where it fits), run the quick checks and the tests that cover your fixes, commit (do not push), then write the output file again.",
       );
     } else if (conflicts) {
       parts.push(
