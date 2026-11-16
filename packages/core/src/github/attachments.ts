@@ -141,7 +141,12 @@ async function upload(repo: string, prNumber: number, files: string[], options: 
   if (options.signal?.aborted) throw stopped();
   const base = options.baseUrl ?? "https://github.com";
   const context = await openProfile(options.profile ?? githubProfileDir(), true, options.narrate);
-  const abort = () => void context.close().catch(() => undefined);
+  // One close shared by abort and finally: a second context.close() returns at once while the first is
+  // still running, so awaiting it would hand back control before Chromium exited and let go of the
+  // profile, and the next upload (or cleanup) would find it held.
+  let closing: Promise<void> | undefined;
+  const close = () => (closing ??= context.close().catch(() => undefined));
+  const abort = () => void close();
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
     const page = context.pages()[0] ?? (await context.newPage());
@@ -181,7 +186,7 @@ async function upload(repo: string, prNumber: number, files: string[], options: 
     throw new AttachmentError("GitHub's PR page did not work as expected", (err as Error).message);
   } finally {
     options.signal?.removeEventListener("abort", abort);
-    await context.close().catch(() => undefined);
+    await close();
   }
 }
 
