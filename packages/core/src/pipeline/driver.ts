@@ -35,6 +35,7 @@ import { build } from "./stages/build.js";
 import { gate } from "./stages/gate.js";
 import { review } from "./stages/review.js";
 import { capture } from "./stages/capture.js";
+import { pr } from "./stages/pr.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { reviewNotes } from "./reviews.js";
 import {
@@ -231,6 +232,10 @@ export class PipelineDriver {
 
   // ---- stages ---------------------------------------------------------------
 
+  private pr(run: Run): StepResult {
+    return pr(this.ctx, run);
+  }
+
   private capture(run: Run): Promise<StepResult> {
     return capture(this.ctx, run);
   }
@@ -288,20 +293,6 @@ export class PipelineDriver {
       if (!err.problems.some((p) => p.includes("cap reached"))) throw err;
       return park(`${capReason}: ${err.problems.join("; ")}`);
     }
-    return undefined;
-  }
-
-  /** The PR gate, then take the draft PR out of draft so it reads as ready for a human's review. */
-  private pr(run: Run): StepResult {
-    if (run.pr_number === null) return this.escalate(run, "the run has no pull request");
-    const mode = this.deps.config.gates.pr;
-    const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: [], unsafe: run.unsafe });
-    if (gate.outcome === "wait_human") return this.waitForHuman(run, "pr", gate.reasons);
-    const { github } = this.deps;
-    if (github.pullRequestState(run.pr_number).draft) github.markReady(run.pr_number);
-    const git = gitEvidence(this.worktreeOf(run), this.defaultBranch, this.run);
-    this.recordProceed(run, "pr", mode, `PR #${run.pr_number} marked ready`, git.head());
-    this.move(run, "merge", `PR #${run.pr_number} is ready`, undefined, runEvidence(this.runDir(run), run.round, git));
     return undefined;
   }
 
