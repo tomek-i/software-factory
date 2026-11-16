@@ -207,6 +207,8 @@ export function approvableDraft(ctx: DraftContext, ref: string): DraftEntry & { 
 export interface PublishOptions extends DraftContext {
   github: IssueWriterPort;
   ref: string;
+  /** Queue the buildable issues for the factory once they are created. Off by default. */
+  queue?: boolean;
 }
 
 export interface PublishedDraft {
@@ -214,7 +216,9 @@ export interface PublishedDraft {
   /** The single issue, or the parent. */
   issue: { number: number; title: string };
   subIssues: { number: number; title: string }[];
-  /** Queued for the factory: the sub-issues, or the single issue; never a parent. */
+  /** What the factory can build: the sub-issues, or the single issue; never a parent. */
+  buildable: number[];
+  /** The buildable issues that were queued: all of them with `queue`, none without. */
   queued: number[];
 }
 
@@ -225,7 +229,7 @@ function fingerprint(issue: DraftIssue): string {
 
 /**
  * Open a draft's issues on GitHub, link the sub-issues to the parent, then sync them into the store,
- * mark them as created by the factory (so they count as trusted) and queue the buildable ones.
+ * mark them as created by the factory (so they count as trusted) and, with `queue`, queue the buildable ones.
  * The file is read and validated again first: the operator may have edited it. Each step is
  * recorded in the store as it happens, so after a failure the next attempt continues where this
  * one stopped; an entry edited after its issue was created is refused rather than matched by position.
@@ -268,7 +272,8 @@ export function publishDraft(options: PublishOptions): PublishedDraft {
     fetchIssue(store, project, number, run);
     store.markCreatedByFactory(project.id, number);
   }
-  const queued = children.length ? children : [parent];
+  const buildable = children.length ? children : [parent];
+  const queued = options.queue ? buildable : [];
   for (const number of queued) store.setQueued(project.id, number, true);
   store.finishDraft(project.id, entry.id);
 
@@ -276,6 +281,7 @@ export function publishDraft(options: PublishOptions): PublishedDraft {
     id: entry.id,
     issue: { number: parent, title: draft.issue.title },
     subIssues: children.map((number, i) => ({ number, title: draft.subIssues[i]!.title })),
+    buildable,
     queued,
   };
 }

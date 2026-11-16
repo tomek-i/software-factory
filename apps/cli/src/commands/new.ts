@@ -28,23 +28,30 @@ export interface NewOptions {
   approve?: string;
   discard?: string;
   list?: boolean;
+  /** Queue the created issues for the factory; only with an idea or --approve. */
+  queue?: boolean;
 }
 
 /**
  * `factory new "<idea>"`: draft an issue with the issue writer, then create it or wait for approval
- * (`gates.issue_writer`). `--approve`, `--discard` and `--list` handle saved drafts.
+ * (`gates.issue_writer`). `--approve`, `--discard` and `--list` handle saved drafts. Created issues
+ * are queued only with `--queue`.
  */
 export async function runNew(cwd: string, idea: string[], options: NewOptions, deps: NewDeps = {}): Promise<string> {
   const text = idea.join(" ").trim();
   const modes = [text !== "", options.approve !== undefined, options.discard !== undefined, options.list === true].filter(Boolean);
   if (modes.length !== 1) throw new CliError('Give an idea (`factory new "<idea>"`), or one of --approve <draft>, --discard <draft>, --list.');
+  if (options.queue && (options.list || options.discard !== undefined)) {
+    throw new CliError("--queue only goes with an idea or --approve <draft>.");
+  }
+  const queue = options.queue === true;
   if (options.list) return withProject(cwd, (ctx) => listPending(ctx, deps.style ?? plain, deps.run), deps.run);
   if (options.discard !== undefined) return withProject(cwd, (ctx) => discard(ctx, options.discard!, deps.run), deps.run);
-  if (options.approve !== undefined) return withProject(cwd, (ctx) => approve(ctx, options.approve!, deps), deps.run);
-  return withProjectAsync(cwd, (ctx) => draftIdea(ctx, text, deps), deps.run);
+  if (options.approve !== undefined) return withProject(cwd, (ctx) => approve(ctx, options.approve!, queue, deps), deps.run);
+  return withProjectAsync(cwd, (ctx) => draftIdea(ctx, text, queue, deps), deps.run);
 }
 
-async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Promise<string> {
+async function draftIdea(ctx: ProjectContext, idea: string, queue: boolean, deps: NewDeps): Promise<string> {
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
   const added = ensureDraftsIgnored(ctx);
@@ -65,15 +72,17 @@ async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Prom
   } finally {
     process.off("SIGINT", onSigint);
   }
-  if (outcome.kind === "ready") return approve(ctx, outcome.id, deps);
+  if (outcome.kind === "ready") return approve(ctx, outcome.id, queue, deps);
 
   const { id, file, text, reasons } = outcome;
   const fileRef = relative(ctx.root, file);
+  // The --queue choice is not saved with the draft, so the hint carries it to the approval.
+  const approveCmd = `factory new --approve ${id}${queue ? " --queue" : ""}`;
   return [
     text.trim(),
     "",
     `Draft ${style.detail(id)} ${style.attention("is waiting for you")}: ${reasons.join("; ")}`,
-    style.hint(`Edit ${fileRef} if you like, then create it with \`factory new --approve ${id}\`, or drop it with \`factory new --discard ${id}\`.`),
+    style.hint(`Edit ${fileRef} if you like, then create it with \`${approveCmd}\`, or drop it with \`factory new --discard ${id}\`.`),
   ].join("\n");
 }
 
@@ -81,23 +90,26 @@ async function draftIdea(ctx: ProjectContext, idea: string, deps: NewDeps): Prom
  * How a draft is created from the CLI. The draft is printed in full first, whatever the gate: it
  * becomes a trusted issue, so what is about to be created is always on screen.
  */
-function createDeps(deps: NewDeps) {
-  return { run: deps.run, github: deps.github, onCreate: (text: string) => (deps.print ?? console.log)(`${text.trim()}\n`) };
+function createDeps(deps: NewDeps, queue: boolean) {
+  return { run: deps.run, github: deps.github, queue, onCreate: (text: string) => (deps.print ?? console.log)(`${text.trim()}\n`) };
 }
 
 function describePublished(published: PublishedDraft, style: Style): string {
-  const { issue, subIssues, queued } = published;
-  const lines = [
+  const { issue, subIssues, buildable, queued } = published;
+  const created = [
     subIssues.length ? `Created #${issue.number} ${issue.title}, with sub-issues:` : `Created #${issue.number} ${issue.title}.`,
     ...subIssues.map((s) => `  #${s.number} ${s.title}`),
-    `Queued ${queued.map((n) => `#${n}`).join(", ")}.`,
-    style.hint(`Run ${queued.length > 1 ? "them" : "it"} with \`factory run ${queued.join(" ")}\`.`),
   ];
+  const it = buildable.length > 1 ? "them" : "it";
+  const numbers = buildable.join(" ");
+  const lines = queued.length
+    ? [...created, `Queued ${queued.map((n) => `#${n}`).join(", ")}.`, style.hint(`Run ${it} with \`factory run ${numbers}\`.`)]
+    : [...created, style.hint(`Not queued. Queue ${it} with \`factory queue ${numbers}\`, or run ${it} now with \`factory run ${numbers}\`.`)];
   return lines.join("\n");
 }
 
-function approve(ctx: ProjectContext, ref: string, deps: NewDeps): string {
-  return describePublished(approveDraft(ctx, ref, createDeps(deps)), deps.style ?? plain);
+function approve(ctx: ProjectContext, ref: string, queue: boolean, deps: NewDeps): string {
+  return describePublished(approveDraft(ctx, ref, createDeps(deps, queue)), deps.style ?? plain);
 }
 
 function discard(ctx: ProjectContext, ref: string, run?: CommandRunner): string {

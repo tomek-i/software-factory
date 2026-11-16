@@ -137,10 +137,12 @@ The project list holds every repo you ran `factory init` in, so `factory work` a
 ### Writing issues from an idea
 
 ```sh
-factory new "export orders as CSV"   # draft an issue from an idea
-factory new --list                   # drafts waiting for you
-factory new --approve <draft>        # create a draft on GitHub, sync it and queue it
-factory new --discard <draft>        # drop a draft
+factory new "export orders as CSV"           # draft an issue from an idea
+factory new "export orders as CSV" --queue   # the same, and queue the issues once created
+factory new --list                           # drafts waiting for you
+factory new --approve <draft>                # create a draft on GitHub and sync it
+factory new --approve <draft> --queue        # the same, and queue the issues
+factory new --discard <draft>                # drop a draft
 ```
 
 `factory new` runs an issue writer agent on your idea.
@@ -169,8 +171,10 @@ Creating a draft:
 - opens the issues on GitHub (no labels);
 - links each sub-issue to the parent as a real GitHub sub-issue;
 - syncs them into `.factory/factory.db`;
-- queues the buildable ones: the single issue, or the sub-issues (never their parent);
-- prints the numbers and the `factory run` command to start them.
+- with `--queue` only, queues the buildable ones: the single issue, or the sub-issues (never their parent);
+- prints the numbers, and the `factory queue` and `factory run` commands to queue or start them.
+
+Without `--queue`, nothing is queued, so `factory work` and `factory serve` leave the new issues alone until you queue them. The `--queue` choice is not saved with a draft that waits for you: pass it again with `--approve` (the hint shows the command).
 
 If something goes wrong:
 
