@@ -79,6 +79,23 @@ describe("rolePrompt with the project's CLAUDE.md", () => {
     expect(asked).toEqual([".factory/prompts/builder.md", PROJECT_NOTES_FILE]);
   });
 
+  it("reads it once per reader, so every agent of a drive gets the same notes", () => {
+    let notes = NOTES;
+    const asked: string[] = [];
+    const read = (p: string) => {
+      asked.push(p);
+      return p === PROJECT_NOTES_FILE ? notes : undefined;
+    };
+    const first = rolePrompt("triage", read);
+    notes = "# Changed later\n";
+    expect(rolePrompt("builder", read)).toContain(NOTES.trimEnd());
+    expect(rolePrompt("reviewer", read, "code")).not.toContain("Changed later");
+    expect(first).toContain(NOTES.trimEnd());
+    expect(asked.filter((p) => p === PROJECT_NOTES_FILE)).toHaveLength(1);
+    // A new reader (a new drive) reads it again.
+    expect(rolePrompt("builder", (p) => read(p))).toContain("# Changed later");
+  });
+
   it("is not given to the approver, capture or the learner", () => {
     for (const role of ["approver", "capture", "learner"] as const) {
       expect(rolePrompt(role, withNotes(NOTES))).toBe(rolePrompt(role, none));

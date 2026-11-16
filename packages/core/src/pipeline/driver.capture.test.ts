@@ -202,22 +202,29 @@ describe("PipelineDriver > capture", () => {
     expect(git(root, "ls-remote", "origin", "refs/heads/factory/12-add-the-feature").split(/\s+/)[0]).toBe(git(worktree, "rev-parse", "HEAD"));
   });
 
-  it("goes on to the PR when the app does not start, the capture throws or the upload fails, and says so", async () => {
-    const cases = [
-      { capture: fakeCapture({ result: { status: "failed", problem: "the app did not start (after): exited (code 1)", pages: [] } }), pr: "Screenshots could not be taken: `the app did not start (after): exited (code 1)`." },
-      { capture: fakeCapture({ throws: "browser crashed" }), pr: "Screenshots could not be taken: `capture failed: browser crashed`." },
-      { capture: fakeCapture({ uploadError: "gh release create failed: HTTP 403" }), pr: "Screenshots were taken but could not be uploaded: `gh release create failed: HTTP 403`." },
-    ];
-    for (const { capture, pr } of cases) {
-      const { driver, root, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
-      const run = driver.startRun(12);
-      expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
-      expect(edits.at(-1)!.body).toContain(`## Screenshots\n${pr} Details: \`factory show ${run.id} capture\`.`);
-      const report = readFileSync(join(runDirOf(root, run.id), "round-1", "capture-report.md"), "utf8");
-      expect(report).toMatch(/could not be (taken|uploaded)/);
-      // Nothing reached GitHub, so there is no release to delete when the run ends unmerged.
-      expect(existsSync(join(runDirOf(root, run.id), MEDIA_MARKER))).toBe(false);
-    }
+  // One test per case: each drives a whole run, and three in one test did not fit one test's timeout on a busy machine.
+  it.each([
+    {
+      when: "the app does not start",
+      options: { result: { status: "failed", problem: "the app did not start (after): exited (code 1)", pages: [] } },
+      pr: "Screenshots could not be taken: `the app did not start (after): exited (code 1)`.",
+    },
+    { when: "the capture throws", options: { throws: "browser crashed" }, pr: "Screenshots could not be taken: `capture failed: browser crashed`." },
+    {
+      when: "the upload fails",
+      options: { uploadError: "gh release create failed: HTTP 403" },
+      pr: "Screenshots were taken but could not be uploaded: `gh release create failed: HTTP 403`.",
+    },
+  ] satisfies { when: string; options: Parameters<typeof fakeCapture>[0]; pr: string }[])("goes on to the PR when $when, and says so", async ({ options, pr }) => {
+    const capture = fakeCapture(options);
+    const { driver, root, edits } = setup(steps(), { config: captureConfig(), capture: capture.port });
+    const run = driver.startRun(12);
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
+    expect(edits.at(-1)!.body).toContain(`## Screenshots\n${pr} Details: \`factory show ${run.id} capture\`.`);
+    const report = readFileSync(join(runDirOf(root, run.id), "round-1", "capture-report.md"), "utf8");
+    expect(report).toMatch(/could not be (taken|uploaded)/);
+    // Nothing reached GitHub, so there is no release to delete when the run ends unmerged.
+    expect(existsSync(join(runDirOf(root, run.id), MEDIA_MARKER))).toBe(false);
   });
 
   it("keeps the app's log out of the PR: only the first line goes there, the rest stays in the report", async () => {

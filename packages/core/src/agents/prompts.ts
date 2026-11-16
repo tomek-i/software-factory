@@ -42,11 +42,22 @@ function capNotes(text: string): string {
 }
 
 /**
+ * `CLAUDE.md` as each reader saw it the first time. A reader serves one drive (or one draft), so
+ * every agent of it gets the same notes, and a run's many agent turns cost one `git show`, not one each.
+ */
+const notesSeen = new WeakMap<TrustedReader, string | undefined>();
+
+function readNotes(read: TrustedReader): string | undefined {
+  if (!notesSeen.has(read)) notesSeen.set(read, read(PROJECT_NOTES_FILE));
+  return notesSeen.get(read);
+}
+
+/**
  * The default branch's `CLAUDE.md` as a prompt section, or undefined when it is missing or empty.
  * Imports (`@path` lines) stay plain text: nothing else is read.
  */
 export function projectNotes(read: TrustedReader): string | undefined {
-  const text = read(PROJECT_NOTES_FILE)?.trimEnd();
+  const text = readNotes(read)?.trimEnd();
   if (!text?.trim()) return undefined;
   return `# Project notes (${PROJECT_NOTES_FILE})
 
