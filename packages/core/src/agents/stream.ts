@@ -1,3 +1,5 @@
+import { redactPaths } from "../util/redact.js";
+
 /**
  * Folds Claude Code's `--output-format stream-json` lines into a summary of the agent run.
  * Unknown event types are ignored so newer CLI versions don't break parsing.
@@ -36,16 +38,20 @@ function toIso(value: unknown): string | undefined {
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 
-function describeToolUse(block: Json): string | undefined {
+function describeToolUse(block: Json, roots: string[]): string | undefined {
   if (block.type !== "tool_use" || typeof block.name !== "string") return undefined;
   const input = isObject(block.input) ? block.input : {};
   const detail = input.command ?? input.file_path ?? input.pattern ?? input.path;
-  const text = typeof detail === "string" ? detail.replace(/\s+/g, " ").slice(0, 120) : "";
+  // Shortened before the cut, so a deep path keeps its file name rather than the folders above it.
+  const text = typeof detail === "string" ? redactPaths(detail, { roots }).replace(/\s+/g, " ").slice(0, 120) : "";
   return text ? `${block.name}: ${text}` : String(block.name);
 }
 
-/** Apply one stream line to the summary. Returns activity lines produced by this line. */
-export function applyStreamLine(summary: StreamSummary, line: string): string[] {
+/**
+ * Apply one stream line to the summary. Returns activity lines produced by this line. Paths in them
+ * under one of `roots` (the agent's folder, the repository) are shown relative to it, see redactPaths.
+ */
+export function applyStreamLine(summary: StreamSummary, line: string, roots: string[] = []): string[] {
   let event: unknown;
   try {
     event = JSON.parse(line);
@@ -63,7 +69,7 @@ export function applyStreamLine(summary: StreamSummary, line: string): string[] 
       const content = Array.isArray(message.content) ? message.content : [];
       for (const block of content) {
         if (!isObject(block)) continue;
-        const tool = describeToolUse(block);
+        const tool = describeToolUse(block, roots);
         if (tool) produced.push(tool);
       }
       break;
