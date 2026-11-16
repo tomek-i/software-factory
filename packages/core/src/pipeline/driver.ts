@@ -4,13 +4,11 @@ import {
   isBlocking,
   isTerminal,
   isTrustedIssue,
-  parseCapturePlan,
   parseLessons,
   parseVerdict,
   REVIEW_LENSES,
   resolveModel,
   type AgentRole,
-  type CapturePlan,
   type Gate,
   type GateMode,
   type ParsedVerdict,
@@ -21,13 +19,11 @@ import {
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles, type IssueText, type PromptRole } from "../agents/prompts.js";
 import { runTurn, type TurnResult } from "../agents/turn.js";
 import type { CapturePort } from "../capture/capture.js";
-import { renderCaptureReport, screenshotsSection, type CaptureOutcome } from "../capture/report.js";
 import { runQualityGate } from "../gate/gate.js";
 import { gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
-import { MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { CLEANUP_MARKER, cleanupFinishedRun, describeCleanup } from "./cleanup.js";
 import { factoryComment, type PullRequestState, type RequiredCheck } from "../github/port.js";
-import { PORT_BLOCK_SIZE, type Issue, type Run, type RunPatch } from "../store/store.js";
+import { type Issue, type Run, type RunPatch } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 import { resolveGate, type GateInput } from "./gates.js";
 import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
@@ -38,6 +34,7 @@ import { critic } from "./stages/critic.js";
 import { build } from "./stages/build.js";
 import { gate } from "./stages/gate.js";
 import { review } from "./stages/review.js";
+import { capture } from "./stages/capture.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { reviewNotes } from "./reviews.js";
 import {
@@ -234,6 +231,10 @@ export class PipelineDriver {
 
   // ---- stages ---------------------------------------------------------------
 
+  private capture(run: Run): Promise<StepResult> {
+    return capture(this.ctx, run);
+  }
+
   private review(run: Run): Promise<StepResult> {
     return review(this.ctx, run);
   }
@@ -288,200 +289,6 @@ export class PipelineDriver {
       return park(`${capReason}: ${err.problems.join("; ")}`);
     }
     return undefined;
-  }
-
-  /**
-   * Screenshots (before and after) and a walkthrough video of a UI change, uploaded and shown in the
-   * PR description. A capture agent plans what to shoot; the engine starts the app and drives the
-   * browser. Nothing here fails the run: whatever goes wrong is reported in round-N/capture-report.md
-   * and the PR, and the run goes on to the PR gate. Only a usage limit or a cancel stops it here.
-   */
-  private async capture(run: Run): Promise<StepResult> {
-    const skipped = this.captureSkipped(run);
-    if (skipped) {
-      this.info(run, `capture skipped: ${skipped}`);
-      this.move(run, "pr", `capture skipped: ${skipped}`);
-      return undefined;
-    }
-    const dir = this.runDir(run);
-    const roundDir = join(dir, `round-${run.round}`);
-    const captureDir = join(roundDir, "capture");
-    const worktree = this.worktreeOf(run);
-    // A capture interrupted earlier (usage limit, crash) starts afresh rather than mixing two attempts.
-    rmSync(captureDir, { recursive: true, force: true });
-    mkdirSync(captureDir, { recursive: true });
-
-    const outcome: CaptureOutcome = {};
-    const planned = await this.capturePlan(run, worktree, roundDir);
-    if ("stop" in planned) return planned.stop;
-    // Undoing what the app writes is only safe on a tree that was clean: a run resumed into capture
-    // may hold a human's uncommitted edits, which must never be wiped.
-    const dirty = planned.plan ? this.uncommitted(worktree) : [];
-    if (planned.problem) outcome.problem = planned.problem;
-    else if (!planned.plan) outcome.skipped = planned.skip;
-    else if (dirty.length) outcome.skipped = `the worktree has uncommitted changes (${dirty.slice(0, 5).join(", ")}), so the app was not started`;
-    else {
-      const ports = run.port_base === null ? [] : Array.from({ length: PORT_BLOCK_SIZE }, (_, i) => run.port_base! + i);
-      try {
-        outcome.result = await this.capturer.capture({
-          runId: run.id,
-          root: this.deps.project.repo_path,
-          worktreePath: worktree.path,
-          defaultBranch: this.defaultBranch,
-          app: { ...this.deps.config.app, start: this.deps.config.app.start! },
-          plan: planned.plan,
-          outDir: captureDir,
-          ports,
-          signal: this.signal,
-        });
-      } catch (err) {
-        outcome.problem = `capture failed: ${(err as Error).message.split("\n")[0]}`;
-      }
-      if (this.load(run.id).state !== run.state) return undefined; // cancelled while the app ran
-      outcome.restored = this.restoreWorktree(worktree);
-      await this.uploadMedia(run, outcome);
-      if (this.load(run.id).state !== run.state) return undefined; // cancelled while the media uploaded
-    }
-
-    writeFileSync(join(roundDir, "capture-report.md"), renderCaptureReport(outcome));
-    // The PR's copy: local paths shortened. The report above keeps the full text.
-    const roots = [this.deps.project.repo_path, worktree.path];
-    writeFileSync(join(captureDir, "screenshots.md"), `${screenshotsSection(outcome, run.id, { roots })}\n`);
-    this.updatePrDescription(run);
-    const summary = outcome.skipped
-      ? `no screenshots: ${outcome.skipped}`
-      : outcome.problem || outcome.result?.status !== "captured"
-        ? `screenshots could not be taken: ${(outcome.problem ?? outcome.result?.problem ?? "").split("\n")[0]}`
-        : `captured ${outcome.result.pages.length} page(s)${outcome.uploadProblem ? "; the upload failed" : ""}`;
-    this.info(run, `capture: ${summary} (round-${run.round}/capture-report.md)`);
-    this.move(run, "pr", `capture: ${summary}`.slice(0, 500));
-    return undefined;
-  }
-
-  /** Why the capture stage has nothing to do: the change is not user-visible, or there is no app to start. */
-  private captureSkipped(run: Run): string | undefined {
-    const path = join(this.runDir(run), "triage.md");
-    const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
-    if (!surfaces.includes("ui")) return "triage did not list ui in SURFACES";
-    if (!this.deps.config.app.start) return "app.start is not configured";
-    return undefined;
-  }
-
-  /**
-   * The capture agent's plan, or why there is none. `stop` ends the stage for now (a usage limit, or
-   * the run was cancelled while the agent ran).
-   */
-  private async capturePlan(run: Run, worktree: Worktree, roundDir: string): Promise<{ plan?: CapturePlan; skip?: string; problem?: string } | { stop: StepResult }> {
-    const dir = this.runDir(run);
-    const issue = this.issueOf(run);
-    const outputFile = verdictPath(dir, "capture", run.round);
-    const changeFile = join(roundDir, "change.diff");
-    let base: string;
-    let head: string;
-    try {
-      head = gitEvidence(worktree, this.defaultBranch, this.run).head();
-      base = freshBase(worktree.path, this.defaultBranch, head, this.run);
-      // The reviewers' copy, unless the run got here some other way (e.g. a human's resume).
-      if (!existsSync(changeFile)) writeFileSync(changeFile, changeReport(worktree.path, base, head, this.run));
-    } catch (err) {
-      return { problem: `could not prepare the change for the capture agent: ${(err as Error).message}` };
-    }
-    const files = writeRoleFiles(dir, "capture", rolePrompt("capture", this.deps.read), permissionProfile("capture", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
-    const turn = await runTurn({
-      run: this.deps.runAgent,
-      kind: "capture",
-      outputFile,
-      validate: (verdict) => (verdict.header.CAPTURE === "PLAN" ? parseCapturePlan(verdict.body).problems : []),
-      agent: {
-        ...this.agentBase(run, "capture", worktree.path),
-        ...files,
-        addDirs: [dir],
-        prompt: renderTask({
-          role: "capture",
-          runId: run.id,
-          runDir: dir,
-          workDir: worktree.path,
-          outputFile,
-          issue: this.issueText(issue),
-          trusted: isTrustedIssue(this.deps.config, issue),
-          lessons: this.lessons(),
-          branch: worktree.branch,
-          defaultBranch: this.defaultBranch,
-          sections: [...this.triageScope(dir), ...this.acceptedSpec(run)],
-          instructions: [
-            `Plan the screenshots and the walkthrough of the change on branch \`${worktree.branch}\`.`,
-            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit: \`${head}\`.`,
-            `The commits and the full diff are in \`${changeFile}\`. Read it and the code you need, then write the output file.`,
-          ].join("\n"),
-        }),
-      },
-    });
-    if (turn.status === "ok") {
-      if (turn.verdict.header.CAPTURE === "SKIP") return { skip: `the capture agent found nothing to show${turn.verdict.summary[0] ? ` (${turn.verdict.summary[0]})` : ""}` };
-      return { plan: parseCapturePlan(turn.verdict.body).plan! };
-    }
-    if (turn.status === "failed" && turn.agent.outcome.kind === "rate_limited") return { stop: this.agentTrouble(run, "capture", turn) };
-    if (this.load(run.id).state !== run.state) return { stop: undefined };
-    return { problem: this.troubleReason("capture agent", turn) };
-  }
-
-  /**
-   * Undo what the app wrote into the worktree (build output that is not ignored, a generated
-   * file): the tree was clean when capture began, and the PR and merge stages need it clean.
-   * Ignored files (node_modules, caches) stay. Returns the paths that were undone.
-   */
-  private restoreWorktree(worktree: Worktree): string[] {
-    const changed = this.uncommitted(worktree);
-    if (changed.length === 0) return [];
-    const git = (args: string[]) => this.run("git", args, { cwd: worktree.path });
-    git(["checkout", "--", "."]);
-    git(["clean", "-fdq"]);
-    return changed;
-  }
-
-  /** Paths `git status` reports as changed or untracked (not ignored) in the worktree. */
-  private uncommitted(worktree: Worktree): string[] {
-    const status = this.run("git", ["status", "--porcelain"], { cwd: worktree.path });
-    if (status.code !== 0) throw new Error(`git status failed: ${status.stderr}`);
-    return status.stdout.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3));
-  }
-
-  /** Upload the screenshots and the video. A failure is noted in the outcome; it never stops the run. */
-  /** Best effort, like `factory cancel` itself: delete the release of a run that ended while it uploaded. */
-  private dropStoppedRunsRelease(run: Run): void {
-    try {
-      this.capturer.discard(run.id);
-      rmSync(join(this.runDir(run), MEDIA_MARKER));
-    } catch (err) {
-      this.info(run, `could not delete the screenshots release (${(err as Error).message.split("\n")[0]}); delete it with \`gh release delete ${mediaTag(run.id)} --yes\``);
-    }
-  }
-
-  private async uploadMedia(run: Run, outcome: CaptureOutcome): Promise<void> {
-    const result = outcome.result;
-    if (result?.status !== "captured") return;
-    const files = [
-      ...result.pages.flatMap((p) => [...p.after, ...(p.before ?? [])].flatMap((s) => (s.file ? [s.file] : []))),
-      // The narrated video, when there is one, instead of the silent one: the PR links only one.
-      ...(result.walkthrough?.narrated ? [result.walkthrough.narrated] : result.walkthrough?.video ? [result.walkthrough.video] : []),
-      ...(result.walkthrough?.screenshots ?? []),
-    ];
-    if (files.length === 0) return;
-    try {
-      const published = await this.capturer.publish(run.id, run.pr_number, files, this.signal);
-      outcome.urls = published.urls;
-      outcome.mediaFallback = published.fallback;
-      outcome.mediaFallbackDetail = published.fallbackDetail;
-      // So ending the run without merging can delete the release again (see deleteMedia). PR
-      // attachments cannot be deleted, so there is nothing to remember for them.
-      if (published.release) {
-        writeFileSync(join(this.runDir(run), MEDIA_MARKER), `${published.release}\n`);
-        // Cancelled while it uploaded: the cancel looked for the marker before it was written.
-        if (this.load(run.id).state !== run.state) this.dropStoppedRunsRelease(run);
-      }
-    } catch (err) {
-      outcome.uploadProblem = (err as Error).message.split("\n")[0];
-    }
   }
 
   /** The PR gate, then take the draft PR out of draft so it reads as ready for a human's review. */
