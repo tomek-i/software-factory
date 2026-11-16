@@ -659,7 +659,7 @@ The factory works on its own issues. It runs from the **published npm package**,
 
 ### Releases
 
-[release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, bumps the version in `package.json`, `apps/cli/package.json` and `factory --version`, and publishes the CLI to npm as [`@tomek-i/software-factory`](https://www.npmjs.com/package/@tomek-i/software-factory). Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
+[release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, bumps the version in `package.json`, `apps/cli/package.json` and `factory --version`, and stages the CLI on npm as [`@tomek-i/software-factory`](https://www.npmjs.com/package/@tomek-i/software-factory). Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
 
 CI does not run on the release PR: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for that token's events. The PR only changes `CHANGELOG.md`, `.release-please-manifest.json` and version strings.
 
@@ -667,9 +667,9 @@ The npm package is `apps/cli`. `apps/cli/scripts/bundle.mjs` bundles the CLI and
 
 1. Merge the first release PR that includes the npm package. Its `npm` job fails, because the package does not exist yet.
 2. Publish that release by hand from its tag, so the npm version matches the git tag: `git checkout v<version>`, `npm login`, `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm --filter @tomek-i/software-factory publish`.
-3. On npmjs.com, add a trusted publisher in the package's settings: GitHub Actions, repository `tomek-i/software-factory`, workflow `release-please.yml`, no environment.
+3. On npmjs.com, add a trusted publisher in the package's settings: GitHub Actions, repository `tomek-i/software-factory`, workflow `release-please.yml`, no environment. Leave "Allow npm publish" and "Allow npm dist-tag" unticked, and set publishing access to require two-factor authentication without bypass tokens.
 
-Every release after that publishes itself.
+After that, each release **stages** its version on npm (`npm stage publish`) rather than publishing it: nothing goes live without a maintainer's 2FA, even if the workflow or an action it uses is compromised. To make a release live, approve it on npmjs.com, or run `npm stage list @tomek-i/software-factory` and then `npm stage approve <stage-id>`.
 
 ## Contributing
 
