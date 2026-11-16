@@ -23,14 +23,17 @@ function Waiting({ run }: { run: RunRow }) {
         </span>
       </CardHeader>
       <CardContent className="space-y-3">
-        {run.reason && <p className="text-sm">{run.reason}</p>}
+        {run.reason && <p className="text-sm xl:max-w-3xl">{run.reason}</p>}
         <p className="text-xs text-muted-foreground">
           <Link to={runPath(run)} className="underline">
             Details
           </Link>
           : triage, spec, build, reviews and the run's files.
         </p>
-        <RunActions run={run} />
+        {/* The reject/resume form keeps a readable width on wide screens; the card header does not. */}
+        <div className="xl:max-w-3xl">
+          <RunActions run={run} />
+        </div>
       </CardContent>
     </Card>
   );
