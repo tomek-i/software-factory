@@ -1,6 +1,25 @@
+import { DEFAULT_MODELS, type ModelSpec } from "@factory/shared";
 import type { Detection } from "./detect.js";
 
 const q = (s: string) => JSON.stringify(s);
+
+const spec = (s: ModelSpec) => (s.effort ? `{ model: ${q(s.model!)}, effort: ${q(s.effort)} }` : q(s.model!));
+
+/** The recommended models as a commented-out `models:` section, generated so it never drifts from the schema. */
+function renderModelDefaults(): string {
+  const group = (name: string, entries: Record<string, ModelSpec>) => [
+    `#   ${name}:`,
+    ...Object.entries(entries).map(([key, value]) => `#     ${key}: ${spec(value)}`),
+  ];
+  return [
+    "# models:",
+    `#   default: ${q(DEFAULT_MODELS.default)}`,
+    `#   effort: ${q(DEFAULT_MODELS.effort)}`,
+    ...group("roles", DEFAULT_MODELS.roles),
+    ...group("reviews", DEFAULT_MODELS.reviews),
+    ...group("high_risk", DEFAULT_MODELS.high_risk),
+  ].join("\n");
+}
 
 /** Render a commented starter config. Values not listed fall back to the schema defaults. */
 export function renderConfig(detection: Detection, options: { operatorLogin?: string } = {}): string {
@@ -62,31 +81,15 @@ reviews:
   always: [code, security, docs]
   ui: [ux, ui]          # only when the change touches the UI
 
-# Model and effort per agent. An entry is a model alias ("sonnet") or { model, effort }; either half
-# falls back to the less specific level. Effort: low | medium | high | xhigh | max.
+# Model and effort per agent. Left out, every agent uses the recommended model below, and a better
+# recommendation reaches this project with the next factory update. To change one, uncomment
+# \`models:\`, its group and the entry. Whatever you set wins over every recommendation (default
+# and effort reach every agent you do not name); the recommendations only fill in the rest.
+# An entry is a model alias ("sonnet") or { model, effort }; either half falls back to the less
+# specific level. Effort: low | medium | high | xhigh | max.
 # Most specific wins: high_risk (when triage rated RISK: HIGH) > reviews (per lens) > roles > default.
-models:
-  default: "opus"
-  effort: "high"
-  roles:
-    triage: "fable"                               # few calls; a wrong call here is the costliest
-    issue_writer: "opus"
-    refine: { model: "sonnet", effort: "medium" }
-    critic: "opus"
-    builder: "opus"                               # most of the tokens go here
-    reviewer: { model: "sonnet", effort: "medium" } # lenses without their own entry
-    verifier: "sonnet"                            # a different model from the reviewers it checks
-    approver: "opus"
-    capture: { model: "haiku", effort: "low" }
-    learner: { model: "sonnet", effort: "medium" }
-  reviews:                                        # used once the review stage is automated (phase 3)
-    code: { model: "sonnet", effort: "medium" }
-    security: { model: "opus", effort: "high" }
-    docs: { model: "haiku", effort: "low" }
-    ux: { model: "sonnet", effort: "medium" }
-    ui: { model: "haiku", effort: "low" }
-  high_risk:
-    code: { model: "opus", effort: "high" }
+# \`factory config reset models\` removes the section again.
+${renderModelDefaults()}
 
 concurrency:
   max_runs: 2
