@@ -205,6 +205,19 @@ describe("importSnapshot", () => {
       expect(importChangeCount(importSnapshot(b.store, b.project, carry(exportSnapshot(a.store, a.project).snapshot)))).toBe(0);
     });
 
+    it("keeps an imported issue's queue time, so it takes its turn by it, with a fresh local queue_seq", () => {
+      const { a, b, set } = both();
+      a.store.upsertIssue(a.project.id, issue(9));
+      set(a, 9, "2026-01-01T00:00:00.000Z", 1); // queued on A before B's own
+      set(b, 2, "2026-03-01T00:00:00.000Z", 4);
+
+      importSnapshot(b.store, b.project, carry(exportSnapshot(a.store, a.project).snapshot));
+      const imported = b.store.getIssue(b.project.id, 9)!;
+      expect(imported).toMatchObject({ queued_at: "2026-01-01T00:00:00.000Z", queue_seq: 5 });
+      // The scheduler orders by queued_at first (scheduler.ts newStarts): the imported issue comes before B's.
+      expect(imported.queued_at! < b.store.getIssue(b.project.id, 2)!.queued_at!).toBe(true);
+    });
+
     it("never queues an issue that is closed on either side", () => {
       const { a, b, set } = both();
       set(a, 1, "2026-01-01T00:00:00.000Z", 1);

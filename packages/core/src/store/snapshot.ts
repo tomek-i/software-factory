@@ -288,7 +288,10 @@ function mergeRuns(store: Store, project: Project, snapshot: Snapshot, report: I
  * - both sides queued: the later `queued_at` wins (queuing again after a run means "run it again");
  * - one side queued: the queued side wins, so an import never drops work from the queue;
  * - an issue closed here, or closed in the snapshot, is never queued by an import.
- * A queue position from the snapshot is never copied: the issue goes to the end of the local queue.
+ * An imported issue keeps the snapshot's `queued_at`, so the scheduler (which orders by `queued_at`,
+ * then `queue_seq`) takes it in turn by when it was queued, among the local ones. Keeping the time
+ * also keeps an imported finished run from counting as "before it was queued", which would start
+ * the issue again. Only `queue_seq` is local: a fresh MAX+1, so it never collides with a local one.
  */
 function mergeIssues(store: Store, project: Project, issues: SnapshotIssue[], report: ImportReport, now: Date): void {
   const db = store.db;
@@ -300,7 +303,7 @@ function mergeIssues(store: Store, project: Project, issues: SnapshotIssue[], re
   );
   const queue = db.prepare("UPDATE issues SET queued_at = ?, queue_seq = ? WHERE project_id = ? AND number = ?");
   const markFactory = db.prepare("UPDATE issues SET created_by_factory = 1 WHERE project_id = ? AND number = ?");
-  // In the snapshot's queue order, so issues that are new here keep their order at the end of the queue.
+  // In the snapshot's queue order, so the fresh queue_seq numbers keep the snapshot's ties in order.
   const ordered = [...issues].sort(
     (a, b) => (a.queued_at === null ? 1 : 0) - (b.queued_at === null ? 1 : 0) || time(a.queued_at) - time(b.queued_at) || (a.queue_seq ?? 0) - (b.queue_seq ?? 0) || a.number - b.number,
   );
