@@ -72,11 +72,12 @@ export function buildProgram(): Command {
 
   program
     .command("new")
-    .description("draft a GitHub issue from an idea, and create and queue it once approved")
+    .description("draft a GitHub issue from an idea, and create it once approved")
     .argument("[idea...]", 'the idea, e.g. "export orders as CSV"')
-    .option("--approve <draft>", "create a saved draft on GitHub and queue it")
+    .option("--approve <draft>", "create a saved draft on GitHub")
     .option("--discard <draft>", "drop a saved draft")
     .option("--list", "list drafts waiting for approval")
+    .option("--queue", "queue the created issues for the factory to work on")
     .action(async (idea: string[], options: NewOptions) => {
       // Drafting runs the issue writer agent in the checkout; the other options only handle saved drafts.
       if (!options.approve && !options.discard && !options.list) refuseRunningOnItself(process.cwd());

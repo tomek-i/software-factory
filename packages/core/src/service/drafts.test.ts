@@ -58,7 +58,8 @@ describe("drafts", () => {
     const published = approveDraft(ctx, outcome.id.slice(0, 9), { ...deps, onCreate: (text) => shown.push(text) });
 
     expect(shown).toEqual([SINGLE]);
-    expect(published).toEqual({ id: outcome.id, issue: { number: 20, title: "Add CSV export" }, subIssues: [], queued: [20] });
+    expect(published).toEqual({ id: outcome.id, issue: { number: 20, title: "Add CSV export" }, subIssues: [], buildable: [20], queued: [] });
+    expect(ctx.store.getIssue(ctx.project.id, 20)!.queued_at).toBeNull();
     expect(pendingDrafts(ctx, deps.run)).toEqual([]);
   });
 
@@ -69,8 +70,9 @@ describe("drafts", () => {
 
     expect(outcome).toEqual({ kind: "ready", id: expect.stringMatching(/^draft-[0-9a-f]{8}$/) });
     expect(created).toEqual([]);
-    expect(approveDraft(ctx, outcome.id, deps).issue).toEqual({ number: 20, title: "Add CSV export" });
+    expect(approveDraft(ctx, outcome.id, { ...deps, queue: true })).toMatchObject({ issue: { number: 20, title: "Add CSV export" }, queued: [20] });
     expect(created.map((c) => c.title)).toEqual(["Add CSV export"]);
+    expect(ctx.store.getIssue(ctx.project.id, 20)!.queued_at).not.toBeNull();
   });
 
   it("says what to do when the issue writer's draft is invalid, and discards it", async () => {

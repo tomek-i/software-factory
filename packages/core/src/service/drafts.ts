@@ -18,6 +18,8 @@ export interface DraftDeps {
   github?: IssueWriterPort;
   /** Told the draft's text right before it is created on GitHub, so it can be shown in full first. */
   onCreate?: (text: string) => void;
+  /** Queue the buildable issues once they are created. Off by default. */
+  queue?: boolean;
 }
 
 function draftContext(ctx: ServiceContext, run?: CommandRunner): DraftContext {
@@ -91,7 +93,7 @@ export function approveDraft(ctx: ServiceContext, ref: string, deps: DraftDeps =
   try {
     const entry = approvableDraft(draftCtx, ref);
     deps.onCreate?.(readFileSync(entry.file, "utf8"));
-    return publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id });
+    return publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id, queue: deps.queue });
   } catch (err) {
     if (err instanceof VerdictParseError) {
       throw new ServiceError([`Draft ${ref} is not valid:`, ...err.problems.map((p) => `- ${p}`), "Fix it and approve it again, or discard it."].join("\n"));
