@@ -118,6 +118,9 @@ describe.skipIf(!available)("uploadAttachments (real browser)", () => {
     const upload = uploadAttachments("o/r", 3, [join(dir, "a.png")], { baseUrl: base, profile: join(dir, "profile"), signal: controller.signal });
     setTimeout(() => controller.abort(), 3000);
     await expect(upload).rejects.toThrow(new AttachmentError("the run stopped while the media was uploading"));
+    // The browser has exited by the time the upload settles: nothing holds the profile any more, so
+    // the next upload can open it (and on Windows a held file could not be deleted).
+    rmSync(join(dir, "profile"), { recursive: true, force: true });
   });
 });
 

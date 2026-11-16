@@ -1,4 +1,6 @@
-# Lint, typecheck, build and test every pull request and every push to main, on Linux and Windows.
+# Lint, typecheck, build and test every pull request on Linux, and every push to main on Linux and
+# Windows. Windows is about 8x slower here (process start-up), so PRs skip it; a Windows-only break
+# then shows up on the merge to main.
 name: CI
 
 on:
@@ -22,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@v7
       # The version comes from packageManager in package.json.
