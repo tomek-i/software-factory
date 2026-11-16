@@ -20,16 +20,26 @@ Back to the [README](../README.md#web-mode) for the commands.
   - Any of them can be cancelled.
   - Runs waiting for the issue's author are listed below.
   - An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued.
+  - Click a run's title to open its details before deciding.
 - **Runs**: the runs going on across projects, live.
   - Each shows its state, round, cost, whether a worker drives it and the agent's latest activity.
   - "All" shows finished runs too.
+  - Click a run to open its details.
+- **Run details**: what `factory show <run>` prints, in the browser.
+  - The issue, with its GitHub link.
+  - The gate the run waits at, and the full reason.
+  - The verdicts of its run folder: triage, spec, build, checks, reviews with their blocking findings, approval, learn.
+  - Its files, each opened as plain text.
+  - A run waiting for you can be approved, rejected, resumed or cancelled there, with the Inbox's rules.
+  - Run files hold agent output that read untrusted issue text, so the page never renders it as HTML.
+  - Local paths in it are shortened: relative to the repo or worktree, and the home folder as `~`.
 - **Backlog**: each project's open issues.
   - Each shows its place in the queue, whether the author is trusted and the state of the latest run.
   - Queue and unqueue them from here.
   - "Sync now" pulls issues from GitHub and finishes runs whose PR was merged or closed.
 - The project picker in the header narrows every screen to one project.
 - The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`), with the same rules.
-- `factory show <run>` has a run's details.
+- The run details are `factory show <run>`'s.
 - Live updates cover the runs `factory serve` itself drives.
 - A `factory run` in another terminal shows on the next refresh.
 

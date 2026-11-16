@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router";
 import { StateBadge } from "../components/StateBadge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -8,6 +9,7 @@ import { api, type RunView } from "../lib/api";
 import { useLive } from "../lib/events";
 import { useProject } from "../lib/project";
 import { ago, cn, money } from "../lib/utils";
+import { runPath } from "./RunDetail";
 
 export function Runs() {
   const { project } = useProject();
@@ -56,10 +58,10 @@ export function Runs() {
                       </div>
                     </TableCell>
                     <TableCell className="max-w-md">
-                      <div className="truncate">
+                      <Link to={runPath(run)} className="block truncate hover:underline">
                         {run.issue !== null && <span className="mr-1.5 font-mono text-muted-foreground">#{run.issue}</span>}
                         {run.title}
-                      </div>
+                      </Link>
                       {line && <div className={cn("truncate text-xs text-muted-foreground", activity[run.id] && "text-sky-700 dark:text-sky-300")}>{line}</div>}
                       <div className="font-mono text-xs text-muted-foreground">{run.id}</div>
                     </TableCell>

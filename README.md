@@ -248,6 +248,7 @@ factory serve --port 4181 --max-runs 2 --no-open
 
 - It does what `factory work` does and serves a web app for every project in the project list.
 - It prints a link with a session token and opens it in your browser (`--no-open` only prints it).
+- Its screens are Inbox, Runs, Run details and Backlog; click a run to open its details.
 - The screens, the actions and how it stays private: [Web mode](docs/web-mode.md).
 
 ### Running an issue

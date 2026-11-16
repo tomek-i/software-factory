@@ -7,6 +7,7 @@ import { EventsProvider } from "./lib/events";
 import { ProjectProvider } from "./lib/project";
 import { Backlog } from "./screens/Backlog";
 import { Inbox } from "./screens/Inbox";
+import { RunDetail } from "./screens/RunDetail";
 import { Runs } from "./screens/Runs";
 
 export function newQueryClient(): QueryClient {
@@ -30,6 +31,7 @@ export function App({ client }: { client?: QueryClient }) {
               <Route index element={<Navigate to="/inbox" replace />} />
               <Route path="inbox" element={<Inbox />} />
               <Route path="runs" element={<Runs />} />
+              <Route path="runs/:project/:id" element={<RunDetail />} />
               <Route path="backlog" element={<Backlog />} />
               <Route path="*" element={<Navigate to="/inbox" replace />} />
             </Route>

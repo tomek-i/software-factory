@@ -53,6 +53,36 @@ export interface RunRow {
   resumeTargets: RunState[];
 }
 
+/** A finding a review or the verifier said blocks the run. */
+export interface Finding {
+  id: string;
+  severity: "critical" | "major" | "minor" | "nit";
+  file?: string;
+  line?: number;
+  claim: string;
+  evidence: string;
+}
+
+/** One section of a run's overview, about one file of its run folder (as `factory show` prints them). */
+export type OverviewSection =
+  | { kind: "verdict"; path: string; key: string; value: string; summary: string[]; blocking: Finding[]; refuted: number }
+  | { kind: "unparsed"; path: string; problem: string }
+  | { kind: "capture"; path: string; summary: string[] };
+
+/** One run in full. Its text comes from agents that read untrusted issues: show it as text only. */
+export interface RunDetail {
+  run: RunRow;
+  issue: { number: number; title: string; url: string | null } | null;
+  hasRunDir: boolean;
+  files: string[];
+  sections: OverviewSection[];
+}
+
+export interface RunFile {
+  path: string;
+  text: string;
+}
+
 export interface SchedulerStatus {
   running: { project: string; issue: number; runId?: string }[];
   pausedUntil?: string;
@@ -106,6 +136,9 @@ export const api = {
   scheduler: () => request<SchedulerStatus | null>("GET", "/api/scheduler"),
   runs: (view: RunView, project?: string) =>
     request<RunRow[]>("GET", `/api/runs?view=${view}${project ? `&project=${encodeURIComponent(project)}` : ""}`),
+  run: (project: string, id: string) => request<RunDetail>("GET", `/api/projects/${project}/runs/${encodeURIComponent(id)}`),
+  runFile: (project: string, id: string, path: string) =>
+    request<RunFile>("GET", runPath({ project, id }, `files/${path.split("/").map(encodeURIComponent).join("/")}`)),
   backlog: (project: string) => request<Backlog>("GET", `/api/projects/${project}/issues`),
   sync: (project: string) => request<SyncResult>("POST", `/api/projects/${project}/sync`),
   queue: (project: string, issue: number, queued: boolean) => request<object>("POST", `/api/projects/${project}/issues/${issue}/${queued ? "queue" : "unqueue"}`),
