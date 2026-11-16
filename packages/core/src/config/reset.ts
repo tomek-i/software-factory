@@ -44,17 +44,34 @@ export function resetConfigText(text: string, target: ResetTarget, path: string 
 
   const removed: string[] = [];
   const notSet: string[] = [];
-  const cuts: [number, number][] = [];
+  const chains: Link[][] = [];
   for (const segments of paths) {
-    const found = findPair(root, segments, path);
-    if (!found) {
+    const chain = findChain(root, segments, path);
+    if (!chain) {
       if (!all) notSet.push(segments.join("."));
       continue;
     }
     removed.push(segments.join("."));
-    cuts.push(lineSpan(text, found));
+    chains.push(chain);
   }
-  if (!cuts.length) return { text, removed, notSet };
+  if (!chains.length) return { text, removed, notSet };
+
+  // A block left with nothing in it would parse as null, so a parent whose entries all go, goes too.
+  // Checked over every path together: two paths can empty a parent that neither empties alone.
+  const doomed = new Set(chains.map((chain) => chain.at(-1)!.pair));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const chain of chains) {
+      for (let i = chain.length - 1; i > 0; i--) {
+        const parent = chain[i - 1]!.pair;
+        if (!doomed.has(parent) && chain[i]!.map.items.every((p) => doomed.has(p))) {
+          doomed.add(parent);
+          changed = true;
+        }
+      }
+    }
+  }
+  const cuts = [...doomed].map((pair) => lineSpan(text, pair));
 
   // Cut from the end so earlier offsets stay valid; overlapping cuts (a section and one of its entries) merge.
   const merged = cuts.sort((a, b) => a[0] - b[0]).reduce<[number, number][]>((acc, cut) => {
@@ -70,15 +87,20 @@ export function resetConfigText(text: string, target: ResetTarget, path: string 
   return { text: out, removed, notSet };
 }
 
-/**
- * The pair to remove for a path: the entry itself, or the nearest ancestor that would be left
- * empty without it. Undefined when the path is not in the file.
- */
-function findPair(root: YAMLMap, segments: string[], path: string): Pair | undefined {
-  const chain: { map: YAMLMap; pair: Pair }[] = [];
+/** One step of a path: the entry and the mapping it is in. */
+interface Link {
+  map: YAMLMap;
+  pair: Pair;
+}
+
+/** The entries along a path, outermost first; undefined when the path is not in the file. */
+function findChain(root: YAMLMap, segments: string[], path: string): Link[] | undefined {
+  const chain: Link[] = [];
   let map: unknown = root;
-  for (const segment of segments) {
-    if (!isMap(map)) return undefined;
+  for (const [i, segment] of segments.entries()) {
+    if (!isMap(map)) {
+      throw new ConfigError(path, [`${segments.join(".")}: ${segments.slice(0, i).join(".")} is not a group of named settings, so it has no ${segment}`]);
+    }
     // Cutting lines out of a {...} written on one line would cut its neighbours too.
     if (map.flow) throw new ConfigError(path, [`${segments.join(".")}: written inline ({ ... }); remove it by hand`]);
     const pair = map.items.find((p) => isScalar(p.key) && String(p.key.value) === segment);
@@ -86,9 +108,7 @@ function findPair(root: YAMLMap, segments: string[], path: string): Pair | undef
     chain.push({ map, pair });
     map = pair.value;
   }
-  let index = chain.length - 1;
-  while (index > 0 && chain[index]!.map.items.length === 1) index--;
-  return chain[index]!.pair;
+  return chain;
 }
 
 /** The pair's whole lines, from the comment lines directly above it to the end of its last line. */

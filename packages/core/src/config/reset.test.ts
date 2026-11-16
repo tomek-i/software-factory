@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { resolveModel } from "@factory/shared";
 import { git, tempDir } from "../../test/helpers.js";
 import { ConfigError, parseConfig } from "./load.js";
 import { resetConfig, resetConfigText } from "./reset.js";
@@ -52,11 +53,22 @@ describe("resetConfigText", () => {
     expect(one.removed).toEqual(["models.roles.triage"]);
     expect(one.text).not.toContain("fable");
     expect(one.text).toContain('    builder: { model: "opus", effort: "high" }');
-    expect(parseConfig(one.text).models.roles.triage).toEqual(defaults.models.roles.triage);
+    expect(resolveModel(parseConfig(one.text), { role: "triage" })).toEqual(resolveModel(defaults, { role: "triage" }));
 
     const group = resetConfigText(CONFIG, { paths: ["models.reviews.docs"] });
     expect(group.text).not.toContain("reviews:");
     expect(parseConfig(group.text).models.reviews).toEqual(defaults.models.reviews);
+  });
+
+  it("takes a section along when the named entries together leave nothing in it", () => {
+    const config = "version: 1\nmodels:\n  default: sonnet\n  effort: low\nloops:\n  max_build_iterations: 3\n";
+    const { text, removed } = resetConfigText(config, { paths: ["models.default", "models.effort"] });
+    expect(removed).toEqual(["models.default", "models.effort"]);
+    expect(text).toBe("version: 1\nloops:\n  max_build_iterations: 3\n");
+  });
+
+  it("refuses a path into a list, which has no named entries", () => {
+    expect(() => resetConfigText(CONFIG, { paths: ["checks.0"] })).toThrow(/checks is not a group of named settings/);
   });
 
   it("resets everything but what only the project knows with all", () => {
