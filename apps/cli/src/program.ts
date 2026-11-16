@@ -12,6 +12,7 @@ import { runProjects, runProjectsRemove } from "./commands/projects.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { parsePort, runServe } from "./commands/serve.js";
 import { runShow } from "./commands/show.js";
+import { runExport, runImport } from "./commands/snapshot.js";
 import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork } from "./commands/work.js";
 import { refuseRunningOnItself } from "./self.js";
 import { styleFor } from "./style.js";
@@ -68,6 +69,24 @@ export function buildProgram(): Command {
     .description("pull open issues from GitHub into the local database")
     .action(() => {
       console.log(runSync(process.cwd()));
+    });
+
+  program
+    .command("export")
+    .description("write this project's local state (queue, finished runs, lessons, drafts) as JSON, to move it to another machine")
+    .argument("[file]", "where to write it, outside the repo (default: stdout)")
+    .action((file: string | undefined) => {
+      const text = runExport(process.cwd(), file);
+      process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+    });
+
+  program
+    .command("import")
+    .description("merge a snapshot from `factory export` into this project's local state")
+    .argument("<file>", "the snapshot; only import your own")
+    .option("--dry-run", "list what would be added or changed, write nothing")
+    .action((file: string, options: { dryRun?: boolean }) => {
+      console.log(runImport(process.cwd(), file, options));
     });
 
   program
