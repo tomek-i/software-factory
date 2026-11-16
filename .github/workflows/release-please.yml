@@ -1,5 +1,5 @@
 # Opens or updates a release PR from the conventional commits on main; merging it tags v<version>,
-# publishes a GitHub release and publishes the CLI to npm as @tomek-i/software-factory. It only
+# publishes a GitHub release and stages the CLI on npm as @tomek-i/software-factory. It only
 # manages its own v* releases: the factory's draft factory-media-* releases (PR screenshots) are
 # separate and left alone.
 name: Release
@@ -52,4 +52,6 @@ jobs:
       # needs npm 11.5.1+ and Node 22 ships npm 10. Pinned so a new npm release cannot change it.
       - run: pnpm --filter @tomek-i/software-factory pack --pack-destination "$RUNNER_TEMP/pack"
       - run: node apps/cli/scripts/check-pack.mjs "$RUNNER_TEMP/pack"
-      - run: npx --yes npm@11.21.1 publish "$RUNNER_TEMP"/pack/*.tgz --provenance --access public
+      # Staged, not published: the version goes live only when a maintainer approves it with 2FA on
+      # npmjs.com, so a compromised workflow or action cannot ship a version on its own.
+      - run: npx --yes npm@11.21.1 stage publish "$RUNNER_TEMP"/pack/*.tgz --provenance --access public
