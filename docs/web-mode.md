@@ -49,6 +49,7 @@ Back to the [README](../README.md#web-mode) for the commands.
   - A draft git tracks is refused, as in the CLI.
   - A draft that does not parse can only be discarded, or fixed by hand.
   - Drafts are named by their exact id here, not a prefix.
+  - One issue writer runs per project at a time; starting another is refused until it ends or is stopped.
 - The project picker in the header narrows every screen to one project.
 - The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`, `new`), with the same rules.
 - The run details are `factory show <run>`'s.
@@ -75,3 +76,4 @@ Other limits:
 
 - A decision is refused when the run has moved on since the page showed it.
 - Settings, `--unsafe` and config can't be changed through it.
+- The draft routes that read or write draft files take at most 60 requests per 10 seconds each, then answer 429 with `Retry-After`.

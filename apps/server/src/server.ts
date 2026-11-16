@@ -35,6 +35,7 @@ import { DraftJobs, draftRoutes } from "./drafts.js";
 import { BadRequest, Conflict } from "./errors.js";
 import type { EventHub } from "./hub.js";
 import { NotFoundError, type ProjectSet } from "./projects.js";
+import { TooManyRequests, type RateLimit } from "./rate-limit.js";
 import { hostAllowed, originAllowed, TOKEN_HEADER, tokenMatches } from "./security.js";
 
 export interface ServerOptions {
@@ -56,6 +57,8 @@ export interface ServerOptions {
   /** Where unexpected errors go: the terminal, never the browser. */
   log?: (line: string) => void;
   heartbeatMs?: number;
+  /** Per draft route; tests lower it. */
+  draftLimit?: RateLimit;
 }
 
 export type RunView = "active" | "waiting" | "all";
@@ -227,6 +230,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
     if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
     if (err instanceof Conflict) return reply.code(409).send({ error: err.message });
+    if (err instanceof TooManyRequests) return reply.code(429).header("Retry-After", String(err.retryAfter)).send({ error: err.message });
     if (err instanceof ServiceError || err instanceof BadRequest) return reply.code(400).send({ error: err.message });
     if (err instanceof GithubError) return reply.code(502).send({ error: `GitHub: ${err.message}` });
     // Fastify's own (a malformed JSON body, say) carry a 4xx status and a message meant for the client.
@@ -366,7 +370,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned };
   });
 
-  draftRoutes(app, { projects, jobs: drafts, run: options.run, changed });
+  draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });
 
   app.get("/api/scheduler", async () => options.scheduler?.status() ?? null);
 

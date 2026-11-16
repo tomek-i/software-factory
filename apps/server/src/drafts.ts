@@ -20,10 +20,11 @@ import {
   type ProjectContext,
   type PublishedDraft,
 } from "@factory/core";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { BadRequest, Conflict } from "./errors.js";
 import type { EventHub } from "./hub.js";
 import { NotFoundError, type ProjectSet } from "./projects.js";
+import { RateLimiter, type RateLimit } from "./rate-limit.js";
 
 /** An issue created from a draft, with its GitHub page once it is synced. */
 export interface CreatedIssue {
@@ -103,6 +104,8 @@ function message(err: unknown, log: (line: string) => void): string {
  */
 export class DraftJobs {
   private readonly jobs = new Map<string, Job>();
+  /** Projects with an issue writer going on, and its draft once known: one at a time per project. */
+  private readonly busy = new Map<string, string | undefined>();
 
   constructor(private readonly deps: DraftJobDeps) {}
 
@@ -121,6 +124,14 @@ export class DraftJobs {
    */
   async start(key: string, ctx: ProjectContext, idea: string, queue: boolean): Promise<string> {
     const { hub } = this.deps;
+    // Each one is an agent with a 20-minute budget: a page (or a script with the token) can't pile them up.
+    if (this.busy.has(key)) {
+      const running = this.busy.get(key);
+      throw new Conflict(
+        `The issue writer is already writing ${running ? `${running} for ${ctx.project.name}` : `a draft for ${ctx.project.name}`}. Wait for it, or stop it first.`,
+      );
+    }
+    this.busy.set(key, undefined);
     const controller = new AbortController();
     const events = new FactoryEvents();
     let id: string | undefined;
@@ -141,6 +152,7 @@ export class DraftJobs {
       signal: controller.signal,
       onStart: (draftId) => {
         id = draftId;
+        this.busy.set(key, draftId);
         this.jobs.set(`${key}/${draftId}`, job);
         started(draftId);
       },
@@ -153,6 +165,7 @@ export class DraftJobs {
         (err: unknown): DraftResult => ({ kind: "failed", error: id ? message(err, this.deps.log) : "" }),
       )
       .then((result) => {
+        this.busy.delete(key);
         if (!id) return;
         job.running = false;
         job.controller = undefined;
@@ -267,7 +280,12 @@ export interface DraftRouteOptions {
   jobs: DraftJobs;
   run?: CommandRunner;
   changed: (project: string) => void;
+  /** Per route that reads or writes draft files. */
+  limit?: RateLimit;
 }
+
+/** Plenty for a page that refetches on every event, far below a loop hammering the disk and `git ls-files`. */
+export const DRAFT_RATE_LIMIT: RateLimit = { max: 60, windowMs: 10_000 };
 
 /**
  * The New issue screen's API: `factory new` in the browser, with its rules. Drafts are named by
@@ -275,6 +293,9 @@ export interface DraftRouteOptions {
  */
 export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): void {
   const { projects, jobs, run, changed } = options;
+  const limiter = new RateLimiter(options.limit ?? DRAFT_RATE_LIMIT);
+  // A route hook: the server's own Host, token and Origin checks run first, so only the app's page counts.
+  const limited = { onRequest: async (req: FastifyRequest) => limiter.take(`${req.method} ${req.routeOptions.url}`) };
 
   const pendingOf = (key: string, ctx: ProjectContext): DraftView[] =>
     pendingDrafts(ctx, run).map((entry) => viewOf(key, ctx, entry, jobs.isRunning(key, entry.id)));
@@ -287,13 +308,13 @@ export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): v
     return entry;
   };
 
-  app.get<{ Querystring: { project?: string } }>("/api/drafts", async (req) => {
+  app.get<{ Querystring: { project?: string } }>("/api/drafts", limited, async (req) => {
     const opened = req.query.project ? [{ key: req.query.project, ctx: projects.byKey(req.query.project) }] : projects.openAll();
     return opened.flatMap(({ key, ctx }) => pendingOf(key, ctx));
   });
 
   type DraftParams = { Params: { key: string; id: string }; Body: unknown };
-  app.get<DraftParams>("/api/projects/:key/drafts/:id", async (req): Promise<DraftDetail> => {
+  app.get<DraftParams>("/api/projects/:key/drafts/:id", limited, async (req): Promise<DraftDetail> => {
     const { key, id } = req.params;
     const ctx = projects.byKey(key);
     const entry = pendingDrafts(ctx, run).find((d) => d.id === id);
@@ -306,7 +327,7 @@ export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): v
     return { project: key, projectName: ctx.project.name, id, pending: pending ?? null, job: job ?? null };
   });
 
-  app.post<{ Params: { key: string }; Body: unknown }>("/api/projects/:key/drafts", async (req) => {
+  app.post<{ Params: { key: string }; Body: unknown }>("/api/projects/:key/drafts", limited, async (req) => {
     const key = req.params.key;
     const ctx = projects.byKey(key);
     const idea = (req.body as Record<string, unknown> | null | undefined)?.idea;
@@ -318,7 +339,7 @@ export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): v
     return { id, ignored };
   });
 
-  app.post<DraftParams>("/api/projects/:key/drafts/:id/save", async (req) => {
+  app.post<DraftParams>("/api/projects/:key/drafts/:id/save", limited, async (req) => {
     const { key, id } = req.params;
     const ctx = projects.byKey(key);
     idle(key, ctx, id);
@@ -328,7 +349,7 @@ export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): v
     return viewOf(key, ctx, saved, false);
   });
 
-  app.post<DraftParams>("/api/projects/:key/drafts/:id/publish", async (req) => {
+  app.post<DraftParams>("/api/projects/:key/drafts/:id/publish", limited, async (req) => {
     const { key, id } = req.params;
     const ctx = projects.byKey(key);
     idle(key, ctx, id);
@@ -338,7 +359,7 @@ export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): v
     return published;
   });
 
-  app.post<DraftParams>("/api/projects/:key/drafts/:id/discard", async (req) => {
+  app.post<DraftParams>("/api/projects/:key/drafts/:id/discard", limited, async (req) => {
     const { key, id } = req.params;
     const ctx = projects.byKey(key);
     idle(key, ctx, id);
@@ -348,6 +369,7 @@ export function draftRoutes(app: FastifyInstance, options: DraftRouteOptions): v
     return { id: entry.id, created: entry.created };
   });
 
+  // Not limited: it reads no file, and stopping must always work.
   app.post<DraftParams>("/api/projects/:key/drafts/:id/stop", async (req) => {
     const { key, id } = req.params;
     projects.byKey(key);

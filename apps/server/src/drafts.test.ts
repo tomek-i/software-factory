@@ -6,7 +6,7 @@ import { fakeClaude, GIT_TEST_TIMEOUT, repoWithRemote, type FakeStep } from "../
 import type { DraftDetail, DraftView } from "./drafts.js";
 import { EventHub, type HubEvent } from "./hub.js";
 import { projectKey, ProjectSet } from "./projects.js";
-import { createServer } from "./server.js";
+import { createServer, type ServerOptions } from "./server.js";
 
 // Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -27,7 +27,7 @@ afterEach(async () => {
  * A registered repo whose default branch sets `gates.issue_writer`, served with the fake claude, a
  * fake GitHub that numbers issues from 20 and a `gh issue view` that answers for them.
  */
-function setup(steps: FakeStep[], gate = "human") {
+function setup(steps: FakeStep[], gate = "human", options: Partial<ServerOptions> = {}) {
   const config = `version: 1\ntrust:\n  authors: [alice]\ngates:\n  issue_writer: ${gate}\n`;
   const { root: dir } = repoWithRemote({ "README.md": "# demo\n", ".gitignore": ".factory/runs/\n.factory/factory.db*\n", ".factory/config.yaml": config });
   const root = findRepoRoot(dir)!;
@@ -60,7 +60,7 @@ function setup(steps: FakeStep[], gate = "human") {
     () => [{ path: root, name: "demo", added_at: "t" }],
     () => ctx,
   );
-  const app = createServer({ projects, hub, token: TOKEN, port: 4180, run, env: fake.env, issueWriter: () => github, log: () => {} });
+  const app = createServer({ projects, hub, token: TOKEN, port: 4180, run, env: fake.env, issueWriter: () => github, log: () => {}, ...options });
   apps.push(app);
   const key = projectKey(root);
   const base = `/api/projects/${key}/drafts`;
@@ -214,6 +214,40 @@ describe("drafts from the web", () => {
     expect(existsSync(join(root, DRAFTS_DIR, id))).toBe(false);
     expect((await get(`${base}/${id}`)).status).toBe(404);
     expect((await post(`${base}/${id}/discard`)).status).toBe(404);
+  });
+
+  it("runs one issue writer per project at a time", async () => {
+    const { base, post, start, done } = setup([{ output: SINGLE, sleepMs: 60_000 }, { output: SINGLE }]);
+    const first = await start("a slow idea");
+
+    expect(await post(base, { idea: "another idea" })).toEqual({
+      status: 409,
+      body: { error: `The issue writer is already writing ${first} for demo. Wait for it, or stop it first.` },
+    });
+
+    await post(`${base}/${first}/stop`);
+    await done(first);
+    const second = await start("another idea");
+    expect(await done(second)).toMatchObject({ kind: "waiting" });
+  });
+
+  it("limits each draft route that touches the files, counting only requests that pass the token check", async () => {
+    const { app, base, get, post } = setup([], "human", { draftLimit: { max: 2, windowMs: 60_000 } });
+    for (let i = 0; i < 3; i++) expect((await app.inject({ method: "GET", url: "/api/drafts", headers: { host: HOST } })).statusCode).toBe(401);
+
+    expect((await get("/api/drafts")).status).toBe(200);
+    expect((await get("/api/drafts")).status).toBe(200);
+    const limited = await app.inject({ method: "GET", url: "/api/drafts", headers: HEADERS });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.headers["retry-after"]).toBe("60");
+    expect(limited.json()).toEqual({ error: "Too many requests; try again in 60 s." });
+
+    // Each route has its own count.
+    expect((await get(`${base}/draft-00000000`)).status).toBe(404);
+    expect((await post(base, { idea: " " })).status).toBe(400);
+    expect((await post(`${base}/draft-00000000/discard`)).status).toBe(404);
+    expect((await post(`${base}/draft-00000000/discard`)).status).toBe(404);
+    expect((await post(`${base}/draft-00000000/discard`)).status).toBe(429);
   });
 
   it("stops a running issue writer when the server closes", async () => {
