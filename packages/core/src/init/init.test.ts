@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveModel } from "@factory/shared";
+import { AGENT_ROLES, resolveModel, REVIEW_LENSES } from "@factory/shared";
 import { loadConfig, parseConfig } from "../config/load.js";
 import { listRegistered } from "../registry.js";
 import { Store } from "../store/store.js";
@@ -113,8 +113,14 @@ describe("renderConfig", () => {
     const end = lines.indexOf("", start);
     const uncommented = lines.slice(start, end).map((l) => l.replace(/^# /, "")).join("\n");
     expect(start).toBeGreaterThan(-1);
-    expect(parseConfig(`version: 1\n${uncommented}\n`).models).toEqual(parseConfig("version: 1\n").models);
-    expect(parseConfig(text).models).toEqual(parseConfig("version: 1\n").models);
+    // Every agent, for every lens and risk, gets the same model and effort either way.
+    const everyAgent = (config: ReturnType<typeof parseConfig>) =>
+      AGENT_ROLES.flatMap((role) =>
+        [undefined, ...REVIEW_LENSES].flatMap((lens) => (["LOW", "HIGH"] as const).map((risk) => resolveModel(config, { role, lens, risk }))),
+      );
+    const defaults = everyAgent(parseConfig("version: 1\n"));
+    expect(everyAgent(parseConfig(`version: 1\n${uncommented}\n`))).toEqual(defaults);
+    expect(everyAgent(parseConfig(text))).toEqual(defaults);
   });
 });
 

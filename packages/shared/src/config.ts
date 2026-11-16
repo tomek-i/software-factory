@@ -69,8 +69,9 @@ const modelSpec = z
 
 /**
  * The recommended model per agent, so a config only holds what a project chose itself and a better
- * default reaches every project that did not override it. An entry in the config replaces the
- * default entry for that role or lens; the others stay.
+ * default reaches every project that did not override it. These sit below the config as a whole:
+ * whatever the config sets (`default` and `effort` included) wins over every recommendation, and a
+ * recommendation only fills in what the config leaves open. See `resolveModel`.
  */
 export const DEFAULT_MODELS = {
   default: "opus",
@@ -183,22 +184,15 @@ export const factoryConfigSchema = z.object({
     .prefault({}),
   models: z
     .object({
-      default: z.string().min(1).default(DEFAULT_MODELS.default),
-      effort: z.enum(EFFORT_LEVELS).default(DEFAULT_MODELS.effort),
-      roles: z
-        .partialRecord(z.enum(AGENT_ROLES), modelSpec)
-        .default({})
-        .transform((roles): Partial<Record<AgentRole, ModelSpec>> => ({ ...DEFAULT_MODELS.roles, ...roles })),
+      // Only what the config itself sets: the recommendations (DEFAULT_MODELS) are applied below all of
+      // it in resolveModel, so that `default` or `roles.reviewer` here still beat a recommended entry.
+      default: z.string().min(1).optional(),
+      effort: z.enum(EFFORT_LEVELS).optional(),
+      roles: z.partialRecord(z.enum(AGENT_ROLES), modelSpec).default({}),
       // Per review lens; a lens without an entry uses roles.reviewer.
-      reviews: z
-        .partialRecord(z.enum(REVIEW_LENSES), modelSpec)
-        .default({})
-        .transform((reviews): Partial<Record<ReviewLens, ModelSpec>> => ({ ...DEFAULT_MODELS.reviews, ...reviews })),
+      reviews: z.partialRecord(z.enum(REVIEW_LENSES), modelSpec).default({}),
       // Applied on top of everything else when triage rated the issue RISK: HIGH.
-      high_risk: z
-        .partialRecord(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec)
-        .default({})
-        .transform((highRisk): Partial<Record<AgentRole | ReviewLens, ModelSpec>> => ({ ...DEFAULT_MODELS.high_risk, ...highRisk })),
+      high_risk: z.partialRecord(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec).default({}),
     })
     .prefault({}),
   concurrency: z
@@ -256,22 +250,29 @@ export type FactoryConfigInput = z.input<typeof factoryConfigSchema>;
 
 /**
  * The model and effort for one agent. Model and effort resolve separately, so an entry that only
- * sets effort keeps the model it would otherwise get. Most specific wins: high-risk lens, high-risk
- * role, lens, role, then the defaults.
+ * sets effort keeps the model it would otherwise get. Within the config, most specific wins:
+ * high-risk lens, high-risk role, lens, role, then `default`/`effort`. Only what the config leaves
+ * open comes from the recommendations (DEFAULT_MODELS), in the same order.
  */
 export function resolveModel(
   config: Pick<FactoryConfig, "models">,
   target: { role: AgentRole; lens?: ReviewLens; risk?: "LOW" | "MEDIUM" | "HIGH" },
-): { model: string; effort?: Effort } {
-  const { models } = config;
+): { model: string; effort: Effort } {
   const highRisk = target.risk === "HIGH";
-  const chain: (ModelSpec | undefined)[] = [
+  type Layer = {
+    default?: string;
+    effort?: Effort;
+    roles: Partial<Record<AgentRole, ModelSpec>>;
+    reviews: Partial<Record<ReviewLens, ModelSpec>>;
+    high_risk: Partial<Record<AgentRole | ReviewLens, ModelSpec>>;
+  };
+  const chain = (models: Layer): (ModelSpec | undefined)[] => [
     highRisk && target.lens ? models.high_risk[target.lens] : undefined,
     highRisk ? models.high_risk[target.role] : undefined,
     target.lens ? models.reviews[target.lens] : undefined,
     models.roles[target.role],
+    { model: models.default, effort: models.effort },
   ];
-  const model = chain.find((s) => s?.model)?.model ?? models.default;
-  const effort = chain.find((s) => s?.effort)?.effort ?? models.effort;
-  return effort ? { model, effort } : { model };
+  const all = [...chain(config.models), ...chain(DEFAULT_MODELS)];
+  return { model: all.find((s) => s?.model)!.model!, effort: all.find((s) => s?.effort)!.effort! };
 }

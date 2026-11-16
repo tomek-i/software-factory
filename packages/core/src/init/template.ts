@@ -83,7 +83,8 @@ reviews:
 
 # Model and effort per agent. Left out, every agent uses the recommended model below, and a better
 # recommendation reaches this project with the next factory update. To change one, uncomment
-# \`models:\`, its group and the entry: it replaces the default for that role or lens only.
+# \`models:\`, its group and the entry. Whatever you set wins over every recommendation (default
+# and effort reach every agent you do not name); the recommendations only fill in the rest.
 # An entry is a model alias ("sonnet") or { model, effort }; either half falls back to the less
 # specific level. Effort: low | medium | high | xhigh | max.
 # Most specific wins: high_risk (when triage rated RISK: HIGH) > reviews (per lens) > roles > default.

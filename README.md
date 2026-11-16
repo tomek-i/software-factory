@@ -579,7 +579,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
-| `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). An entry replaces the default for that role or lens only |
+| `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). Whatever the file sets wins over every recommendation: `default` and `effort` reach every agent it does not name, and the recommendations only fill in the rest |
 | `concurrency` | `max_runs`: how many runs `factory run` drives at once (default 2) |
 | `trust` | Whose issues and comments count as the spec |
 | `github` | Optional status labels (`status_labels`, `label_prefix`). `poll_interval_sec` and `max_starts_per_day` are accepted but not used yet |
