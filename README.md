@@ -105,10 +105,13 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 ```sh
 pnpm install
 pnpm build
+pnpm add -g "$(pwd)/apps/cli"   # puts `factory` on your PATH
 
 # in the repo you want to use the factory on
-node <path-to-this-repo>/apps/cli/dist/main.js init
+factory init
 ```
+
+`pnpm add -g` links the checkout rather than copying it, so a later `pnpm build` updates the global `factory`. It needs pnpm's global bin folder on your `PATH`; run `pnpm setup` once if it is not. `pnpm remove -g @factory/cli` takes it off again. `pnpm factory` is not a substitute: pnpm runs scripts in the factory's own folder, so it always acts on this repo.
 
 `factory init`:
 
@@ -588,7 +591,7 @@ pnpm test        # vitest
 pnpm typecheck   # tsc, including tests
 pnpm lint        # eslint
 pnpm build       # tsc -b, then the web app with Vite
-pnpm factory init   # run the CLI from source
+pnpm factory status # run the CLI from source, on this repo
 ```
 
 To work on the web app with hot reload, run `factory serve --no-open` from the built CLI, then `pnpm -C apps/web dev`. Vite proxies `/api` to the server (`FACTORY_SERVE_URL`, default `http://127.0.0.1:4180`); open the printed link with Vite's port instead of 4180. The web tests run in jsdom with a fake server and event stream.
@@ -630,7 +633,7 @@ The factory works on its own issues. It runs from a **pinned copy** of `main`, n
   $pinned = "$env:LOCALAPPDATA\software-factory\pinned"
   git clone https://github.com/tomek-i/software-factory $pinned
   pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
-  function factory { node "$env:LOCALAPPDATA\software-factory\pinned\apps\cli\dist\main.js" @args }  # e.g. in your $PROFILE
+  pnpm add -g "$pinned\apps\cli"   # the global `factory` now runs the pinned copy
   ```
 
 - **Register this repo** with `factory init` in your checkout. The committed `.factory/config.yaml` is kept.
