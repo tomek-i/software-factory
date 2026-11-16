@@ -14,6 +14,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `verdict.ts`: agent output headers (`verdictHeaderSchemas`), `parseVerdict`, findings, lessons
 - `capture.ts`: the capture agent's plan (`capturePlanSchema`), data only, same-origin paths
 - `registry.ts`: the per-user project list's file format (`registryFileSchema`)
+- `snapshot.ts`: the `factory export` file (`snapshotSchema`), checked before an import writes anything
 
 `packages/core/src`: the engine, exported through `index.ts`
 - `pipeline/transitions.ts`: `RunMachine`, the forward edges and the guards on them
@@ -26,7 +27,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `agents/runner.ts`: spawns `claude` with `claudeArgs` and `agentEnv`
 - `agents/prompts.ts`: `PromptRole`, `rolePrompt`, `permissionProfile`, `issueBlock`, `renderTask`
 - `agents/turn.ts`: one agent turn plus parsing its output file; `agents/stream.ts`: stream-json summary
-- `store/store.ts`: the SQLite store; `store/migrations.ts`: `MIGRATIONS`
+- `store/store.ts`: the SQLite store; `store/migrations.ts`: `MIGRATIONS`; `store/snapshot.ts`: `exportSnapshot`, `importSnapshot` behind `factory export` / `factory import`
 - `github/port.ts`: `GithubPort` and its real `gh` implementation, `ghPort`
 - `github/issues.ts`: issue sync; `github/media.ts`, `github/attachments.ts`: videos and images on PRs; `github/labels.ts`: status labels
 - `capture/`: starts the app (`server.ts`), drives Chromium (`browser.ts`), renders narrated video (`narrate.ts`), writes the report (`report.ts`)

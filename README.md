@@ -220,6 +220,28 @@ When an agent hits the subscription's usage limit, the worker starts and continu
 
 `factory stop` works through a `stop.json` in the factory's data folder, so it reaches workers in other terminals. A worker obeys only a request made after it started. Ctrl+C in the worker's terminal interrupts its runs like `factory stop --now` and exits.
 
+### Moving between machines
+
+`.factory/factory.db` stays out of git, and `factory sync` only rebuilds the GitHub side. To carry on from another clone of the same GitHub repo (a laptop, then home), move the rest as one JSON file:
+
+```sh
+factory export ~/factory-myrepo.json         # on the first machine; no file prints to stdout
+factory import ~/factory-myrepo.json --dry-run   # on the other machine: what would be added or changed
+factory import ~/factory-myrepo.json
+factory sync
+```
+
+- **What travels:** the queue, which issues the factory opened (`factory new`), finished runs with their events, decisions and agent runs (costs and tokens included), lessons and their decisions, and what `factory new --approve` has created so far.
+- **What stays:** paths, ports, leases and process ids, which only mean something on the machine that wrote them, and the run folders (`.factory/runs/`). Runs that are not finished stay too, including runs waiting for you at a gate: their worktree, branch and agent session exist only there. `factory export` lists them on stderr. **Finish or cancel a run on the machine that started it**, then export.
+- **Import merges, never replaces.** It matches the project by its GitHub repo, not its folder, and refuses a snapshot of another repo or from a newer factory. It runs in one transaction, so a failed import changes nothing, and importing the same file twice changes nothing the second time.
+  - Runs: one the database lacks is added with everything attached; one it has is left as it is.
+  - Queue: when both sides queued an issue, the later queue time wins (queued again means run again). When only one side did, the queued side wins, so an import never drops work. A closed issue is never queued. An imported issue keeps the time it was queued on the other machine, so the worker takes it in turn by that time among the issues queued here, not at the end. Issues new to this database are added for the queue, and `factory sync` fills them in. To unqueue on both machines, unqueue on each.
+  - Lessons: an approved or rejected lesson wins over a proposed copy; between two decisions, the later one wins.
+
+**The snapshot is as trusted as your own database.** Importing it queues issues and marks issues as opened by the factory, which [trusted authors](#trusted-authors) rely on. So:
+- keep it outside the repo, in your home or a cloud-sync folder (`factory export` warns when the file is inside the working tree), and never commit it to a shared repo;
+- only import a file you exported yourself, never one someone gave you. `factory import` reads only the file you name.
+
 ### Web mode
 
 ```sh

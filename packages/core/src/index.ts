@@ -1,6 +1,7 @@
 export * from "./config/load.js";
 export * from "./config/reset.js";
 export * from "./store/store.js";
+export * from "./store/snapshot.js";
 export * from "./pipeline/gates.js";
 export * from "./pipeline/transitions.js";
 export * from "./pipeline/fingerprint.js";

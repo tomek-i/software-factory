@@ -3,3 +3,4 @@ export * from "./config.js";
 export * from "./verdict.js";
 export * from "./capture.js";
 export * from "./registry.js";
+export * from "./snapshot.js";
