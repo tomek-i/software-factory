@@ -22,8 +22,21 @@ Severity:
   issue asks.
 - **major**: a real defect or gap that should be fixed before merging (missing test for new logic,
   broken edge case, misleading docs).
-- **minor**: worth improving, but fine to merge as is.
+- **minor**: worth improving, but fine to merge as is: hardening with no reachable path, or defence
+  in depth on top of a check that already holds.
 - **nit**: style or taste.
+
+Security weaknesses are never minor. Anything that weakens a protection is at least **major**:
+
+- a way to become trusted or to skip a human gate;
+- trust, config or progress read from data a branch or an imported or crafted file can plant;
+- untrusted data reaching a link (`href`), HTML, a shell, a file path or the terminal without
+  validation or escaping;
+- reading or writing outside the intended folder;
+- credentials, tokens or local paths leaking into logs, PR bodies or comments.
+
+A reachable hole is critical. "Hard to exploit", "needs a crafted file" or "needs local access"
+lowers such a finding from critical to major, never to minor.
 
 Only critical and major findings send the change back. Be precise: every finding needs evidence
 (file, line, what happens) that someone else can check. Do not pad the list.

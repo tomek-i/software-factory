@@ -45,6 +45,35 @@ describe("rolePrompt", () => {
     expect(builder).toContain("the tests that cover what you changed");
     expect(builder).toContain("Do not run the whole test suite");
   });
+
+  it("grades security weaknesses at least major in every reviewer lens", () => {
+    for (const lens of ["code", "security"] as const) {
+      const reviewer = rolePrompt("reviewer", () => undefined, lens);
+      expect(reviewer).toContain("Security weaknesses are never minor");
+      expect(reviewer).toContain("Anything that weakens a protection is at least **major**");
+      expect(reviewer).toContain("a way to become trusted or to skip a human gate");
+      expect(reviewer).toContain("lowers such a finding from critical to major, never to minor");
+      expect(reviewer).toContain("defence\n  in depth on top of a check that already holds");
+    }
+  });
+
+  it("lists the factory's security invariants and SECURITY.md in the security lens only", () => {
+    const security = rolePrompt("reviewer", () => undefined, "security");
+    for (const name of ["SECURITY.md", "issueBlock", "quietMentions", "redactPaths", "APP_ENV_ALLOWLIST", "CHECK_ENV_DENYLIST", "AGENT_ENV_DENYLIST", "agentEnv", "killTree", "--no-verify"]) {
+      expect(security).toContain(name);
+    }
+    expect(security).toContain("the trusted reader, the store or the run folder");
+    const code = rolePrompt("reviewer", () => undefined, "code");
+    expect(code).not.toContain("SECURITY.md");
+    expect(code).not.toContain("quietMentions");
+  });
+
+  it("keeps the verifier from refuting a security weakness as minor", () => {
+    const verifier = rolePrompt("verifier", () => undefined);
+    expect(verifier).toContain("A security weakness is never only minor");
+    expect(verifier).toContain("Such a\n     finding is at least major");
+    expect(verifier).toContain("the protection is in fact in\n     place, or the path cannot happen");
+  });
 });
 
 describe("rolePrompt with the project's CLAUDE.md", () => {

@@ -90,6 +90,7 @@ Related docs:
 - They read the change from `round-N/change.diff` and the code around it.
 - Each writes `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit.
 - Only critical and major findings count against a change.
+- A security weakness (a way around trust or a gate, unescaped untrusted data, a path outside the folder, a leak) is at least major, even when hard to exploit.
 - Minor ones and nits never hold the run up.
 - If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
 
@@ -99,6 +100,7 @@ Related docs:
 - It has no shell, and by default it uses a different model from the reviewers.
 - It writes `round-N/verify.md`: `VERDICT: CONFIRMED` with the findings that hold.
 - It adds a `## Refuted` line with the reason for each finding that doesn't hold.
+- It may not refute a real security weakness as only minor or hard to exploit.
 - The engine rejects a verdict that skips a finding or judges one twice.
 - **Confirmed** findings go back to the builder, which gets them in its next turn.
   - That costs a review round (`loops.max_review_rounds`).
