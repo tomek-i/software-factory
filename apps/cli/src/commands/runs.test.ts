@@ -65,6 +65,18 @@ describe("factory run", () => {
     expect(logs).toMatch(/agent agent-\w+ builder ok \$0\.04/);
     expect(await runLogs(dir, "#12", { follow: true, intervalMs: 10 }, { print: () => undefined })).toMatch(/is needs_human/);
   });
+
+  it("follows the logs with the paths agents touch relative to the worktree or the repo", async () => {
+    const { run, queue, dir } = setup([{ output: TRIAGE }, { ...BUILD, stream: "write_in_cwd" }, ...reviewsPass()]);
+    queue();
+    await run();
+
+    const followed: string[] = [];
+    await runLogs(dir, "#12", { follow: true, intervalMs: 10 }, { print: (l) => followed.push(l) });
+
+    expect(followed).toContain("[builder] Write: src/feature.ts");
+    expect(followed.some((l) => /^\[builder\] Write: \.factory[\\/]runs[\\/]12-[\w-]+\/notes\.md$/.test(l))).toBe(true);
+  });
 });
 describe("colour", () => {
   it("only styles the text: colour on, the plain text is unchanged; NO_COLOR or a pipe gives no escape codes", async () => {

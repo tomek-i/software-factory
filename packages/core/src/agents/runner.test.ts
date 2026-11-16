@@ -242,6 +242,16 @@ describe("createAgentRunner", () => {
     expect(seen.map((e) => e.type)).toEqual(["agent:start", "agent:activity", "agent:activity", "agent:end"]);
   });
 
+  it("shows paths under the path roots relative to them, in the activity events and the excerpt", async () => {
+    const { runner, options, store, run, seen } = setup([{ stream: "success", output: "DECISION: APPROVE\n" }]);
+
+    await runner({ ...options(), pathRoots: ["/repo"] });
+
+    const activity = seen.flatMap((e) => (e.type === "agent:activity" ? [e.summary] : []));
+    expect(activity).toContain("Read: README.md");
+    expect(store.listAgentRuns(run.id)[0]!.excerpt).toContain("Read: README.md");
+  });
+
   it("runs without a store for agents that have no run yet, still logging the stream", async () => {
     const { options, fake } = setup([{ stream: "success" }]);
     const seen: FactoryEvent[] = [];

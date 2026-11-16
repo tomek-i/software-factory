@@ -2020,6 +2020,8 @@ export class PipelineDriver {
       // Triage itself runs before there is a risk, so it never gets the high-risk settings.
       ...resolveModel(config, { role, lens, risk: role === "triage" ? undefined : this.triageRisk(run) }),
       cwd,
+      // A builder in its worktree shows `src/x.ts`; the run folder shows `.factory/runs/<id>/...`.
+      pathRoots: [this.deps.project.repo_path, cwd],
       logDir: join(this.runDir(run), "logs"),
       signal: this.signal,
       timeoutMs: timeouts?.[role] ?? (role === "builder" ? 90 * 60_000 : 20 * 60_000),
