@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Orientation for Claude Code sessions working on this repo: where things live, what must stay true, and what reviews keep catching. The README has the long versions; follow the links.
+Orientation for Claude Code sessions working on this repo: where things live, what must stay true, and what reviews keep catching. The README and `docs/` have the long versions; follow the links.
 
 Factory agents start with `--setting-sources ""` and do not load this file on their own.
 
@@ -53,7 +53,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
 - `apps/cli/scripts/bundle.mjs`: builds the npm package (see [Releases](README.md#releases)). The bundle defines `__FACTORY_BUNDLE__`, which `SHIPPED_PROMPTS_DIR` and `defaultWebRoot` check to find the prompts and the web app next to the bundle's folder. A new runtime dependency of any package must also go in `apps/cli/package.json`
 
-`apps/server/src`: `factory serve` (see [Web mode](README.md#web-mode))
+`apps/server/src`: `factory serve` (see [Web mode](docs/web-mode.md))
 - `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
@@ -76,14 +76,14 @@ A stage:
 - Add a step method and a `case` in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
 - If it has a gate, add it to `GATES` and handle it in `approveTarget`.
 - Summarise its output file in `runOverview` (`packages/core/src/service/show.ts`) and format it in `apps/cli/src/commands/show.ts`.
-- Update the README [Pipeline](README.md#pipeline) diagram and text.
+- Update the README [Pipeline](README.md#pipeline) diagram and give the stage its own section in [docs/pipeline.md](docs/pipeline.md).
 
 An agent role:
 - Add it to `PromptRole` in `packages/core/src/agents/prompts.ts` and `AGENT_ROLES` in `packages/shared/src/config.ts`.
 - Write `packages/core/prompts/<role>.md`.
 - Give it a profile in `permissionProfile`: no shell, writing only its own output file, unless it truly needs more.
 - Add its kind to `verdictHeaderSchemas` and its file to `verdictPath` (a private function in `packages/core/src/pipeline/driver.ts`).
-- Add a row to the README's role table under [Running an issue](README.md#running-an-issue).
+- Add a row to the role table in [Agent permissions](docs/agent-permissions.md#roles).
 
 A migration:
 - Append a new entry to `MIGRATIONS` in `packages/core/src/store/migrations.ts`. Never edit or reorder an applied one: the version is the entry's position.
@@ -95,7 +95,7 @@ A `GithubPort` method:
 ## Security checklist
 
 From the adversarial reviews of #58 to #61. The protections are summarised in [SECURITY.md](SECURITY.md).
-- Issue text, comments and agent output derived from them are untrusted data. Frame them as data (`issueBlock`), and never let them become a trusted spec without a human. See [Trusted authors](README.md#trusted-authors).
+- Issue text, comments and agent output derived from them are untrusted data. Frame them as data (`issueBlock`), and never let them become a trusted spec without a human. See [Trusted authors](docs/trust.md#trusted-authors).
 - Never read trust, config or progress from files a branch can plant in the working tree. Use the trusted reader, the store or the run folder.
 - Know what each child process's environment holds. Only the app started for capture gets an allowlist (`APP_ENV_ALLOWLIST` in `packages/core/src/capture/server.ts`). Checks get the full environment minus `CHECK_ENV_DENYLIST`, so no tokens. Agents get the full environment minus `AGENT_ENV_DENYLIST`, with `gh` logged out and git's credential helpers, askpass and ssh keys off (`agentEnv`); they still run as the user, so an agent can undo this on purpose (a barrier, not a sandbox). A new child process whose output is published gets an allowlist.
 - Clean up processes, worktrees and temp dirs on every path: success, error, timeout, cancel and signal. Kill whole process trees with `killTree`.
@@ -125,4 +125,4 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 - No AI attribution or co-author trailers.
 - Comments explain why, not what.
 - Every change comes with tests; never weaken, skip or delete a test to make it pass.
-- Update the README when behaviour, config or commands change.
+- Update the README and `docs/` when behaviour, config or commands change: one fact per line, wrapped at sentence or clause boundaries.
