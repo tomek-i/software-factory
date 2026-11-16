@@ -23,7 +23,8 @@
         { "type": "style", "section": "Style", "hidden": true }
       ],
       "extra-files": [
-        { "type": "generic", "path": "apps/cli/src/program.ts" }
+        { "type": "generic", "path": "apps/cli/src/program.ts" },
+        { "type": "json", "path": "apps/cli/package.json", "jsonpath": "$.version" }
       ]
     }
   }

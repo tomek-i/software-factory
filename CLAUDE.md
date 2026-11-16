@@ -50,6 +50,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `main.ts` and `program.ts`: entry point and commander wiring
 - `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`, `work.ts`, `serve.ts`: formatting over `packages/core/src/service/`
 - `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
+- `apps/cli/scripts/bundle.mjs`: builds the npm package (see [Releases](README.md#releases)). The bundle defines `__FACTORY_BUNDLE__`, which `SHIPPED_PROMPTS_DIR` and `defaultWebRoot` check to find the prompts and the web app next to the bundle's folder. A new runtime dependency of any package must also go in `apps/cli/package.json`
 
 `apps/server/src`: `factory serve` (see [Web mode](README.md#web-mode))
 - `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks

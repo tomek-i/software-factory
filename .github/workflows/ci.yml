@@ -40,3 +40,6 @@ jobs:
       # Tests that need Chromium, ffmpeg or the narrate plugin skip themselves when those are missing.
       - run: pnpm test
       - run: pnpm build
+      # The npm package must hold the bundle, prompts and web app, and no workspace dependencies.
+      - run: pnpm --filter @tomek-i/software-factory pack --pack-destination "${{ runner.temp }}/pack"
+      - run: node apps/cli/scripts/check-pack.mjs "${{ runner.temp }}/pack"

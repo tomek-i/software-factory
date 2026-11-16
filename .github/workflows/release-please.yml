@@ -1,6 +1,7 @@
-# Opens or updates a release PR from the conventional commits on main; merging it tags v<version>
-# and publishes a GitHub release. It only manages its own v* releases: the factory's draft
-# factory-media-* releases (PR screenshots) are separate and left alone.
+# Opens or updates a release PR from the conventional commits on main; merging it tags v<version>,
+# publishes a GitHub release and publishes the CLI to npm as @tomek-i/software-factory. It only
+# manages its own v* releases: the factory's draft factory-media-* releases (PR screenshots) are
+# separate and left alone.
 name: Release
 
 on:
@@ -18,10 +19,37 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
     steps:
       # The default GITHUB_TOKEN: PRs it opens do not trigger other workflows, so CI does not run
       # on the release PR. That PR only changes CHANGELOG.md and version strings.
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  npm:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm trusted publishing: an OIDC token instead of a stored npm token, and provenance.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # pnpm packs (it rewrites the workspace: versions); npm publishes, because trusted publishing
+      # needs npm 11.5.1+ and Node 22 ships npm 10. Pinned so a new npm release cannot change it.
+      - run: pnpm --filter @tomek-i/software-factory pack --pack-destination "$RUNNER_TEMP/pack"
+      - run: node apps/cli/scripts/check-pack.mjs "$RUNNER_TEMP/pack"
+      - run: npx --yes npm@11.21.1 publish "$RUNNER_TEMP"/pack/*.tgz --provenance --access public

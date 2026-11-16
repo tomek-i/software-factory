@@ -2,6 +2,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 coverage/
+# copied into the npm package by apps/cli/scripts/bundle.mjs
+apps/cli/prompts/
+apps/cli/web/
+apps/cli/.bundle-test-*/
+*.tgz
 .env
 .env.*
 

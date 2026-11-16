@@ -44,7 +44,7 @@ ${checks}
 # How to start the app for screenshots and walkthrough videos of UI changes. {port} is replaced per run.
 # start also runs in a fresh checkout of the default branch (for the before shots), so include the
 # install step if the app needs one, e.g. "npm ci && npm run dev". Needs Playwright's browsers:
-# run "pnpm exec playwright install chromium" in the factory's checkout.
+# run "npx playwright install chromium" in the factory's install folder (see the factory's README).
 app:
 ${detection.appStart ? `  start: ${q(detection.appStart)}` : '  # start: "npm run dev"'}
   url: "http://localhost:{port}"
