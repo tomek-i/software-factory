@@ -20,7 +20,7 @@ export function buildProgram(): Command {
   const program = new Command()
     .name("factory")
     .description("AI software factory: turns GitHub issues into reviewed, tested pull requests")
-    .version("0.2.0"); // x-release-please-version (release-please bumps it on each release)
+    .version("0.3.0"); // x-release-please-version (release-please bumps it on each release)
 
   program
     .command("init")

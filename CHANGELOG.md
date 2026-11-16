@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/tomek-i/software-factory/compare/v0.2.0...v0.3.0) (2026-11-16)
+
+
+### Features
+
+* publish the cli to npm as @tomek-i/software-factory ([#155](https://github.com/tomek-i/software-factory/issues/155)) ([d97c7c3](https://github.com/tomek-i/software-factory/commit/d97c7c337e332ca7a4abd5ab5e36183b32440bee))
+
 ## [0.2.0](https://github.com/tomek-i/software-factory/compare/v0.1.1...v0.2.0) (2026-11-16)
 
 
