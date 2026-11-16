@@ -10,8 +10,9 @@ type Mode = "approve" | "reject" | "resume" | "cancel";
 
 const SUBMIT: Record<Mode, string> = { approve: "Approve", reject: "Reject", resume: "Resume", cancel: "Cancel run" };
 const APPROVE_ANYWAY = "Approve anyway";
-// Amber like the gate badge: a warning to read first, not a refusal.
-const WARNING = "bg-amber-600 text-white hover:bg-amber-600/90 dark:bg-amber-500 dark:text-black dark:hover:bg-amber-500/90";
+// Amber like the gate badge: a warning to read first, not a refusal. White text needs amber-700 or
+// darker for 4.5:1 contrast (amber-600 is about 3.2:1); dark mode puts black on amber-500.
+const WARNING = "bg-amber-700 text-white hover:bg-amber-800 dark:bg-amber-500 dark:text-black dark:hover:bg-amber-500/90";
 
 /**
  * The decisions on a run waiting for a human: approve or reject at a gate, resume an escalation to

@@ -305,11 +305,19 @@ describe("merge gate card", () => {
     // The failures come before the actions.
     const anyway = screen.getByRole("button", { name: /Approve anyway/ });
     expect(failed.compareDocumentPosition(anyway) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(anyway.className).toContain("bg-amber-600");
+    // Readable in both themes (WCAG AA for small text): white only on amber-700 or darker, black on amber-500.
+    const readable = (button: HTMLElement) => {
+      const classes = new Set(button.className.split(/\s+/));
+      for (const c of ["bg-amber-700", "text-white", "hover:bg-amber-800", "dark:bg-amber-500", "dark:text-black"]) expect(classes.has(c), c).toBe(true);
+      for (const c of ["bg-amber-500", "bg-amber-600", "bg-primary"]) expect(classes.has(c), c).toBe(false);
+    };
+    readable(anyway);
     expect(screen.queryByRole("button", { name: /^Approve$/ })).toBeNull();
 
     await user.click(anyway);
-    await user.click(within(screen.getByRole("form", { name: "Approve anyway" })).getByRole("button", { name: "Approve anyway" }));
+    const submit = within(screen.getByRole("form", { name: "Approve anyway" })).getByRole("button", { name: "Approve anyway" });
+    readable(submit);
+    await user.click(submit);
     await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "merge" } }]));
   });
 
