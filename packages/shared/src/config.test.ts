@@ -119,8 +119,35 @@ describe("resolveModel", () => {
     expect(resolveModel(config, { role: "builder", risk: "HIGH" })).toEqual({ model: "opus", effort: "xhigh" });
   });
 
-  it("leaves effort unset when nothing configures it", () => {
-    expect(resolveModel(factoryConfigSchema.parse({ version: 1 }), { role: "builder" })).toEqual({ model: "opus" });
+  it("uses the recommended models when the config sets none", () => {
+    const defaults = factoryConfigSchema.parse({ version: 1 });
+    expect(resolveModel(defaults, { role: "triage" })).toEqual({ model: "opus", effort: "high" });
+    expect(resolveModel(defaults, { role: "builder" })).toEqual({ model: "opus", effort: "medium" });
+    expect(resolveModel(defaults, { role: "builder", risk: "HIGH" })).toEqual({ model: "opus", effort: "high" });
+    expect(resolveModel(defaults, { role: "reviewer", lens: "docs" })).toEqual({ model: "haiku", effort: "low" });
+    expect(resolveModel(defaults, { role: "capture" })).toEqual({ model: "haiku", effort: "low" });
+  });
+
+  it("fills in only what the config leaves open, so a better default still reaches the rest", () => {
+    const custom = factoryConfigSchema.parse({ version: 1, models: { roles: { builder: "sonnet" }, reviews: { docs: "sonnet" } } });
+    expect(resolveModel(custom, { role: "builder" })).toEqual({ model: "sonnet", effort: "medium" });
+    expect(resolveModel(custom, { role: "reviewer", lens: "docs" })).toEqual({ model: "sonnet", effort: "low" });
+    expect(resolveModel(custom, { role: "triage" })).toEqual({ model: "opus", effort: "high" });
+    expect(resolveModel(custom, { role: "reviewer", lens: "ui" })).toEqual({ model: "haiku", effort: "low" });
+  });
+
+  it("lets anything the config sets beat every recommendation", () => {
+    // default and effort reach every agent the config does not name, recommended entries or not.
+    const everywhere = factoryConfigSchema.parse({ version: 1, models: { default: "sonnet", effort: "low" } });
+    expect(resolveModel(everywhere, { role: "triage" })).toEqual({ model: "sonnet", effort: "low" });
+    expect(resolveModel(everywhere, { role: "builder", risk: "HIGH" })).toEqual({ model: "sonnet", effort: "low" });
+    expect(resolveModel(everywhere, { role: "reviewer", lens: "security" })).toEqual({ model: "sonnet", effort: "low" });
+    // roles.reviewer reaches the lenses, although every lens has a recommended entry.
+    const reviewer = factoryConfigSchema.parse({ version: 1, models: { roles: { reviewer: "haiku" } } });
+    expect(resolveModel(reviewer, { role: "reviewer", lens: "code" }).model).toBe("haiku");
+    // A role's own choice holds for high-risk issues too, without repeating it under high_risk.
+    const builder = factoryConfigSchema.parse({ version: 1, models: { roles: { builder: "sonnet" } } });
+    expect(resolveModel(builder, { role: "builder", risk: "HIGH" })).toEqual({ model: "sonnet", effort: "high" });
   });
 });
 

@@ -26,6 +26,12 @@ describe("rolePrompt", () => {
     expect(rolePrompt("builder", read)).toBe("custom builder");
     expect(rolePrompt("triage", read)).toContain("# Role: triage");
   });
+
+  it("leaves the whole test suite to the quality gate, so a build does not run it twice", () => {
+    const builder = rolePrompt("builder", () => undefined);
+    expect(builder).toContain("the tests that cover what you changed");
+    expect(builder).toContain("Do not run the whole test suite");
+  });
 });
 
 describe("issueBlock", () => {

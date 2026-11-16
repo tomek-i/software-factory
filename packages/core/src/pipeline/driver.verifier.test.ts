@@ -51,6 +51,7 @@ describe("PipelineDriver", () => {
         const rebuilt = calls.filter((c) => c.role === "builder")[1]!;
         expect(rebuilt.stdin).toContain("The reviewers of round 1 found problems, and a verifier confirmed these");
         expect(rebuilt.stdin).toContain('"claim": "it says fixed"');
+        expect(rebuilt.stdin).toContain("run the quick checks and the tests that cover your fixes, commit (do not push)");
         expect(rebuilt.stdin).not.toContain("quality gate failed");
         // The second round's reviewer is asked about its earlier findings first.
         expect(calls.filter((c) => c.role === "reviewer-code")[1]!.stdin).toContain("Your findings from round 1");

@@ -20,7 +20,7 @@ vi.mock("./commands/runs.js", () => ({
 }));
 vi.mock("./commands/new.js", () => ({ runNew: vi.fn() }));
 
-const REFUSED = /inside the repository it would change\. Run it from a pinned copy/;
+const REFUSED = /inside the repository it would change\.[\s\S]*npm i -g @tomek-i\/software-factory/;
 
 function repo(): string {
   const dir = mkdtempSync(join(tmpdir(), "factory-self-"));
@@ -38,7 +38,10 @@ function cliAt(dir: string): string {
 describe("refuseRunningOnItself", () => {
   it("refuses a copy inside the repository, also in one of its worktrees", () => {
     const root = repo();
-    expect(() => refuseRunningOnItself(root, cliAt(join(root, "apps", "cli", "dist")))).toThrow(REFUSED);
+    const inside = cliAt(join(root, "apps", "cli", "dist"));
+    expect(() => refuseRunningOnItself(root, inside)).toThrow(REFUSED);
+    // Names the copy, so a global `factory` linked from the checkout is recognisable.
+    expect(() => refuseRunningOnItself(root, inside)).toThrow(inside);
     expect(() => refuseRunningOnItself(join(root, "apps"), cliAt(join(root, ".worktrees", "12-x", "apps", "cli", "dist")))).toThrow(REFUSED);
   });
 

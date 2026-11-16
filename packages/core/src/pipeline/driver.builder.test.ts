@@ -37,6 +37,8 @@ describe("PipelineDriver", () => {
     await driver.drive(run.id);
 
     expect(fake.calls()[2]!.stdin).toContain("The quality gate failed in round 1");
+    // The builder cannot push; the engine does after checking the commits.
+    expect(fake.calls()[2]!.stdin).toContain("commit (do not push)");
     expect(fake.calls()[2]!.stdin).not.toContain("approved the triage");
   });
 

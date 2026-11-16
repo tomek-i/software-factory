@@ -98,7 +98,7 @@ describe("runWork", () => {
     const stopRequest = () => (lines.some((l) => l.includes("Skipped")) ? { at: Date.now() + 1, now: false } : undefined);
     await runWork({}, { ...deps, projects: () => [{ path: here, name: "self", added_at: "t" }], scheduler: { ...deps.scheduler, stopRequest } });
 
-    expect(lines.some((l) => /^\[self\] Skipped: This copy of the factory is inside the repository/.test(l))).toBe(true);
+    expect(lines.some((l) => /^\[self\] Skipped: This copy of the factory \(.+\) is inside the repository/.test(l))).toBe(true);
   }, 30_000);
 
   it("is interrupted when the signal aborts", async () => {
