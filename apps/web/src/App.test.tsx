@@ -142,6 +142,19 @@ describe("layout", () => {
     expect([...server.tokens]).toEqual(["t".repeat(64)]);
   });
 
+  it("lines the header row and the page content up in one column that widens only on large screens", async () => {
+    renderAt("/runs");
+
+    await screen.findByLabelText("Project");
+    const classes = (el: Element) => new Set(el.className.split(/\s+/));
+    const header = classes(screen.getByRole("banner").firstElementChild!);
+    const main = classes(screen.getByRole("main"));
+    for (const c of ["mx-auto", "max-w-6xl", "px-4", "xl:px-6", "2xl:max-w-(--breakpoint-2xl)", "2xl:px-8", "min-[120rem]:max-w-[1800px]"]) {
+      expect(header.has(c), `header has ${c}`).toBe(true);
+      expect(main.has(c), `main has ${c}`).toBe(true);
+    }
+  });
+
   it("asks for the printed link when there is no session", async () => {
     server.projectsStatus = 401;
     renderAt("/inbox");
