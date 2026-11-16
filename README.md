@@ -360,6 +360,8 @@ apps/web          the web app (React, Vite, Tailwind), served by apps/server
 packages/core     engine: config, SQLite store, state machine, gates, agent runner, prompts,
                   worktrees, quality gate, capture (app, browser), pipeline driver, init, GitHub issue sync, lessons PR,
                   and the run actions the CLI formats (run, approve, reject, resume, cancel, show, lessons, drafts)
+  src/pipeline/   the pipeline driver (driver.ts) and one module per stage in stages/ (triage, refine, critic,
+                  build, gate, review, capture, pr, merge, learn)
   prompts/        shipped role prompts (override per repo in .factory/prompts/<role>.md)
   test/           fake `claude` binary and fixtures: tests never spend real usage
 packages/shared   zod schemas shared by everything (config, run states, agent verdicts)

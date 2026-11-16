@@ -18,7 +18,10 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `packages/core/src`: the engine, exported through `index.ts`
 - `pipeline/transitions.ts`: `RunMachine`, the forward edges and the guards on them
-- `pipeline/driver.ts`: `PipelineDriver`, whose private `step` has a `case` per stage; `approveTarget`, `prBody`
+- `pipeline/driver.ts`: `PipelineDriver`, the orchestrator: `startRun`, `drive` (lease, abort signal), `onError`, and `step`, which has a `case` per stage. It re-exports the public names of the files below
+- `pipeline/stages/<stage>.ts`: one module per stage (`triage` with intake, `refine`, `critic`, `build`, `gate`, `review` with the verifier, `capture`, `pr`, `merge` with re-sync and approver, `learn`), each a function `(ctx, run) => StepResult`
+- `pipeline/stages/context.ts`: `StageContext`, what every stage gets (store, project, config, ports, run machine, the abort signal, and helpers such as `move`, `waitForHuman`, `escalate`, `loopBack`, `agentBase`); `DriverDeps`, `DriveOutcome`
+- `pipeline/shared.ts`: helpers that need no driver: `approveTarget`, `nextAfterTriage`, `runDirOf`, `prBody`, `verdictPath`, `runEvidence`, spec rounds, `readValid`, `section`; `pipeline/reviews.ts`: blocking findings, what the verifier must judge, review notes
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
@@ -73,7 +76,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 A stage:
 - Add it to `STAGES` in `packages/shared/src/states.ts`, in pipeline order.
 - Add its edges to `FORWARD` and any guards to `GUARDS` in `packages/core/src/pipeline/transitions.ts`.
-- Add a step method and a `case` in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
+- Write it as a function `(ctx, run) => StepResult` in `packages/core/src/pipeline/stages/<stage>.ts`, and add a `case` for it in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
 - If it has a gate, add it to `GATES` and handle it in `approveTarget`.
 - Summarise its output file in `runOverview` (`packages/core/src/service/show.ts`) and format it in `apps/cli/src/commands/show.ts`.
 - Update the README [Pipeline](README.md#pipeline) diagram and give the stage its own section in [docs/pipeline.md](docs/pipeline.md).
@@ -82,7 +85,7 @@ An agent role:
 - Add it to `PromptRole` in `packages/core/src/agents/prompts.ts` and `AGENT_ROLES` in `packages/shared/src/config.ts`.
 - Write `packages/core/prompts/<role>.md`.
 - Give it a profile in `permissionProfile`: no shell, writing only its own output file, unless it truly needs more.
-- Add its kind to `verdictHeaderSchemas` and its file to `verdictPath` (a private function in `packages/core/src/pipeline/driver.ts`).
+- Add its kind to `verdictHeaderSchemas` and its file to `verdictPath` (in `packages/core/src/pipeline/shared.ts`).
 - Add a row to the role table in [Agent permissions](docs/agent-permissions.md#roles).
 
 A migration:

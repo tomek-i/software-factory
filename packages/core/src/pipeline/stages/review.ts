@@ -1,0 +1,247 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { isBlocking, isTrustedIssue, parseVerdict, type ParsedVerdict, type ReviewLens } from "@factory/shared";
+import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
+import { runTurn, type TurnResult } from "../../agents/turn.js";
+import { gitEvidence, type Worktree } from "../../git/worktrees.js";
+import type { Issue, Run } from "../../store/store.js";
+import { resolveGate } from "../gates.js";
+import { changeReport, freshBase } from "../hard-rules.js";
+import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "../reviews.js";
+import { readReview, readValid, reviewPath, runEvidence } from "../shared.js";
+import type { StageContext, StepResult } from "./context.js";
+
+/**
+ * Run the review lenses in parallel on the commit that passed the gate, then decide the review
+ * gate. A lens that already wrote a valid review for this round (e.g. before a usage limit) is
+ * not run again. Blocking findings go to the verifier: the ones it confirms send the run back to
+ * the builder; minor findings and nits never do.
+ */
+export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
+  const dir = ctx.runDir(run);
+  const issue = ctx.issueOf(run);
+  const worktree = ctx.worktreeOf(run);
+  const round = run.round;
+  const roundDir = join(dir, `round-${round}`);
+  const git = gitEvidence(worktree, ctx.defaultBranch, ctx.exec);
+  const commit = parseVerdict("checks", readFileSync(join(roundDir, "checks.md"), "utf8")).header.COMMIT;
+  if (git.head() !== commit) {
+    return ctx.escalate(run, `HEAD is ${git.head().slice(0, 7)} but the quality gate passed ${commit.slice(0, 7)}; reviews only look at the gated commit`);
+  }
+  let base: string;
+  try {
+    base = freshBase(worktree.path, ctx.defaultBranch, commit, ctx.exec);
+  } catch (err) {
+    return ctx.escalate(run, `could not find where the branch left ${ctx.defaultBranch}: ${(err as Error).message}`);
+  }
+
+  const lenses = ctx.reviewLenses(run);
+  const pending = lenses.filter((lens) => !readReview(roundDir, lens));
+  // The engine writes the change for the reviewers and the verifier, who get no shell (see permissionProfile).
+  const changeFile = join(roundDir, "change.diff");
+  try {
+    mkdirSync(roundDir, { recursive: true });
+    writeFileSync(changeFile, changeReport(worktree.path, base, commit, ctx.exec));
+  } catch (err) {
+    return ctx.escalate(run, `could not prepare the change for the reviewers: ${(err as Error).message}`);
+  }
+  const turns = await Promise.all(pending.map((lens) => reviewTurn(ctx, run, issue, worktree, lens, round, base, commit, changeFile)));
+  // A usage limit stops the run where it is; the reviews already written are kept for next time.
+  const limited = turns.find((t) => t.turn.status === "failed" && t.turn.agent.outcome.kind === "rate_limited");
+  if (limited && limited.turn.status !== "ok") return ctx.agentTrouble(run, `reviewer (${limited.lens})`, limited.turn);
+  const troubles = turns.flatMap((t) => (t.turn.status === "ok" ? [] : [{ lens: t.lens, turn: t.turn }]));
+  if (troubles.length === 1) return ctx.agentTrouble(run, `reviewer (${troubles[0]!.lens})`, troubles[0]!.turn);
+  if (troubles.length > 1) {
+    if (ctx.load(run.id).state !== run.state) return undefined; // cancelled while the reviewers ran
+    // Every failed lens is named; the lenses that did write a review are kept for the next attempt.
+    return ctx.escalate(run, troubles.map((t) => ctx.troubleReason(`reviewer (${t.lens})`, t.turn)).join("; "));
+  }
+
+  const reviews = lenses.map((lens) => ({ lens, verdict: readReview(roundDir, lens)! }));
+  const summary = `reviews: ${reviews
+    .map(({ lens, verdict }) => {
+      const blocking = verdict.findings.filter(isBlocking).length;
+      return `${lens} ${verdict.header.VERDICT}${blocking ? ` (${blocking} blocking)` : ""}`;
+    })
+    .join(", ")}`;
+  ctx.info(run, summary);
+
+  let hits: string[];
+  try {
+    hits = ctx.hardRuleHits(run, worktree, commit);
+  } catch (err) {
+    // Without the check nobody knows what the diff touches: a human decides.
+    return ctx.escalate(run, `${summary}; the hard-rule check failed: ${(err as Error).message}`);
+  }
+  const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
+  const held = run.unsafe ? [] : hits.map((h) => `hard rule: ${h}`);
+
+  let verified: ParsedVerdict<"verify"> | undefined;
+  const outcome = [summary];
+  if (reviews.some(({ verdict }) => verdict.header.VERDICT === "CHANGES")) {
+    const blocking = blockingFindings(reviews);
+    const verifyFile = join(roundDir, "verify.md");
+    const validate = (verdict: ParsedVerdict<"verify">) => verifyProblems(verdict, blocking);
+    // A valid judgement from an earlier attempt at this round (e.g. before a usage limit) stands.
+    verified = readValid("verify", verifyFile, validate);
+    if (!verified) {
+      const turn = await verifyTurn(ctx, run, issue, worktree, blocking, { outputFile: verifyFile, validate, base, commit, changeFile });
+      if (turn.status !== "ok") return ctx.agentTrouble(run, "verifier", turn);
+      verified = turn.verdict;
+    }
+    if (verified.header.VERDICT === "CONFIRMED") {
+      const confirmed = `the verifier confirmed ${verified.findings.length} of ${blocking.length} blocking findings`;
+      ctx.info(run, confirmed);
+      // A stall or the cap stops the run at the review gate, where a human may approve it as is
+      // (`factory approve`), so they see the hard rules and the PR lists the open findings.
+      const found = verified;
+      return ctx.loopBack(
+        run,
+        `${confirmed} (round ${round})`,
+        { round },
+        runEvidence(dir, round, git),
+        "reviews",
+        `reviews still have confirmed findings after round ${round}`,
+        (reason, data) => {
+          publishReviewNotes(ctx, run, reviews, found);
+          return ctx.waitForHuman(run, "review", [summary, reason, ...held, ...lifted], data);
+        },
+      );
+    }
+    outcome.push(`the verifier refuted all ${blocking.length} blocking findings`);
+    ctx.info(run, outcome.at(-1)!);
+  }
+  publishReviewNotes(ctx, run, reviews, verified);
+  const mode = ctx.deps.config.gates.review;
+  const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
+  if (gate.outcome === "wait_human") return ctx.waitForHuman(run, "review", [...outcome, ...gate.reasons, ...lifted]);
+  for (const line of lifted) ctx.info(run, line);
+  ctx.recordProceed(run, "review", mode, [...outcome, ...lifted].join("; "), commit);
+  ctx.move(run, "capture", `reviews clear (round ${round})`, { round, commit }, runEvidence(dir, round, git));
+  return undefined;
+}
+
+/** The verifier checks this round's blocking findings against the code. */
+function verifyTurn(
+  ctx: StageContext,
+  run: Run,
+  issue: Issue,
+  worktree: Worktree,
+  blocking: BlockingFinding[],
+  turn: { outputFile: string; validate: (verdict: ParsedVerdict<"verify">) => string[]; base: string; commit: string; changeFile: string },
+): Promise<TurnResult<"verify">> {
+  const dir = ctx.runDir(run);
+  const { outputFile, validate, base, commit, changeFile } = turn;
+  const files = writeRoleFiles(dir, "verifier", rolePrompt("verifier", ctx.deps.read), permissionProfile("verifier", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
+  const findings = blocking.map(({ lens, finding }) => ({ lens, ...finding }));
+  return runTurn({
+    run: ctx.deps.runAgent,
+    kind: "verify",
+    outputFile,
+    validate,
+    agent: {
+      ...ctx.agentBase(run, "verifier", worktree.path),
+      ...files,
+      addDirs: [dir],
+      prompt: renderTask({
+        role: "verifier",
+        runId: run.id,
+        runDir: dir,
+        workDir: worktree.path,
+        outputFile,
+        issue: ctx.issueText(issue),
+        trusted: isTrustedIssue(ctx.deps.config, issue),
+        lessons: ctx.lessons(),
+        branch: worktree.branch,
+        defaultBranch: ctx.defaultBranch,
+        sections: [
+          ...ctx.triageScope(dir),
+          ...ctx.acceptedSpec(run),
+          { title: "Findings to verify", body: ["```json", JSON.stringify(findings, null, 2), "```"].join("\n") },
+        ],
+        instructions: [
+          `Verify each of the ${blocking.length} findings above against the change on branch \`${worktree.branch}\`.`,
+          `Base: \`${base}\` (where the branch left ${ctx.defaultBranch}). Commit under review: \`${commit}\`.`,
+          `The commits and the full diff are in \`${changeFile}\`. Read it, then the code each finding points at, then write the output file.`,
+        ].join("\n"),
+      }),
+    },
+  });
+}
+
+/**
+ * Rewrite the PR description with what the reviews leave for the human: minor findings and nits,
+ * and the blocking findings the verifier refuted. Built from build.md each time, so it never stacks.
+ */
+function publishReviewNotes(ctx: StageContext, run: Run, reviews: LensReview[], verified: ParsedVerdict<"verify"> | undefined): void {
+  ctx.updatePrDescription(run, reviewNotes(reviews, verified));
+}
+
+async function reviewTurn(
+  ctx: StageContext,
+  run: Run,
+  issue: Issue,
+  worktree: Worktree,
+  lens: ReviewLens,
+  round: number,
+  base: string,
+  commit: string,
+  changeFile: string,
+) {
+  const dir = ctx.runDir(run);
+  const outputFile = reviewPath(join(dir, `round-${round}`), lens);
+  const files = writeRoleFiles(
+    dir,
+    `reviewer-${lens}`,
+    rolePrompt("reviewer", ctx.deps.read, lens),
+    permissionProfile("reviewer", { runDirFromCwd: relative(worktree.path, dir), outputFile }),
+  );
+  const sections = [...ctx.triageScope(dir), ...ctx.acceptedSpec(run)];
+  const previous = previousReview(ctx, run, lens, round);
+  if (previous) {
+    sections.push({
+      title: `Your findings from round ${previous.round}`,
+      body: ["Check each of these first and say which are fixed.", "", "```json", JSON.stringify(previous.verdict.findings, null, 2), "```"].join("\n"),
+    });
+  }
+  const turn = await runTurn({
+    run: ctx.deps.runAgent,
+    kind: "review",
+    outputFile,
+    agent: {
+      ...ctx.agentBase(run, "reviewer", worktree.path, lens),
+      role: `reviewer:${lens}`,
+      ...files,
+      addDirs: [dir],
+      prompt: renderTask({
+        role: "reviewer",
+        lens,
+        runId: run.id,
+        runDir: dir,
+        workDir: worktree.path,
+        outputFile,
+        issue: ctx.issueText(issue),
+        trusted: isTrustedIssue(ctx.deps.config, issue),
+        lessons: ctx.lessons(),
+        branch: worktree.branch,
+        defaultBranch: ctx.defaultBranch,
+        sections,
+        instructions: [
+          `Review the change on branch \`${worktree.branch}\` through the ${lens} lens.`,
+          `Base: \`${base}\` (where the branch left ${ctx.defaultBranch}). Commit under review: \`${commit}\`.`,
+          `The commits and the full diff are in \`${changeFile}\`. Read it, then the code around the change, then write the output file.`,
+        ].join("\n"),
+      }),
+    },
+  });
+  return { lens, turn };
+}
+
+/** This lens's review from the latest earlier round that has one. */
+function previousReview(ctx: StageContext, run: Run, lens: ReviewLens, round: number): { round: number; verdict: ParsedVerdict<"review"> } | undefined {
+  for (let r = round - 1; r >= 1; r--) {
+    const verdict = readReview(join(ctx.runDir(run), `round-${r}`), lens);
+    if (verdict) return { round: r, verdict };
+  }
+  return undefined;
+}
