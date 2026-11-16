@@ -10,7 +10,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `packages/shared/src`: zod schemas used everywhere
 - `states.ts`: `STAGES`, parked and terminal states, `GATES` and gate modes
-- `config.ts`: the `.factory/config.yaml` schema and defaults, `AGENT_ROLES` for per-role models
+- `config.ts`: the `.factory/config.yaml` schema and defaults, `AGENT_ROLES` for per-role models, `DEFAULT_MODELS` for the recommended ones
 - `verdict.ts`: agent output headers (`verdictHeaderSchemas`), `parseVerdict`, findings, lessons
 - `capture.ts`: the capture agent's plan (`capturePlanSchema`), data only, same-origin paths
 - `registry.ts`: the per-user project list's file format (`registryFileSchema`)
@@ -30,7 +30,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `github/port.ts`: `GithubPort` and its real `gh` implementation, `ghPort`
 - `github/issues.ts`: issue sync; `github/media.ts`, `github/attachments.ts`: videos and images on PRs; `github/labels.ts`: status labels
 - `capture/`: starts the app (`server.ts`), drives Chromium (`browser.ts`), renders narrated video (`narrate.ts`), writes the report (`report.ts`)
-- `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`
+- `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`; `config/reset.ts`: `resetConfigText`, behind `factory config reset`
 - `gate/gate.ts`: the quality gate (`runQualityGate`); `gate/secrets.ts`: secret scan of the diff
 - `git/worktrees.ts`: creates and removes run worktrees in the repo's `.worktrees` folder
 - `lessons/publish.ts`: the lessons PR (`publishLessons`)

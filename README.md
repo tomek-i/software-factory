@@ -122,7 +122,7 @@ Run it from this repo's root. It needs pnpm's global bin folder on your `PATH`: 
 - adds the repo to your project list (see below).
 - creates GitHub status labels only if you enabled `github.status_labels` (off by default; see below).
 
-It is safe to re-run. An existing config is never overwritten.
+It is safe to re-run. An existing config is never overwritten; `factory config reset` brings settings back to the defaults (see [Configuration](#configuration)).
 
 The project list holds every repo you ran `factory init` in, so `factory work` and `factory serve` can find them. It is one file per user: `%LOCALAPPDATA%\software-factory\projects.json` on Windows, or `~/.config/software-factory/projects.json` (`$XDG_CONFIG_HOME`) elsewhere. `FACTORY_DATA_DIR` moves that folder, together with the GitHub browser profile. The list only holds paths and names; each repo keeps its own state.
 
@@ -579,10 +579,20 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
 | `loops` | Caps for build iterations, review rounds and spec critic rounds |
 | `reviews` | Which review lenses run always and which only for UI changes |
-| `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH |
+| `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). An entry replaces the default for that role or lens only |
 | `concurrency` | `max_runs`: how many runs `factory run` drives at once (default 2) |
 | `trust` | Whose issues and comments count as the spec |
 | `github` | Optional status labels (`status_labels`, `label_prefix`). `poll_interval_sec` and `max_starts_per_day` are accepted but not used yet |
+
+Anything the file leaves out uses the factory's default, so new settings and changed defaults reach your project with the next factory update. A value written in the file stays as it is. To go back to the defaults for some settings:
+
+```bash
+factory config reset models                 # a whole section
+factory config reset models.roles.builder   # one entry
+factory config reset --all                  # everything except project, checks, app and trust
+```
+
+It removes those lines (and the comments right above them) from the working copy's `.factory/config.yaml` and leaves the rest of the file as it was. Commit the change and merge it: runs read the config from the default branch on GitHub. A config written by an older `factory init` spells out the models of that time, so `factory config reset models` gives it the current recommendations.
 
 ## Development
 

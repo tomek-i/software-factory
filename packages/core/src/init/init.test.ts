@@ -178,6 +178,7 @@ describe("initRepo", () => {
 
     expect(readFileSync(configFile, "utf8")).toContain("hand-edited");
     expect(second.steps.map((s) => s.status)).toContain("skipped");
+    expect(second.steps).toContainEqual({ status: "skipped", message: expect.stringContaining("`factory config reset` brings settings back to the defaults") });
     const store = new Store(join(dir, ".factory", "factory.db"));
     expect(store.listProjects()).toHaveLength(1);
     store.close();

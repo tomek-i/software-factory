@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { DEFAULT_PORT } from "@factory/server";
 import { runCleanup } from "./commands/cleanup.js";
+import { runConfigReset } from "./commands/config.js";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
@@ -26,6 +27,17 @@ export function buildProgram(): Command {
     .description("set up the factory in the current git repository")
     .action(() => {
       console.log(runInit(process.cwd()));
+    });
+
+  const config = program.command("config").description("manage .factory/config.yaml");
+
+  config
+    .command("reset")
+    .description("take settings out of .factory/config.yaml so the factory's defaults apply to them")
+    .argument("[settings...]", "sections or dotted entries, e.g. models or models.roles.builder")
+    .option("--all", "reset everything except project, checks, app and trust")
+    .action((settings: string[], options: { all?: boolean }) => {
+      console.log(runConfigReset(process.cwd(), settings, options));
     });
 
   const projects = program
