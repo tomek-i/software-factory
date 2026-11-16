@@ -2,7 +2,7 @@
 // Checks a packed tarball of the npm package before it can be published: the bundle, the prompts
 // and the web app are in it, and no workspace package is left for users to install.
 // Usage: node apps/cli/scripts/check-pack.mjs <folder holding the one tarball>
-// A folder rather than a glob, which Git Bash on Windows CI does not expand on D:\ paths.
+// A folder rather than a glob, so the same step works in every shell on Linux and Windows.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";

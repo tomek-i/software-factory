@@ -94,7 +94,9 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
   - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing. It also keeps your GitHub login away from agents (see "Agent permissions" under [Running an issue](#running-an-issue)).
 - Optional, for screenshots and videos of UI changes: Playwright's Chromium.
   - Installing the factory installs the `playwright` package (an optional dependency) but never downloads browsers.
-  - Run `npx playwright install chromium` once (`pnpm exec playwright install chromium` in a source checkout).
+  - Download Chromium once with the factory's own Playwright, so the browser build matches it. A bare `npx playwright` elsewhere fetches the latest Playwright, whose browser the factory cannot use.
+    - npm install (PowerShell or bash): `cd "$(npm root -g)/@tomek-i/software-factory"`, then `npx playwright install chromium`.
+    - Source checkout: `pnpm exec playwright install chromium`.
   - Without it the capture stage is skipped with a note and runs carry on.
   - If the factory's own `playwright` package is missing, the copy the [narrate](https://github.com/tomek-i/narrate-plugin) Claude Code plugin ships with is used, as far as `app.narrate` allows: with `auto` (the default) the newest plugin in the cache, with a path to `narrate.mjs` only the plugin that path belongs to, and with `off` not at all.
 - Optional, so everyone can see the screenshots and videos in the factory's PRs: run `factory login github` once. See [Where the media goes](#where-the-media-goes).
@@ -642,13 +644,21 @@ The factory works on its own issues. It runs from the **published npm package**,
   pnpm add -g "$pinned\apps\cli"
   ```
 
+  Update it only after a PR merged and no run is in progress: `git -C $pinned pull --ff-only; pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build`.
+
 ### Releases
 
 [release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, bumps the version in `package.json`, `apps/cli/package.json` and `factory --version`, and publishes the CLI to npm as [`@tomek-i/software-factory`](https://www.npmjs.com/package/@tomek-i/software-factory). Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
 
 CI does not run on the release PR: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for that token's events. The PR only changes `CHANGELOG.md`, `.release-please-manifest.json` and version strings.
 
-The npm package is `apps/cli`. `apps/cli/scripts/bundle.mjs` bundles the CLI and the workspace packages into `dist/main.js` with esbuild and copies the shipped prompts and the built web app next to it. npm dependencies stay external, so every one the bundle imports must be listed in `apps/cli/package.json`. CI packs it on every push and checks the tarball (`apps/cli/scripts/check-pack.mjs`). The release workflow publishes with npm [trusted publishing](https://docs.npmjs.com/trusted-publishers), so no npm token is stored. npm only allows a trusted publisher on a package that exists, so the first version is published by hand (`npm login`, then `pnpm build` and `pnpm --filter @tomek-i/software-factory publish` on a clean `main`).
+The npm package is `apps/cli`. `apps/cli/scripts/bundle.mjs` bundles the CLI and the workspace packages into `dist/main.js` with esbuild and copies the shipped prompts and the built web app next to it. npm dependencies stay external, so every one the bundle imports must be listed in `apps/cli/package.json`. CI packs it on every push and checks the tarball (`apps/cli/scripts/check-pack.mjs`). The release workflow publishes with npm [trusted publishing](https://docs.npmjs.com/trusted-publishers), so no npm token is stored. npm only allows a trusted publisher on a package that exists, so the package was set up once by hand:
+
+1. Merge the first release PR that includes the npm package. Its `npm` job fails, because the package does not exist yet.
+2. Publish that release by hand from its tag, so the npm version matches the git tag: `git checkout v<version>`, `npm login`, `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm --filter @tomek-i/software-factory publish`.
+3. On npmjs.com, add a trusted publisher in the package's settings: GitHub Actions, repository `tomek-i/software-factory`, workflow `release-please.yml`, no environment.
+
+Every release after that publishes itself.
 
 ## Contributing
 
