@@ -111,7 +111,7 @@ pnpm add -g "$(pwd)/apps/cli"   # puts `factory` on your PATH
 factory init
 ```
 
-`pnpm add -g` links the checkout rather than copying it, so a later `pnpm build` updates the global `factory`. It needs pnpm's global bin folder on your `PATH`; run `pnpm setup` once if it is not. `pnpm remove -g @factory/cli` takes it off again. `pnpm factory` is not a substitute: pnpm runs scripts in the factory's own folder, so it always acts on this repo.
+Run it from this repo's root. It needs pnpm's global bin folder on your `PATH`: if `pnpm add -g` complains, run `pnpm setup` once and open a new shell. `pnpm add -g` links the checkout rather than copying it, so a later `pnpm build` updates the global `factory`. `pnpm remove -g @factory/cli` takes it off again. `pnpm -C <path-to-this-repo> factory` is not a substitute: pnpm runs the script in the factory's own folder, and the CLI acts on its working directory, so it would always act on this repo.
 
 `factory init`:
 
@@ -633,7 +633,7 @@ The factory works on its own issues. It runs from a **pinned copy** of `main`, n
   $pinned = "$env:LOCALAPPDATA\software-factory\pinned"
   git clone https://github.com/tomek-i/software-factory $pinned
   pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
-  pnpm add -g "$pinned\apps\cli"   # the global `factory` now runs the pinned copy
+  pnpm add -g "$pinned\apps\cli"   # the global `factory` now runs the pinned copy, replacing one linked from a dev checkout
   ```
 
 - **Register this repo** with `factory init` in your checkout. The committed `.factory/config.yaml` is kept.
