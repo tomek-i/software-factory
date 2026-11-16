@@ -40,8 +40,11 @@ Related docs:
 - It writes acceptance criteria, scope, out of scope and open questions (with the assumption it made for each) in `spec-N/refine.md`.
 - Its header is `STATUS: REFINED`.
 - `BLOCKED` with a reason stops the run for you.
-- The engine posts the spec on the issue as one comment marked `<!-- factory:refine -->`.
-- The engine edits that comment in place on later rounds, so the issue shows the current spec rather than every version.
+- On an issue the factory's GitHub account wrote (such as one from `factory new`), the engine puts the spec in a section at the end of the issue body.
+  - The section is marked `<!-- factory:refine -->` … `<!-- /factory:refine -->`; the text above it is never changed.
+  - Edit the section to correct the spec: after `factory sync`, the next triage reads it as part of the issue.
+- On anyone else's issue, the engine posts the spec as one comment marked `<!-- factory:refine -->` and leaves the issue as they wrote it.
+- Later rounds replace the section or edit the comment in place, so the issue shows the current spec rather than every version.
 
 ## Spec critic
 
