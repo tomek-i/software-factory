@@ -12,7 +12,6 @@ import {
   resolveModel,
   type AgentRole,
   type CapturePlan,
-  type FactoryConfig,
   type Gate,
   type GateMode,
   type ParsedVerdict,
@@ -21,24 +20,21 @@ import {
   type VerdictKind,
 } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles, type IssueText, type PromptRole } from "../agents/prompts.js";
-import type { AgentRunner } from "../agents/runner.js";
 import { runTurn, type TurnResult } from "../agents/turn.js";
-import { playwrightCapture, type CapturePort } from "../capture/capture.js";
+import type { CapturePort } from "../capture/capture.js";
 import { renderCaptureReport, screenshotsSection, type CaptureOutcome } from "../capture/report.js";
-import type { TrustedReader } from "../config/trusted.js";
-import type { FactoryEvents } from "../events.js";
 import { runQualityGate, scanSecrets } from "../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { CLEANUP_MARKER, cleanupFinishedRun, describeCleanup } from "./cleanup.js";
-import { factoryComment, type GithubPort, type PullRequestState, type RequiredCheck } from "../github/port.js";
-import { PORT_BLOCK_SIZE, type Issue, type Project, type Run, type RunPatch, type Store } from "../store/store.js";
-import { runCommand, type CommandRunner } from "../util/exec.js";
+import { factoryComment, type PullRequestState, type RequiredCheck } from "../github/port.js";
+import { PORT_BLOCK_SIZE, type Issue, type Run, type RunPatch } from "../store/store.js";
+import type { CommandRunner } from "../util/exec.js";
 import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate, type GateInput } from "./gates.js";
 import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
-
+import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
 import {
   afterTriage,
@@ -80,47 +76,12 @@ export {
   RUNS_DIR,
   waitingCommit,
 } from "./shared.js";
+export type { DriveOutcome, DriverDeps } from "./stages/context.js";
 export { blockingFindings, refutedFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
 
 const LEASE_TTL_MS = 15 * 60_000;
 const LEASE_RENEW_MS = 60_000;
 
-export interface DriverDeps {
-  store: Store;
-  project: Project;
-  /** Config read from the default branch (loadTrustedConfig), never from a working copy. */
-  config: FactoryConfig;
-  /** Reads prompts and lessons from the default branch. */
-  read: TrustedReader;
-  runAgent: AgentRunner;
-  github: GithubPort;
-  /** Lease owner name for this process. */
-  owner: string;
-  events?: FactoryEvents;
-  run?: CommandRunner;
-  portBase?: number;
-  /** Per-role agent timeouts. */
-  timeouts?: Partial<Record<PromptRole, number>>;
-  /** How often to check for cancellation and renew the lease while a stage runs. */
-  watchMs?: number;
-  /** Screenshots, video and their upload; Playwright and GitHub release assets by default. */
-  capture?: CapturePort;
-  /** How often the merge stage looks at required checks that are still running. */
-  checksPollMs?: number;
-  /** How long after its own push the merge stage keeps looking for required checks that are not reported yet. */
-  checksGraceMs?: number;
-}
-
-export type DriveOutcome =
-  /** Waiting for a human (needs_human) or the issue author (needs_info). */
-  | { kind: "parked"; state: RunState; reason: string }
-  | { kind: "finished"; state: RunState }
-  /** The subscription's usage limit was hit; run again after resetsAt. State is unchanged. */
-  | { kind: "rate_limited"; resetsAt?: string }
-  /** Nothing this driver can do: another worker holds the run, or the stage is not automated yet. */
-  | { kind: "stopped"; state: RunState; reason: string };
-
-type StepResult = DriveOutcome | undefined;
 
 const ACTIVE: RunState[] = ["intake", "triage", "refine", "critic", "build", "gate", "review", "capture", "pr", "merge", "learn"];
 
@@ -136,10 +97,13 @@ export class PipelineDriver {
   /** Aborted when the run being driven is cancelled or this worker loses its lease. */
   private signal?: AbortSignal;
 
+  private readonly ctx: StageContext;
+
   constructor(private readonly deps: DriverDeps) {
-    this.machine = new RunMachine(deps.store, deps.config);
-    this.run = deps.run ?? runCommand;
-    this.capturer = deps.capture ?? playwrightCapture(deps.project, this.run, deps.config.app.narrate);
+    this.ctx = new StageContext(deps, () => this.signal);
+    this.machine = this.ctx.machine;
+    this.run = this.ctx.exec;
+    this.capturer = this.ctx.capturer;
   }
 
   /** Start a run for a queued issue, or return the run already working on it. */
