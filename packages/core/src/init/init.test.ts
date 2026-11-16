@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AGENT_ROLES, resolveModel, REVIEW_LENSES } from "@factory/shared";
+import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { loadConfig, parseConfig } from "../config/load.js";
 import { listRegistered } from "../registry.js";
 import { Store } from "../store/store.js";
@@ -11,6 +12,10 @@ import { parseGithubRemote } from "../util/git.js";
 import { detectProject } from "./detect.js";
 import { ensureGitignore, initRepo, InitError } from "./init.js";
 import { renderConfig } from "./template.js";
+
+// initRepo drives real git repos and a SQLite store: about a second each alone, far more while the
+// rest of the suite runs alongside.
+vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "factory-init-"));
