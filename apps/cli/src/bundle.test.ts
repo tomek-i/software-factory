@@ -43,6 +43,23 @@ describe("the npm package bundle", () => {
     expect(existsSync(join(paths.web, "index.html"))).toBe(true);
   });
 
+  it("lists every npm dependency of the bundled packages, with the same range", () => {
+    // esbuild inlines a dependency missing from the cli's list instead of failing, which breaks
+    // native or CommonJS packages only at runtime, for npm users.
+    type Manifest = { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
+    const manifest = (dir: string) => JSON.parse(readFileSync(join(cliDir, "..", "..", dir, "package.json"), "utf8")) as Manifest;
+    const cli = manifest("apps/cli");
+    for (const dir of ["packages/shared", "packages/core", "apps/server"]) {
+      const pkg = manifest(dir);
+      for (const field of ["dependencies", "optionalDependencies"] as const) {
+        for (const [name, range] of Object.entries(pkg[field] ?? {})) {
+          if (range.startsWith("workspace:")) continue;
+          expect(cli[field]?.[name], `${dir} ${field} ${name}`).toBe(range);
+        }
+      }
+    }
+  });
+
   it("refuses to bundle without a built web app", async () => {
     await expect(bundle({ outDir: join(scratch, "no-web"), webDist: join(scratch, "missing") })).rejects.toThrow(/No built web app/);
   });
