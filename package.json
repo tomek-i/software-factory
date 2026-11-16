@@ -9,7 +9,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "build": "tsc -b && pnpm --filter @factory/web build",
+    "build": "tsc -b && pnpm --filter @factory/web build && pnpm --filter @tomek-i/software-factory bundle",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p apps/web/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

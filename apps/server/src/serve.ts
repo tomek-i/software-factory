@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_MAX_RUNS,
   listRegistered,
@@ -54,8 +55,15 @@ export interface ServeDeps {
   scheduler?: Partial<SchedulerOptions>;
 }
 
-/** Where the built web app is, through the workspace package so it works from the pinned copy too. */
+/** Set by the npm package's bundler (apps/cli/scripts/bundle.mjs); undefined everywhere else. */
+declare const __FACTORY_BUNDLE__: true | undefined;
+
+/**
+ * Where the built web app is: next to dist/ in the npm package, otherwise through the workspace
+ * package so it works from any checkout.
+ */
 export function defaultWebRoot(): string {
+  if (typeof __FACTORY_BUNDLE__ !== "undefined") return fileURLToPath(new URL("../web/", import.meta.url));
   const require = createRequire(import.meta.url);
   return join(dirname(require.resolve("@factory/web/package.json")), "dist");
 }
