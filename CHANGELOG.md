@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/tomek-i/software-factory/compare/v0.1.0...v0.1.1) (2026-11-16)
+
+
+### Documentation
+
+* install factory as a global command ([#140](https://github.com/tomek-i/software-factory/issues/140)) ([ed0d0fb](https://github.com/tomek-i/software-factory/commit/ed0d0fbe97d42ff2dc6acab51c8b8fc975dbc1b5))
+
 ## 0.1.0 (2026-11-15)
 
 
