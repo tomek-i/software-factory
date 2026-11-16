@@ -2,6 +2,7 @@
 
 How `main` is protected and how the repo is set up, with the commands to apply it again.
 Run them as a repo admin with the GitHub CLI.
+Back to the [README](../README.md).
 
 ## What is protected
 

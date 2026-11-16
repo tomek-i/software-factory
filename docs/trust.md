@@ -1,0 +1,38 @@
+# Trust
+
+Whose text the agents treat as the spec, and the optional status labels.
+Back to the [README](../README.md).
+
+## Trusted authors
+
+Anyone who can open an issue can write text the agents will read, so the factory distinguishes trusted authors:
+
+```yaml
+trust:
+  authors: ["your-handle", "teammate"]   # init pre-fills your own gh login
+  everyone: false                        # true for private repos where only approved people open issues
+```
+
+- **Trusted** issues and comments are treated as the spec.
+- **Untrusted** ones (e.g. strangers on a public repo) can still be queued, but:
+  - their text is handled as untrusted data;
+  - triage always waits for your approval before anything is built;
+  - the run always waits for you at the `critic` gate before build, and the spec reaches the builder marked as untrusted;
+  - `factory issues` marks them `(untrusted)`.
+- `factory run <n>` on an issue by an author outside `trust.authors` still waits for you at triage.
+- **Issues the factory created** with `factory new` are trusted, whoever the gh login is.
+  - They were written from your own idea and approved by you (or by the gate you configured).
+  - The factory records this locally when it creates them, so a later `factory sync` never clears it and nobody on GitHub can set it.
+  - Comments on them by others are still judged by their own author.
+- The trust list is read from the default branch, so a branch cannot change it (see [What steers the agents](runs.md#what-steers-the-agents)).
+- An imported snapshot can queue issues and mark them as opened by the factory (see [Moving between machines](moving-between-machines.md)).
+
+## Status labels
+
+- They are optional and off by default.
+- With `github.status_labels: true`, the factory mirrors run status onto the issue.
+- The labels are `factory`, `factory:in-progress`, `factory:needs-info`, `factory:needs-human` and `factory:unsafe`.
+- `github.label_prefix` sets the prefix (default `factory`).
+- They are display-only and never read as input.
+- Work is picked locally, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
+- Run `factory init` again after enabling them to create the labels.

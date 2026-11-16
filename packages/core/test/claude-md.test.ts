@@ -124,7 +124,7 @@ describe("CLAUDE.md", () => {
     const sample = [
       "- `packages/core/src/pipeline/gone.ts`, `vanishedFunction`, `RunMachine.noSuchMember`",
       "- [missing](NOPE.md), [bad anchor](README.md#no-such-heading)",
-      "- fine: `packages/core/src/pipeline/gates.ts`, `server.ts`, `resolveGate`, `<role>.md`, `taskkill /T /F`, [ok](README.md#trusted-authors)",
+      "- fine: `packages/core/src/pipeline/gates.ts`, `server.ts`, `resolveGate`, `<role>.md`, `taskkill /T /F`, [ok](docs/trust.md#trusted-authors)",
     ].join("\n");
     expect(problems(sample, repo).problems).toEqual([
       "path packages/core/src/pipeline/gone.ts",
