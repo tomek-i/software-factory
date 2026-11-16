@@ -37,8 +37,9 @@ import { refine } from "./stages/refine.js";
 import { critic } from "./stages/critic.js";
 import { build } from "./stages/build.js";
 import { gate } from "./stages/gate.js";
+import { review } from "./stages/review.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
-import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
+import { reviewNotes } from "./reviews.js";
 import {
   afterTriage,
   approveTarget,
@@ -233,6 +234,10 @@ export class PipelineDriver {
 
   // ---- stages ---------------------------------------------------------------
 
+  private review(run: Run): Promise<StepResult> {
+    return review(this.ctx, run);
+  }
+
   private gate(run: Run): Promise<StepResult> {
     return gate(this.ctx, run);
   }
@@ -282,116 +287,6 @@ export class PipelineDriver {
       if (!err.problems.some((p) => p.includes("cap reached"))) throw err;
       return park(`${capReason}: ${err.problems.join("; ")}`);
     }
-    return undefined;
-  }
-
-  /**
-   * Run the review lenses in parallel on the commit that passed the gate, then decide the review
-   * gate. A lens that already wrote a valid review for this round (e.g. before a usage limit) is
-   * not run again. Blocking findings go to the verifier: the ones it confirms send the run back to
-   * the builder; minor findings and nits never do.
-   */
-  private async review(run: Run): Promise<StepResult> {
-    const dir = this.runDir(run);
-    const issue = this.issueOf(run);
-    const worktree = this.worktreeOf(run);
-    const round = run.round;
-    const roundDir = join(dir, `round-${round}`);
-    const git = gitEvidence(worktree, this.defaultBranch, this.run);
-    const commit = parseVerdict("checks", readFileSync(join(roundDir, "checks.md"), "utf8")).header.COMMIT;
-    if (git.head() !== commit) {
-      return this.escalate(run, `HEAD is ${git.head().slice(0, 7)} but the quality gate passed ${commit.slice(0, 7)}; reviews only look at the gated commit`);
-    }
-    let base: string;
-    try {
-      base = freshBase(worktree.path, this.defaultBranch, commit, this.run);
-    } catch (err) {
-      return this.escalate(run, `could not find where the branch left ${this.defaultBranch}: ${(err as Error).message}`);
-    }
-
-    const lenses = this.reviewLenses(run);
-    const pending = lenses.filter((lens) => !readReview(roundDir, lens));
-    // The engine writes the change for the reviewers and the verifier, who get no shell (see permissionProfile).
-    const changeFile = join(roundDir, "change.diff");
-    try {
-      mkdirSync(roundDir, { recursive: true });
-      writeFileSync(changeFile, changeReport(worktree.path, base, commit, this.run));
-    } catch (err) {
-      return this.escalate(run, `could not prepare the change for the reviewers: ${(err as Error).message}`);
-    }
-    const turns = await Promise.all(pending.map((lens) => this.reviewTurn(run, issue, worktree, lens, round, base, commit, changeFile)));
-    // A usage limit stops the run where it is; the reviews already written are kept for next time.
-    const limited = turns.find((t) => t.turn.status === "failed" && t.turn.agent.outcome.kind === "rate_limited");
-    if (limited && limited.turn.status !== "ok") return this.agentTrouble(run, `reviewer (${limited.lens})`, limited.turn);
-    const troubles = turns.flatMap((t) => (t.turn.status === "ok" ? [] : [{ lens: t.lens, turn: t.turn }]));
-    if (troubles.length === 1) return this.agentTrouble(run, `reviewer (${troubles[0]!.lens})`, troubles[0]!.turn);
-    if (troubles.length > 1) {
-      if (this.load(run.id).state !== run.state) return undefined; // cancelled while the reviewers ran
-      // Every failed lens is named; the lenses that did write a review are kept for the next attempt.
-      return this.escalate(run, troubles.map((t) => this.troubleReason(`reviewer (${t.lens})`, t.turn)).join("; "));
-    }
-
-    const reviews = lenses.map((lens) => ({ lens, verdict: readReview(roundDir, lens)! }));
-    const summary = `reviews: ${reviews
-      .map(({ lens, verdict }) => {
-        const blocking = verdict.findings.filter(isBlocking).length;
-        return `${lens} ${verdict.header.VERDICT}${blocking ? ` (${blocking} blocking)` : ""}`;
-      })
-      .join(", ")}`;
-    this.info(run, summary);
-
-    let hits: string[];
-    try {
-      hits = this.hardRuleHits(run, worktree, commit);
-    } catch (err) {
-      // Without the check nobody knows what the diff touches: a human decides.
-      return this.escalate(run, `${summary}; the hard-rule check failed: ${(err as Error).message}`);
-    }
-    const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
-    const held = run.unsafe ? [] : hits.map((h) => `hard rule: ${h}`);
-
-    let verified: ParsedVerdict<"verify"> | undefined;
-    const outcome = [summary];
-    if (reviews.some(({ verdict }) => verdict.header.VERDICT === "CHANGES")) {
-      const blocking = blockingFindings(reviews);
-      const verifyFile = join(roundDir, "verify.md");
-      const validate = (verdict: ParsedVerdict<"verify">) => verifyProblems(verdict, blocking);
-      // A valid judgement from an earlier attempt at this round (e.g. before a usage limit) stands.
-      verified = readValid("verify", verifyFile, validate);
-      if (!verified) {
-        const turn = await this.verifyTurn(run, issue, worktree, blocking, { outputFile: verifyFile, validate, base, commit, changeFile });
-        if (turn.status !== "ok") return this.agentTrouble(run, "verifier", turn);
-        verified = turn.verdict;
-      }
-      if (verified.header.VERDICT === "CONFIRMED") {
-        const confirmed = `the verifier confirmed ${verified.findings.length} of ${blocking.length} blocking findings`;
-        this.info(run, confirmed);
-        // A stall or the cap stops the run at the review gate, where a human may approve it as is
-        // (`factory approve`), so they see the hard rules and the PR lists the open findings.
-        const found = verified;
-        return this.loopBack(
-          run,
-          `${confirmed} (round ${round})`,
-          { round },
-          runEvidence(dir, round, git),
-          "reviews",
-          `reviews still have confirmed findings after round ${round}`,
-          (reason, data) => {
-            this.publishReviewNotes(run, reviews, found);
-            return this.waitForHuman(run, "review", [summary, reason, ...held, ...lifted], data);
-          },
-        );
-      }
-      outcome.push(`the verifier refuted all ${blocking.length} blocking findings`);
-      this.info(run, outcome.at(-1)!);
-    }
-    this.publishReviewNotes(run, reviews, verified);
-    const mode = this.deps.config.gates.review;
-    const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
-    if (gate.outcome === "wait_human") return this.waitForHuman(run, "review", [...outcome, ...gate.reasons, ...lifted]);
-    for (const line of lifted) this.info(run, line);
-    this.recordProceed(run, "review", mode, [...outcome, ...lifted].join("; "), commit);
-    this.move(run, "capture", `reviews clear (round ${round})`, { round, commit }, runEvidence(dir, round, git));
     return undefined;
   }
 
@@ -1049,61 +944,6 @@ export class PipelineDriver {
     });
   }
 
-  /** The verifier checks this round's blocking findings against the code. */
-  private verifyTurn(
-    run: Run,
-    issue: Issue,
-    worktree: Worktree,
-    blocking: BlockingFinding[],
-    turn: { outputFile: string; validate: (verdict: ParsedVerdict<"verify">) => string[]; base: string; commit: string; changeFile: string },
-  ): Promise<TurnResult<"verify">> {
-    const dir = this.runDir(run);
-    const { outputFile, validate, base, commit, changeFile } = turn;
-    const files = writeRoleFiles(dir, "verifier", rolePrompt("verifier", this.deps.read), permissionProfile("verifier", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
-    const findings = blocking.map(({ lens, finding }) => ({ lens, ...finding }));
-    return runTurn({
-      run: this.deps.runAgent,
-      kind: "verify",
-      outputFile,
-      validate,
-      agent: {
-        ...this.agentBase(run, "verifier", worktree.path),
-        ...files,
-        addDirs: [dir],
-        prompt: renderTask({
-          role: "verifier",
-          runId: run.id,
-          runDir: dir,
-          workDir: worktree.path,
-          outputFile,
-          issue: this.issueText(issue),
-          trusted: isTrustedIssue(this.deps.config, issue),
-          lessons: this.lessons(),
-          branch: worktree.branch,
-          defaultBranch: this.defaultBranch,
-          sections: [
-            ...this.triageScope(dir),
-            ...this.acceptedSpec(run),
-            { title: "Findings to verify", body: ["```json", JSON.stringify(findings, null, 2), "```"].join("\n") },
-          ],
-          instructions: [
-            `Verify each of the ${blocking.length} findings above against the change on branch \`${worktree.branch}\`.`,
-            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit under review: \`${commit}\`.`,
-            `The commits and the full diff are in \`${changeFile}\`. Read it, then the code each finding points at, then write the output file.`,
-          ].join("\n"),
-        }),
-      },
-    });
-  }
-
-  /**
-   * Rewrite the PR description with what the reviews leave for the human: minor findings and nits,
-   * and the blocking findings the verifier refuted. Built from build.md each time, so it never stacks.
-   */
-  private publishReviewNotes(run: Run, reviews: LensReview[], verified: ParsedVerdict<"verify"> | undefined): void {
-    this.updatePrDescription(run, reviewNotes(reviews, verified));
-  }
-
   /**
    * Rewrite the PR description from this round's files: build.md, the review notes (worked out from
    * the round's reviews and verify.md unless given) and the capture stage's screenshots, once it ran.
@@ -1137,74 +977,6 @@ export class PipelineDriver {
     const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
     const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : [])]);
     return REVIEW_LENSES.filter((lens) => wanted.has(lens));
-  }
-
-  private async reviewTurn(
-    run: Run,
-    issue: Issue,
-    worktree: Worktree,
-    lens: ReviewLens,
-    round: number,
-    base: string,
-    commit: string,
-    changeFile: string,
-  ) {
-    const dir = this.runDir(run);
-    const outputFile = reviewPath(join(dir, `round-${round}`), lens);
-    const files = writeRoleFiles(
-      dir,
-      `reviewer-${lens}`,
-      rolePrompt("reviewer", this.deps.read, lens),
-      permissionProfile("reviewer", { runDirFromCwd: relative(worktree.path, dir), outputFile }),
-    );
-    const sections = [...this.triageScope(dir), ...this.acceptedSpec(run)];
-    const previous = this.previousReview(run, lens, round);
-    if (previous) {
-      sections.push({
-        title: `Your findings from round ${previous.round}`,
-        body: ["Check each of these first and say which are fixed.", "", "```json", JSON.stringify(previous.verdict.findings, null, 2), "```"].join("\n"),
-      });
-    }
-    const turn = await runTurn({
-      run: this.deps.runAgent,
-      kind: "review",
-      outputFile,
-      agent: {
-        ...this.agentBase(run, "reviewer", worktree.path, lens),
-        role: `reviewer:${lens}`,
-        ...files,
-        addDirs: [dir],
-        prompt: renderTask({
-          role: "reviewer",
-          lens,
-          runId: run.id,
-          runDir: dir,
-          workDir: worktree.path,
-          outputFile,
-          issue: this.issueText(issue),
-          trusted: isTrustedIssue(this.deps.config, issue),
-          lessons: this.lessons(),
-          branch: worktree.branch,
-          defaultBranch: this.defaultBranch,
-          sections,
-          instructions: [
-            `Review the change on branch \`${worktree.branch}\` through the ${lens} lens.`,
-            `Base: \`${base}\` (where the branch left ${this.defaultBranch}). Commit under review: \`${commit}\`.`,
-            `The commits and the full diff are in \`${changeFile}\`. Read it, then the code around the change, then write the output file.`,
-          ].join("\n"),
-        }),
-      },
-    });
-    return { lens, turn };
-  }
-
-  /** This lens's review from the latest earlier round that has one. */
-  private previousReview(run: Run, lens: ReviewLens, round: number): { round: number; verdict: ParsedVerdict<"review"> } | undefined {
-    for (let r = round - 1; r >= 1; r--) {
-      const verdict = readReview(join(this.runDir(run), `round-${r}`), lens);
-      if (verdict) return { round: r, verdict };
-    }
-    return undefined;
   }
 
   // ---- helpers --------------------------------------------------------------
