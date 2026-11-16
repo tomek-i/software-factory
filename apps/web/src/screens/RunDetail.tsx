@@ -14,7 +14,7 @@ import { ago, money } from "../lib/utils";
 export const runPath = (run: Pick<RunRow, "project" | "id">) => `/runs/${encodeURIComponent(run.project)}/${encodeURIComponent(run.id)}`;
 
 /** Only a GitHub page is linked; anything else in the store is shown as nothing. */
-const githubUrl = (url: string | null) => (url && url.startsWith("https://github.com/") ? url : undefined);
+export const githubUrl = (url: string | null) => (url && url.startsWith("https://github.com/") ? url : undefined);
 
 // Everything below comes from agents that read untrusted issue text: it is rendered as React text
 // (escaped), never as HTML or markdown.

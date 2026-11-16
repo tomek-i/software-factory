@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { VerdictParseError } from "@factory/shared";
-import { issueBody, parseDraft, parseIssueBlocks } from "./draft.js";
+import { formatDraft, issueBody, parseDraft, parseIssueBlocks } from "./draft.js";
 
 const SECTIONS = "## Why\nBecause.\n\n## What\nDo it.\n\n## Acceptance criteria\n- [ ] it works\n\n## Scope\nThis.\n\n## Out of scope\nThat.\n";
 const block = (title: string, header = "UI: NO\nRISK: LOW", sub = false) =>
@@ -107,5 +107,39 @@ describe("issueBody", () => {
     const { issue } = parseDraft(draft(block("T", "UI: YES\nRISK: HIGH")));
     expect(issueBody(issue)).toBe(`${SECTIONS.trim()}\n\n---\n\n**UI change:** yes · **Risk:** high\n`);
     expect(issueBody(issue, [12, 13])).toContain("**Risk:** high · **Depends on:** #12, #13\n");
+  });
+});
+
+describe("formatDraft", () => {
+  it("writes a single issue that parses back to the same draft", () => {
+    const parsed = parseDraft(draft(block("Add CSV export", "UI: yes\nRISK: medium")));
+    const text = formatDraft(parsed);
+    expect(text).toBe(`DECISION: PROCEED\n\n## Summary\n- one issue\n\n=== ISSUE ===\nTITLE: Add CSV export\nUI: YES\nRISK: MEDIUM\n\n${SECTIONS.trim()}\n`);
+    expect(parseDraft(text)).toEqual(parsed);
+  });
+
+  it("writes a parent with sub-issues, what they depend on and the reasons to escalate, and parses back the same", () => {
+    const parsed = parseDraft(
+      draft(
+        [
+          "## Reasons\n- the export format is a guess\n",
+          block("Exports"),
+          block("CSV", "UI: NO\nRISK: LOW", true),
+          block("Excel", "UI: YES\nRISK: HIGH\nDEPENDS_ON: 1", true),
+          block("Docs", "UI: NO\nRISK: LOW\nDEPENDS_ON: 2, 1", true),
+        ].join("\n"),
+        "ESCALATE",
+      ),
+    );
+    const text = formatDraft(parsed);
+    expect(text).toContain("## Reasons\n- the export format is a guess\n");
+    expect(text).toContain("=== SUB-ISSUE ===\nTITLE: Docs\nUI: NO\nRISK: LOW\nDEPENDS_ON: 2, 1\n\n## Why");
+    expect(parseDraft(text)).toEqual(parsed);
+  });
+
+  it("keeps a body line that looks like a header in the body", () => {
+    const parsed = parseDraft(draft(block("T")));
+    const edited = { ...parsed, issue: { ...parsed.issue, body: `NOTE: keep me\n\n${SECTIONS}` } };
+    expect(parseDraft(formatDraft(edited)).issue.body).toBe(`NOTE: keep me\n\n${SECTIONS.trim()}`);
   });
 });

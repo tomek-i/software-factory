@@ -127,7 +127,7 @@ export async function startServe(options: ServeOptions, deps: ServeDeps = {}): P
 
   const token = deps.token ?? newToken();
   const port = options.port ?? DEFAULT_PORT;
-  const app = createServer({ projects: set, hub, token, port, scheduler, run: deps.run, github: deps.github, webRoot: deps.webRoot ?? defaultWebRoot() });
+  const app = createServer({ projects: set, hub, token, port, scheduler, run: deps.run, env: deps.env, github: deps.github, webRoot: deps.webRoot ?? defaultWebRoot() });
   try {
     await app.listen({ host: "127.0.0.1", port });
   } catch (err) {

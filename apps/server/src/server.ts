@@ -22,6 +22,7 @@ import {
   syncIssues,
   type CommandRunner,
   type GithubPort,
+  type IssueWriterPort,
   type OverviewSection,
   type Project,
   type ProjectContext,
@@ -30,6 +31,8 @@ import {
 } from "@factory/core";
 import { isTerminal, isTrustedIssue } from "@factory/shared";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { DraftJobs, draftRoutes } from "./drafts.js";
+import { BadRequest, Conflict } from "./errors.js";
 import type { EventHub } from "./hub.js";
 import { NotFoundError, type ProjectSet } from "./projects.js";
 import { hostAllowed, originAllowed, TOKEN_HEADER, tokenMatches } from "./security.js";
@@ -44,6 +47,10 @@ export interface ServerOptions {
   scheduler?: { status(): SchedulerStatus };
   run?: CommandRunner;
   github?: (project: Project) => GithubPort | undefined;
+  /** Creates the New issue screen's issues; without it, `gh` as `factory new` uses. */
+  issueWriter?: (project: Project) => IssueWriterPort | undefined;
+  /** The environment agents get, as the scheduler's (tests point FACTORY_CLAUDE_BIN at the fake). */
+  env?: NodeJS.ProcessEnv;
   /** The built web app; none serves the API only. */
   webRoot?: string;
   /** Where unexpected errors go: the terminal, never the browser. */
@@ -91,10 +98,6 @@ const WAITING: Run["state"][] = ["needs_human", "needs_info"];
 // Decided on the route Fastify matched, never on the raw URL, which can spell a path many ways.
 const PUBLIC_ROUTES = new Set(["/", "/*"]);
 const ALL_LIMIT = 200;
-
-class BadRequest extends Error {}
-/** The run moved on since the page showed it: the decision was made about something else. */
-class Conflict extends Error {}
 
 function issueNumber(value: string): number {
   const n = Number(value);
@@ -203,6 +206,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return address && typeof address === "object" ? address.port : options.port;
   };
   const changed = (project?: string) => hub.publish({ type: "changed", project });
+  const drafts = new DraftJobs({ hub, run: options.run, env: options.env, issueWriter: options.issueWriter, log });
 
   app.addHook("onRequest", async (req, reply) => {
     // Only the origin form (`GET /path`): an absolute URL in the request line is a proxy's business.
@@ -362,6 +366,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned };
   });
 
+  draftRoutes(app, { projects, jobs: drafts, run: options.run, changed });
+
   app.get("/api/scheduler", async () => options.scheduler?.status() ?? null);
 
   app.get("/api/events", (req, reply) => {
@@ -385,6 +391,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
   // An open stream would keep close() waiting forever.
   app.addHook("preClose", async () => {
     for (const end of [...streams.values()]) end();
+    // An issue writer nobody can follow any more; its draft stays for `factory new --list`.
+    drafts.stopAll();
   });
 
   const webRoot = options.webRoot;

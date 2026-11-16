@@ -20,7 +20,7 @@ It runs in two modes on one engine:
 > - `factory run` takes a queued issue all the way to a merged PR (see [Pipeline](#pipeline)).
 > - After the merge, a learner proposes lessons for you to approve (`factory lessons`).
 > - By default the run waits for you at the `merge` gate.
-> - `factory work` and `factory serve` work through every registered repo's queue; `factory serve` adds a local web app to queue issues, watch runs and decide at gates.
+> - `factory work` and `factory serve` work through every registered repo's queue; `factory serve` adds a local web app to draft and queue issues, watch runs and decide at gates.
 
 ## Pipeline
 
@@ -185,6 +185,8 @@ If something goes wrong:
 
 `<draft>` is a draft id or a unique prefix of one.
 
+The web app's New issue screen does the same with the same rules (see [Web mode](#web-mode)).
+
 ### Choosing what the factory works on
 
 Work is picked **locally**, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
@@ -251,12 +253,13 @@ factory serve --port 4181 --max-runs 2 --no-open
 
 `factory serve` does what `factory work` does (same picking, limits and stopping: `factory stop`, `factory stop --now`, Ctrl+C) and serves a web app for every project in the project list. It prints a link with a session token and opens it in your browser (`--no-open` only prints it). The screens:
 
-- **Inbox**: runs waiting for you. A run at a gate can be approved (with an optional note) or rejected (with a reason). A run parked for you outside a gate, such as a failed agent, can be resumed to a stage you pick, with a reason. Any of them can be cancelled. Runs waiting for the issue's author are listed below. An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued. Click a run's title to open its details before deciding.
+- **Inbox**: runs waiting for you. A run at a gate can be approved (with an optional note) or rejected (with a reason). A run parked for you outside a gate, such as a failed agent, can be resumed to a stage you pick, with a reason. Any of them can be cancelled. Runs waiting for the issue's author are listed below. An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued. Click a run's title to open its details before deciding. Pending drafts of the issue writer (from the New issue screen or `factory new`) are listed last, each opening its draft.
+- **New issue**: `factory new` in the browser. Pick a project, describe the idea and start the issue writer; its progress shows live, and it can be stopped. The `issue_writer` gate then decides, as in the CLI: the issues are created on GitHub right away (queued only if you ticked the box), or the draft waits for you. A waiting draft shows its title, UI flag, risk and body, and for a big idea each sub-issue's with what it depends on, as fields. Saving checks the draft as `factory new --approve` does and refuses a broken edit with the same reasons, leaving the file as it was. Then create it on GitHub (optionally queued) or discard it. A draft git tracks is refused, as in the CLI, and one that does not parse can only be discarded (or fixed by hand). Drafts are named by their exact id here, not a prefix.
 - **Runs**: the runs going on across projects, with their state, round, cost, whether a worker drives them and the agent's latest activity, live. "All" shows finished runs too. Click a run to open its details.
 - **Run details**: what `factory show <run>` prints, in the browser. The issue with its GitHub link, the gate the run waits at and the full reason, the verdicts of its run folder (triage, spec, build, checks, reviews with their blocking findings, approval, learn) and its files, each opened as plain text. A run waiting for you can be approved, rejected, resumed or cancelled there, with the Inbox's rules. Run files hold agent output that read untrusted issue text, so the page never renders it as HTML, and local paths in it are shortened (relative to the repo or worktree, the home folder as `~`).
 - **Backlog**: each project's open issues, with their place in the queue, whether the author is trusted and the state of the latest run. Queue and unqueue them, and "Sync now" pulls issues from GitHub and finishes runs whose PR was merged or closed.
 
-The project picker in the header narrows every screen to one project. The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`) with the same rules; the run details are `factory show <run>`'s. Live updates cover the runs `factory serve` itself drives: a `factory run` in another terminal shows on the next refresh.
+The project picker in the header narrows every screen to one project. The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`, `new`) with the same rules; the run details are `factory show <run>`'s. Live updates cover the runs `factory serve` itself drives: a `factory run` in another terminal shows on the next refresh.
 
 The server can start agents and merge pull requests, so it answers only your own browser: it listens on 127.0.0.1, refuses requests whose `Host` isn't its own address, needs the session token from the printed link on every API call, and takes changes only from its own page (`Origin`). The token is in the link's `#` part, which never reaches a server: the page keeps it (in this browser's storage for that address) and sends it in a header, so no other site or local server gets it. A decision is refused when the run has moved on since the page showed it. A new `factory serve` prints a new link. Settings, `--unsafe` and config can't be changed through it.
 

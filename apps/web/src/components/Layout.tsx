@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Inbox, ListTodo } from "lucide-react";
+import { Activity, Inbox, ListTodo, SquarePen } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router";
 import { api, ApiError } from "../lib/api";
@@ -70,6 +70,10 @@ export function Layout() {
             <NavLink to="/backlog" className={tab}>
               <ListTodo aria-hidden />
               Backlog
+            </NavLink>
+            <NavLink to="/new" className={tab}>
+              <SquarePen aria-hidden />
+              New issue
             </NavLink>
           </nav>
           <div className="ml-auto flex items-center gap-4">

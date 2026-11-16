@@ -91,9 +91,82 @@ export interface SchedulerStatus {
 
 export type RunView = "active" | "waiting" | "all";
 
+/** One issue of an issue writer's draft. Written by an agent: show it as text only. */
+export interface DraftIssue {
+  title: string;
+  ui: boolean;
+  risk: "LOW" | "MEDIUM" | "HIGH";
+  /** Sub-issues only: positions (1-based) of earlier sub-issues. */
+  dependsOn: number[];
+  body: string;
+}
+
+export interface IssueDraft {
+  decision: "PROCEED" | "ESCALATE";
+  summary: string[];
+  reasons: string[];
+  issue: DraftIssue;
+  subIssues: DraftIssue[];
+}
+
+/** A draft not created on GitHub yet. */
+export interface DraftView {
+  project: string;
+  projectName: string;
+  id: string;
+  idea: string;
+  createdAt: string;
+  /** The issue writer is still writing it. */
+  running: boolean;
+  /** Null when it does not parse (see problems) or is still being written. */
+  draft: IssueDraft | null;
+  problems: string[];
+  /** Why it may never be created (git tracks it). */
+  refusal: string | null;
+  /** Issues already created from it. */
+  created: number[];
+}
+
+export interface CreatedIssue {
+  number: number;
+  title: string;
+  url: string | null;
+}
+
+export interface PublishedDraft {
+  issue: CreatedIssue;
+  subIssues: CreatedIssue[];
+  buildable: number[];
+  queued: number[];
+}
+
+/** How the issue writer the page started ended. */
+export type DraftResult = { kind: "published"; published: PublishedDraft } | { kind: "waiting"; reasons: string[] } | { kind: "failed"; error: string };
+
+/** The issue writer's progress, as a run's (`activityLine` reads both). */
+export type AgentEvent = Extract<ServerEvent, { type: "run" }>["event"];
+
+export interface DraftDetail {
+  project: string;
+  projectName: string;
+  id: string;
+  /** Null once created or discarded. */
+  pending: (DraftView & { text: string | null }) | null;
+  /** The issue writer `factory serve` started for it, if any. */
+  job: { running: boolean; events: AgentEvent[]; result?: DraftResult } | null;
+}
+
+/** The editor's fields; the server validates them as `factory new --approve` does. */
+export interface DraftEdit {
+  issue: { title: string; ui: boolean; risk: string; body: string };
+  subIssues: { title: string; ui: boolean; risk: string; body: string; dependsOn: number[] }[];
+}
+
 /** What the event stream sends: the scheduler's events, and "changed" after an action. */
 export type ServerEvent =
   | { type: "changed"; project?: string }
+  | { type: "draft"; project: string; draftId: string; event: AgentEvent }
+  | { type: "draft:done"; project: string; draftId: string; result: DraftResult }
   | { type: "run"; project: string; issue: number; event: { type: string; runId: string; summary?: string; role?: string; to?: RunState; reason?: string; message?: string } }
   | { type: "started" | "finished"; project: string; issue: number; run: { id: string; state: RunState } }
   | { type: "failed"; project: string; issue: number; error: string }
@@ -128,6 +201,8 @@ async function request<T>(method: "GET" | "POST", path: string, body?: object): 
 }
 
 const runPath = (run: Pick<RunRow, "project" | "id">, action: string) => `/api/projects/${run.project}/runs/${encodeURIComponent(run.id)}/${action}`;
+const draftPath = (project: string, id: string, action?: string) =>
+  `/api/projects/${project}/drafts/${encodeURIComponent(id)}${action ? `/${action}` : ""}`;
 // What the page showed, so the server refuses a decision about a run that has moved on since.
 const shown = (run: RunRow) => ({ state: run.state, gate: run.waitingGate ?? undefined });
 
@@ -146,4 +221,11 @@ export const api = {
   reject: (run: RunRow, message: string) => request<object>("POST", runPath(run, "reject"), { ...shown(run), message }),
   resume: (run: RunRow, to: RunState, message: string) => request<object>("POST", runPath(run, "resume"), { ...shown(run), to, message }),
   cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
+  drafts: (project?: string) => request<DraftView[]>("GET", `/api/drafts${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+  draft: (project: string, id: string) => request<DraftDetail>("GET", draftPath(project, id)),
+  startDraft: (project: string, idea: string, queue: boolean) => request<{ id: string; ignored: string[] }>("POST", `/api/projects/${project}/drafts`, { idea, queue }),
+  saveDraft: (project: string, id: string, edit: DraftEdit) => request<DraftView>("POST", draftPath(project, id, "save"), edit),
+  publishDraft: (project: string, id: string, queue: boolean) => request<PublishedDraft>("POST", draftPath(project, id, "publish"), { queue }),
+  discardDraft: (project: string, id: string) => request<{ id: string; created: number[] }>("POST", draftPath(project, id, "discard")),
+  stopDraft: (project: string, id: string) => request<object>("POST", draftPath(project, id, "stop")),
 };

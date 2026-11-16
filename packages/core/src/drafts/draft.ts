@@ -158,6 +158,25 @@ export function parseDraft(text: string): IssueDraft {
   };
 }
 
+function formatBlock(issue: DraftIssue, sub: boolean): string {
+  const header = [`TITLE: ${issue.title}`, `UI: ${issue.ui ? "YES" : "NO"}`, `RISK: ${issue.risk}`];
+  if (sub && issue.dependsOn.length) header.push(`DEPENDS_ON: ${issue.dependsOn.join(", ")}`);
+  // The blank line ends the header, so a body line such as "NOTE: x" stays in the body.
+  return [sub ? SUB_ISSUE_DELIMITER : ISSUE_DELIMITER, ...header, "", issue.body.trim(), ""].join("\n");
+}
+
+/**
+ * A draft as the issue writer writes it: the inverse of parseDraft. It does not validate anything;
+ * parse what it returns to know whether it is a valid draft.
+ */
+export function formatDraft(draft: IssueDraft): string {
+  const parts = [`DECISION: ${draft.decision}`, "", "## Summary", ...draft.summary.map((s) => `- ${s}`), ""];
+  if (draft.reasons.length) parts.push("## Reasons", ...draft.reasons.map((r) => `- ${r}`), "");
+  parts.push(formatBlock(draft.issue, false));
+  for (const sub of draft.subIssues) parts.push(formatBlock(sub, true));
+  return parts.join("\n");
+}
+
 /**
  * The body the issue gets on GitHub: its sections, then the UI flag, risk and any sub-issues it
  * needs first (by their GitHub numbers, known once those are created).
