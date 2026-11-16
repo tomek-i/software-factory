@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0](https://github.com/tomek-i/software-factory/compare/v0.3.1...v0.4.0) (2026-11-16)
+
+
+### Features
+
+* **cli:** add factory export and import to move local state between machines ([#167](https://github.com/tomek-i/software-factory/issues/167)) ([aa0c1e3](https://github.com/tomek-i/software-factory/commit/aa0c1e3892c37f4e9257b5718ffb234b02129582)), closes [#151](https://github.com/tomek-i/software-factory/issues/151)
+* **cli:** make queuing opt-in for issues created by factory new ([#165](https://github.com/tomek-i/software-factory/issues/165)) ([ebf07e8](https://github.com/tomek-i/software-factory/commit/ebf07e87a91f566f49127d145af6bf0e7f958e8f)), closes [#146](https://github.com/tomek-i/software-factory/issues/146)
+* **web:** add a new issue screen over the issue writer ([#172](https://github.com/tomek-i/software-factory/issues/172)) ([a65eab3](https://github.com/tomek-i/software-factory/commit/a65eab364533ed41a0a2303eb53072fc879818ad)), closes [#135](https://github.com/tomek-i/software-factory/issues/135)
+* **web:** open a run's details from the inbox and runs screens ([#168](https://github.com/tomek-i/software-factory/issues/168)) ([2affeb4](https://github.com/tomek-i/software-factory/commit/2affeb4f4f2a388a08e3920bfa34848c23a3678d)), closes [#144](https://github.com/tomek-i/software-factory/issues/144)
+* **web:** show labels in the backlog and filter by label ([#174](https://github.com/tomek-i/software-factory/issues/174)) ([c38c67b](https://github.com/tomek-i/software-factory/commit/c38c67bda29af94b8f29d2f199f92cdfb02e0f96)), closes [#147](https://github.com/tomek-i/software-factory/issues/147)
+* **web:** use more width on large screens ([#171](https://github.com/tomek-i/software-factory/issues/171)) ([8e892ed](https://github.com/tomek-i/software-factory/commit/8e892edb17003c577fe778dda1c71e94c85cf0ac)), closes [#145](https://github.com/tomek-i/software-factory/issues/145)
+
+
+### Refactoring
+
+* **core:** split the pipeline driver into one module per stage ([#170](https://github.com/tomek-i/software-factory/issues/170)) ([bacebc5](https://github.com/tomek-i/software-factory/commit/bacebc54112dfbadfe3bde71bab29e408799a466)), closes [#65](https://github.com/tomek-i/software-factory/issues/65)
+
+
+### Documentation
+
+* split the readme into short docs with one fact per line ([#169](https://github.com/tomek-i/software-factory/issues/169)) ([20daafd](https://github.com/tomek-i/software-factory/commit/20daafd7de51679ca9d7ddb97739360ecfc64b6c)), closes [#67](https://github.com/tomek-i/software-factory/issues/67)
+
 ## [0.3.1](https://github.com/tomek-i/software-factory/compare/v0.3.0...v0.3.1) (2026-11-16)
 
 
