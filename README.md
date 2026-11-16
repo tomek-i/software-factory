@@ -23,7 +23,7 @@ It runs in two modes on one engine:
 > - After the merge, a learner proposes lessons for you to approve (`factory lessons`).
 > - By default the run waits for you at the `merge` gate.
 > - `factory work` and `factory serve` work through every registered repo's queue.
-> - `factory serve` adds a local web app to queue issues, watch runs and decide at gates.
+> - `factory serve` adds a local web app to draft and queue issues, watch runs and decide at gates.
 
 ## Docs
 
@@ -199,6 +199,7 @@ factory new --discard <draft>                # drop a draft
 - An issue writer agent drafts the issue; by default the `issue_writer` gate waits for you to approve the draft.
 - Without `--queue`, `factory work` and `factory serve` leave the new issues alone until you queue them.
 - How drafts, the gate and sub-issues work: [Writing issues from an idea](docs/factory-new.md).
+- The web app's New issue screen does the same, with the same rules: [Web mode](docs/web-mode.md#screens).
 
 ### Choosing what the factory works on
 
@@ -248,7 +249,7 @@ factory serve --port 4181 --max-runs 2 --no-open
 
 - It does what `factory work` does and serves a web app for every project in the project list.
 - It prints a link with a session token and opens it in your browser (`--no-open` only prints it).
-- Its screens are Inbox, Runs, Run details and Backlog; click a run to open its details.
+- Its screens are Inbox, Runs, Run details, Backlog and New issue; click a run to open its details.
 - The screens, the actions and how it stays private: [Web mode](docs/web-mode.md).
 
 ### Running an issue

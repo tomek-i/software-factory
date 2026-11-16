@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, ProjectInfo, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, ProjectInfo, RunDetail, RunRow } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -39,6 +39,11 @@ class FakeServer {
   gets: string[] = [];
   /** Answers to posts by path suffix, e.g. a refusal. */
   failures = new Map<string, { status: number; error: string }>();
+  /** Successful answers to posts by path suffix; others get {}. */
+  answers = new Map<string, unknown>();
+  /** Pending drafts, and each draft's page by id. */
+  drafts: DraftView[] = [];
+  draftDetails: Record<string, DraftDetail> = {};
   projectsStatus = 200;
   /** Run files by path, served for every run. */
   files: Record<string, string> = {};
@@ -88,6 +93,7 @@ data: ${JSON.stringify(event)}
       this.posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
       for (const [suffix, failure] of this.failures) if (url.pathname.endsWith(suffix)) return json(failure.status, { error: failure.error });
       if (url.pathname.endsWith("/sync")) return json(200, { open: 3, closed: 1, queued: 2, lines: [] });
+      for (const [suffix, answer] of this.answers) if (url.pathname.endsWith(suffix)) return json(200, answer);
       return json(200, {});
     }
     if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, [PROJECT]) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
@@ -97,6 +103,12 @@ data: ${JSON.stringify(event)}
       return json(200, this.runs.filter((r) => view !== "waiting" || r.state === "needs_human" || r.state === "needs_info"));
     }
     if (url.pathname === "/api/projects/p1/issues") return json(200, this.backlog);
+    if (url.pathname === "/api/drafts") return json(200, this.drafts);
+    const draft = /^\/api\/projects\/p1\/drafts\/([^/]+)$/.exec(url.pathname);
+    if (draft) {
+      const found = this.draftDetails[decodeURIComponent(draft[1]!)];
+      return found ? json(200, found) : json(404, { error: "No draft." });
+    }
     const file = /^\/api\/projects\/p1\/runs\/([^/]+)\/files\/(.+)$/.exec(url.pathname);
     if (file) {
       const path = file[2]!.split("/").map(decodeURIComponent).join("/");
@@ -414,5 +426,243 @@ describe("runs", () => {
 
     expect(await screen.findByText("Editing feature.txt")).toBeTruthy();
     expect(screen.queryByText("triage approved")).toBeNull();
+  });
+});
+
+const SECTIONS = "## Why\nBecause.\n\n## What\nDo it.\n\n## Acceptance criteria\n- [ ] it works\n\n## Scope\nThis.\n\n## Out of scope\nThat.";
+
+function draftView(patch: Partial<DraftView> = {}): DraftView {
+  return {
+    project: "p1",
+    projectName: "shop",
+    id: "draft-1a2b3c4d",
+    idea: "Export orders as CSV",
+    createdAt: new Date().toISOString(),
+    running: false,
+    draft: {
+      decision: "PROCEED",
+      summary: ["one issue"],
+      reasons: [],
+      issue: { title: "Add CSV export", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+      subIssues: [],
+    },
+    problems: [],
+    refusal: null,
+    created: [],
+    ...patch,
+  };
+}
+
+describe("new issue", () => {
+  it("starts the issue writer, follows it live, refuses a broken edit with the reason, and creates the issue", async () => {
+    const id = "draft-1a2b3c4d";
+    server.answers.set("/p1/drafts", { id, ignored: [] });
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ running: true, draft: null }), text: null },
+      job: { running: true, events: [{ type: "agent:start", runId: id, role: "issue_writer" }] },
+    };
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /New issue/ }));
+    await user.type(await screen.findByLabelText("Idea"), "Export orders as CSV");
+    await user.click(screen.getByLabelText(/Queue the issues/));
+    await user.click(screen.getByRole("button", { name: /Start the issue writer/ }));
+
+    expect(await screen.findByText("issue_writer started")).toBeTruthy();
+    expect(server.posts).toEqual([{ path: "/api/projects/p1/drafts", body: { idea: "Export orders as CSV", queue: true } }]);
+    await waitFor(() => expect(screen.getByTitle("Live")).toBeTruthy());
+    server.send({ type: "draft", project: "p1", draftId: id, event: { type: "agent:activity", runId: id, agentRunId: "a", summary: "Reading src/orders.ts" } });
+    expect(await screen.findByText("Reading src/orders.ts")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Stop the issue writer/ })).toBeTruthy();
+
+    // The gate wants a human: the draft comes up as fields.
+    const text = "DECISION: PROCEED\n\n=== ISSUE ===\nTITLE: Add CSV export\n";
+    server.draftDetails[id] = {
+      ...server.draftDetails[id]!,
+      pending: { ...draftView(), text },
+      job: { running: false, events: [], result: { kind: "waiting", reasons: ["gate is set to human"] } },
+    };
+    server.send({ type: "draft:done", project: "p1", draftId: id, result: { kind: "waiting", reasons: ["gate is set to human"] } });
+    expect(await screen.findByText("Waiting for you: gate is set to human")).toBeTruthy();
+    const title = screen.getByLabelText("Issue title");
+    expect((title as HTMLInputElement).value).toBe("Add CSV export");
+
+    const body = screen.getByLabelText("Issue body");
+    await user.clear(body);
+    await user.click(body);
+    await user.paste("## Why\nBecause.");
+    const refusal = `Draft ${id} is not valid:\n- issue: section ## Acceptance criteria is missing\nNothing was saved. Fix it and save it again, or discard it.`;
+    server.failures.set("/save", { status: 400, error: refusal });
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    expect((await screen.findByRole("alert")).textContent).toBe(refusal);
+    expect(server.posts.at(-1)).toEqual({
+      path: `/api/projects/p1/drafts/${id}/save`,
+      body: { issue: { title: "Add CSV export", ui: false, risk: "LOW", body: "## Why\nBecause." }, subIssues: [] },
+    });
+
+    server.failures.delete("/save");
+    await user.clear(body);
+    await user.click(body);
+    await user.paste(SECTIONS);
+    await user.clear(title);
+    await user.type(title, "Export orders as CSV");
+    const published = { issue: { number: 20, title: "Export orders as CSV", url: "https://github.com/acme/shop/issues/20" }, subIssues: [], buildable: [20], queued: [] };
+    server.answers.set("/publish", published);
+    server.draftDetails[id] = { ...server.draftDetails[id]!, pending: null, job: { running: false, events: [], result: { kind: "published", published } } };
+    await user.click(screen.getByRole("button", { name: /Save and create on GitHub/ }));
+
+    expect(await screen.findByText("Created on GitHub")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /#20\s*Export orders as CSV/ }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/20");
+    expect(screen.getByText(/Not queued/)).toBeTruthy();
+    expect(server.posts.slice(-2)).toEqual([
+      { path: `/api/projects/p1/drafts/${id}/save`, body: { issue: { title: "Export orders as CSV", ui: false, risk: "LOW", body: SECTIONS }, subIssues: [] } },
+      { path: `/api/projects/p1/drafts/${id}/publish`, body: { queue: false } },
+    ]);
+  });
+
+  it("edits sub-issues and what they depend on, and shows the issues a gate let through", async () => {
+    const id = "draft-1a2b3c4d";
+    const big = draftView({
+      draft: {
+        decision: "ESCALATE",
+        summary: [],
+        reasons: ["the export format is a guess"],
+        issue: { title: "Exports", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+        subIssues: [
+          { title: "CSV export", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+          { title: "Excel export", ui: true, risk: "MEDIUM", dependsOn: [1], body: SECTIONS },
+        ],
+      },
+    });
+    server.draftDetails[id] = { project: "p1", projectName: "shop", id, pending: { ...big, text: "x" }, job: null };
+    renderAt(`/new/p1/${id}`);
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("the export format is a guess")).toBeTruthy();
+    expect((screen.getByLabelText("Sub-issue 2 depends on") as HTMLInputElement).value).toBe("1");
+    await user.selectOptions(screen.getByLabelText("Sub-issue 1 risk"), "HIGH");
+    await user.type(screen.getByLabelText("Sub-issue 2 depends on"), ", x");
+    expect((await screen.findByRole("alert")).textContent).toBe("sub-issue 2: DEPENDS_ON x is not a sub-issue number");
+    await user.clear(screen.getByLabelText("Sub-issue 2 depends on"));
+    await user.type(screen.getByLabelText("Sub-issue 2 depends on"), "#1");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        {
+          path: `/api/projects/p1/drafts/${id}/save`,
+          body: {
+            issue: { title: "Exports", ui: false, risk: "LOW", body: SECTIONS },
+            subIssues: [
+              { title: "CSV export", ui: false, risk: "HIGH", body: SECTIONS, dependsOn: [] },
+              { title: "Excel export", ui: true, risk: "MEDIUM", body: SECTIONS, dependsOn: [1] },
+            ],
+          },
+        },
+      ]),
+    );
+
+    cleanup();
+    const published = {
+      issue: { number: 20, title: "Exports", url: "https://github.com/acme/shop/issues/20" },
+      subIssues: [
+        { number: 21, title: "CSV export", url: "https://github.com/acme/shop/issues/21" },
+        { number: 22, title: "Excel export", url: "javascript:alert(1)" },
+      ],
+      buildable: [21, 22],
+      queued: [21, 22],
+    };
+    server.draftDetails[id] = { project: "p1", projectName: "shop", id, pending: null, job: { running: false, events: [], result: { kind: "published", published } } };
+    renderAt(`/new/p1/${id}`);
+    expect(await screen.findByText("Queued #21, #22 for the factory.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /#21\s*CSV export/ })).toBeTruthy();
+    // Only GitHub pages are linked.
+    expect(screen.queryByRole("link", { name: /#22/ })).toBeNull();
+    expect(screen.getByText("Excel export")).toBeTruthy();
+  });
+
+  it("keeps the newest progress line in view, unless the person scrolled up to read", async () => {
+    const id = "draft-1a2b3c4d";
+    const activity = (summary: string) => ({ type: "agent:activity", runId: id, agentRunId: "a", summary });
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ running: true, draft: null }), text: null },
+      job: { running: true, events: Array.from({ length: 30 }, (_, i) => activity(`step ${i}`)) },
+    };
+    renderAt(`/new/p1/${id}`);
+
+    const list = await screen.findByRole("list", { name: "Issue writer's progress" });
+    // jsdom has no layout: a 16rem box over a taller list, where each line adds 20px.
+    let scrollTop = 0;
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, get: () => 256 },
+      scrollHeight: { configurable: true, get: () => list.querySelectorAll("li").length * 20 },
+      scrollTop: { configurable: true, get: () => scrollTop, set: (v: number) => void (scrollTop = v) },
+    });
+    await waitFor(() => expect(screen.getByTitle("Live")).toBeTruthy());
+
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Reading src/orders.ts") });
+    expect(await within(list).findByText("Reading src/orders.ts")).toBeTruthy();
+    expect(scrollTop).toBe(list.scrollHeight);
+
+    // Scrolled up to an earlier line: a new one does not pull the box back down.
+    scrollTop = 0;
+    act(() => void list.dispatchEvent(new Event("scroll")));
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Writing the draft") });
+    expect(await within(list).findByText("Writing the draft")).toBeTruthy();
+    expect(scrollTop).toBe(0);
+
+    // Back at the bottom: it follows again.
+    scrollTop = list.scrollHeight - list.clientHeight;
+    act(() => void list.dispatchEvent(new Event("scroll")));
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Checking the sections") });
+    expect(await within(list).findByText("Checking the sections")).toBeTruthy();
+    expect(scrollTop).toBe(list.scrollHeight);
+  });
+
+  it("shows why the issue writer failed, and discards the draft it left", async () => {
+    const id = "draft-1a2b3c4d";
+    const error = "The issue writer failed (aborted). Drop the draft with `factory new --discard draft-1a2b3c4d`.";
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ draft: null, problems: ["the issue writer did not write a draft"] }), text: null },
+      job: { running: false, events: [], result: { kind: "failed", error } },
+    };
+    renderAt(`/new/p1/${id}`);
+    const user = userEvent.setup();
+
+    expect((await screen.findByRole("alert")).textContent).toBe(error);
+    expect(screen.getByText("the issue writer did not write a draft")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Create on GitHub/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Discard/ }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: `/api/projects/p1/drafts/${id}/discard`, body: {} }]));
+    expect(await screen.findByRole("heading", { name: "Inbox" })).toBeTruthy();
+  });
+
+  it("lists pending drafts in the Inbox, each opening its draft; a refused one says why and can't be created", async () => {
+    const refusal = ".factory/drafts/draft-9f9f9f9f/draft.md is tracked by git, so the draft may come from someone else's commit";
+    server.drafts = [draftView(), draftView({ id: "draft-9f9f9f9f", idea: "planted", refusal })];
+    server.draftDetails["draft-9f9f9f9f"] = { project: "p1", projectName: "shop", id: "draft-9f9f9f9f", pending: { ...server.drafts[1]!, text: "DECISION: PROCEED\n" }, job: null };
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const list = await screen.findByRole("list", { name: "Pending drafts" });
+    const links = within(list).getAllByRole("link", { name: "Add CSV export" });
+    expect(links.map((l) => l.getAttribute("href"))).toEqual(["/new/p1/draft-1a2b3c4d", "/new/p1/draft-9f9f9f9f"]);
+    expect(within(list).getByText(/waiting for you · shop/)).toBeTruthy();
+    expect(within(list).getByText(/refused: tracked by git · shop/)).toBeTruthy();
+    await user.click(links[1]!);
+
+    expect(await screen.findByText(`This draft can't be created: ${refusal}.`)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Create on GitHub|^Save$/ })).toBeNull();
+    expect(screen.getByLabelText("Draft text").textContent).toBe("DECISION: PROCEED\n");
   });
 });

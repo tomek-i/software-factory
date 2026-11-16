@@ -3,9 +3,10 @@ import { Link } from "react-router";
 import { RunActions } from "../components/RunActions";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
-import { api, type RunRow } from "../lib/api";
+import { api, type DraftView, type RunRow } from "../lib/api";
 import { useProject } from "../lib/project";
 import { ago } from "../lib/utils";
+import { draftPath } from "./Draft";
 import { runPath } from "./RunDetail";
 
 /** One run waiting for a decision, with its actions inline and its details a click away. */
@@ -39,9 +40,41 @@ function Waiting({ run }: { run: RunRow }) {
   );
 }
 
+/** Where a pending draft stands, in a word. */
+function draftState(draft: DraftView): string {
+  if (draft.running) return "being written";
+  if (draft.refusal) return "refused: tracked by git";
+  if (!draft.draft) return "does not parse";
+  if (draft.draft.decision === "ESCALATE") return "escalated";
+  return "waiting for you";
+}
+
+/** Drafts from the issue writer not created on GitHub yet, each opening its editor. */
+function PendingDrafts({ drafts }: { drafts: DraftView[] }) {
+  return (
+    <div className="space-y-2 pt-4">
+      <h2 className="text-sm font-medium text-muted-foreground">Pending drafts</h2>
+      <ul className="space-y-1 text-sm" aria-label="Pending drafts">
+        {drafts.map((d) => (
+          <li key={`${d.project}/${d.id}`}>
+            <Link to={draftPath(d.project, d.id)} className="hover:underline">
+              {d.draft?.issue.title ?? (d.idea || d.id)}
+            </Link>
+            {d.draft && d.draft.subIssues.length > 0 && <span className="ml-1.5 text-xs text-muted-foreground">+{d.draft.subIssues.length} sub-issues</span>}{" "}
+            <span className="text-xs text-muted-foreground" title={d.createdAt}>
+              · {draftState(d)} · {d.projectName} · {ago(d.createdAt)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function Inbox() {
   const { project } = useProject();
   const runs = useQuery({ queryKey: ["runs", "waiting", project], queryFn: () => api.runs("waiting", project) });
+  const drafts = useQuery({ queryKey: ["drafts", project], queryFn: () => api.drafts(project) });
   const human = runs.data?.filter((r) => r.state === "needs_human") ?? [];
   const author = runs.data?.filter((r) => r.state === "needs_info") ?? [];
 
@@ -71,6 +104,8 @@ export function Inbox() {
           </ul>
         </div>
       )}
+      {drafts.error && <p className="text-sm text-destructive">{drafts.error.message}</p>}
+      {drafts.data && drafts.data.length > 0 && <PendingDrafts drafts={drafts.data} />}
     </section>
   );
 }

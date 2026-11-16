@@ -21,6 +21,7 @@ Back to the [README](../README.md#web-mode) for the commands.
   - Runs waiting for the issue's author are listed below.
   - An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued.
   - Click a run's title to open its details before deciding.
+  - Pending drafts of the issue writer (from the New issue screen or `factory new`) are listed last, each opening its draft.
 - **Runs**: the runs going on across projects, live.
   - Each shows its state, round, cost, whether a worker drives it and the agent's latest activity.
   - "All" shows finished runs too.
@@ -37,8 +38,20 @@ Back to the [README](../README.md#web-mode) for the commands.
   - Each shows its place in the queue, whether the author is trusted and the state of the latest run.
   - Queue and unqueue them from here.
   - "Sync now" pulls issues from GitHub and finishes runs whose PR was merged or closed.
+- **New issue**: `factory new` in the browser (see [Writing issues from an idea](factory-new.md)).
+  - Pick a project, describe the idea and start the issue writer.
+  - Its progress shows live, and it can be stopped.
+  - The `issue_writer` gate then decides, as in the CLI: the issues are created on GitHub right away, or the draft waits for you.
+  - Issues are queued only if you ticked the box, as with `--queue`.
+  - A waiting draft shows its title, UI flag, risk and body as fields, and for a big idea each sub-issue's, with what it depends on.
+  - Saving checks the draft as `factory new --approve` does, and refuses a broken edit with the same reasons, leaving the file as it was.
+  - Then create it on GitHub (optionally queued), or discard it.
+  - A draft git tracks is refused, as in the CLI.
+  - A draft that does not parse can only be discarded, or fixed by hand.
+  - Drafts are named by their exact id here, not a prefix.
+  - One issue writer runs per project at a time; starting another is refused until it ends or is stopped.
 - The project picker in the header narrows every screen to one project.
-- The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`), with the same rules.
+- The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`, `new`), with the same rules.
 - The run details are `factory show <run>`'s.
 - Live updates cover the runs `factory serve` itself drives.
 - A `factory run` in another terminal shows on the next refresh.
@@ -63,3 +76,4 @@ Other limits:
 
 - A decision is refused when the run has moved on since the page showed it.
 - Settings, `--unsafe` and config can't be changed through it.
+- The draft routes that read or write draft files take at most 60 requests per 10 seconds each, then answer 429 with `Retry-After`.

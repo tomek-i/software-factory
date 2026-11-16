@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import type { ServerEvent } from "./api";
+import type { DraftDetail, ServerEvent } from "./api";
 import { sessionToken, TOKEN_HEADER } from "./session";
 
 type RunEvent = Extract<ServerEvent, { type: "run" }>["event"] & { name?: string; passed?: boolean };
@@ -107,6 +107,13 @@ export function EventsProvider({ children }: { children: ReactNode }) {
             const line = activityLine(event.event);
             if (line) setLive((l) => ({ ...l, activity: { ...l.activity, [event.event.runId]: line } }));
             if (event.event.type === "run:state") void queryClient.invalidateQueries();
+            return;
+          }
+          // An issue writer's progress goes onto its draft's page as it comes, without refetching anything.
+          if (event.type === "draft") {
+            queryClient.setQueryData<DraftDetail>(["draft", event.project, event.draftId], (detail) =>
+              detail?.job ? { ...detail, job: { ...detail.job, events: [...detail.job.events, event.event] } } : detail,
+            );
             return;
           }
           void queryClient.invalidateQueries();
