@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, ProjectInfo, RunRow } from "./lib/api";
+import type { Backlog, ProjectInfo, RunDetail, RunRow } from "./lib/api";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
 
@@ -36,6 +36,29 @@ class FakeServer {
   /** Answers to posts by path suffix, e.g. a refusal. */
   failures = new Map<string, { status: number; error: string }>();
   projectsStatus = 200;
+  /** Run files by path, served for every run. */
+  files: Record<string, string> = {};
+  /** The detail of a run is built from its row in runs. */
+  detail = (run: RunRow): RunDetail => ({
+    run,
+    issue: run.issue === null ? null : { number: run.issue, title: `Issue ${run.issue}`, url: `https://github.com/acme/shop/issues/${run.issue}` },
+    hasRunDir: true,
+    files: Object.keys(this.files),
+    sections: [
+      { kind: "verdict", path: "triage.md", key: "DECISION", value: "APPROVE", summary: ["risk is HIGH: it touches auth"], blocking: [], refuted: 0 },
+      { kind: "verdict", path: "spec-1/critic.md", key: "VERDICT", value: "ACCEPT", summary: ["the spec holds"], blocking: [], refuted: 0 },
+      {
+        kind: "verdict",
+        path: "round-1/review-security.md",
+        key: "VERDICT",
+        value: "CHANGES_REQUESTED",
+        summary: [],
+        blocking: [{ id: "S1", severity: "major", file: "src/auth.ts", line: 4, claim: "the token is logged", evidence: "line 4" }],
+        refuted: 1,
+      },
+      { kind: "unparsed", path: "build.md", problem: "STATUS is missing" },
+    ],
+  });
   /** The token each request carried. */
   tokens = new Set<string | null>();
   private stream?: ReadableStreamDefaultController<string>;
@@ -69,6 +92,14 @@ data: ${JSON.stringify(event)}
       return json(200, this.runs.filter((r) => view !== "waiting" || r.state === "needs_human" || r.state === "needs_info"));
     }
     if (url.pathname === "/api/projects/p1/issues") return json(200, this.backlog);
+    const file = /^\/api\/projects\/p1\/runs\/([^/]+)\/files\/(.+)$/.exec(url.pathname);
+    if (file) {
+      const path = file[2]!.split("/").map(decodeURIComponent).join("/");
+      return path in this.files ? json(200, { path, text: this.files[path] }) : json(400, { error: `No file "${path}".` });
+    }
+    const detail = /^\/api\/projects\/p1\/runs\/([^/]+)$/.exec(url.pathname);
+    const run = detail && this.runs.find((r) => r.id === decodeURIComponent(detail[1]!));
+    if (run) return json(200, this.detail(run));
     return json(404, { error: "Not found." });
   };
 }
@@ -171,6 +202,81 @@ describe("inbox", () => {
     await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
 
     await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cancel", body: { state: "needs_human", gate: "triage" } }]));
+  });
+});
+
+describe("run details", () => {
+  it("opens from an Inbox card with the gate, the full reason and the run's verdicts, and approves from there", async () => {
+    server.runs = [runRow({ reason: "triage rated the risk HIGH: the change touches the login flow and the session store" })];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /Add the feature/ }));
+
+    expect(await screen.findByRole("heading", { name: /#12\s*Issue 12/ })).toBeTruthy();
+    expect(screen.getByText("triage gate")).toBeTruthy();
+    expect(screen.getByText("triage rated the risk HIGH: the change touches the login flow and the session store")).toBeTruthy();
+    expect(screen.getByText("DECISION: APPROVE")).toBeTruthy();
+    expect(screen.getByText("risk is HIGH: it touches auth")).toBeTruthy();
+    expect(screen.getByText("VERDICT: ACCEPT")).toBeTruthy();
+    expect(screen.getByText("the token is logged")).toBeTruthy();
+    expect(screen.getByText("1 refuted by the verifier")).toBeTruthy();
+    expect(screen.getByText("STATUS is missing")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Issue on GitHub/ }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/12");
+
+    await user.click(screen.getByRole("button", { name: /Approve/ }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "triage" } }]));
+  });
+
+  it("rejects, resumes and cancels from the detail view with the card's rules", async () => {
+    server.runs = [runRow(), runRow({ id: "run-2", waitingGate: null, reason: "the build agent failed", resumeTargets: ["build", "triage"] })];
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Reject/ }));
+    const reject = screen.getByRole("button", { name: "Reject" });
+    expect((reject as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Reason"), "too risky");
+    await user.click(reject);
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/reject", body: { state: "needs_human", gate: "triage", message: "too risky" } }]));
+
+    cleanup();
+    server.posts = [];
+    renderAt("/runs/p1/run-2");
+    expect(await screen.findByText("escalation")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Resume/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /Send it to/ }), "triage");
+    await user.type(screen.getByLabelText("Reason"), "try again");
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-2/resume", body: { state: "needs_human", to: "triage", message: "try again" } }]));
+
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-2/cancel", body: { state: "needs_human" } }));
+  });
+
+  it("opens from a run row, read-only for a run that isn't waiting, and shows a file's script tag as text", async () => {
+    server.runs = [runRow({ state: "build", waitingGate: null, reason: "triage approved" })];
+    server.files = { "triage.md": "DECISION: APPROVE\n<script>alert(1)</script>\n<img src=x onerror=alert(2)>", "round-1/checks.md": "GATE: PASS" };
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /Add the feature/ }));
+
+    expect(await screen.findByRole("heading", { name: /#12\s*Issue 12/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve|Reject|Resume|Cancel run/ })).toBeNull();
+    await user.click(within(screen.getByRole("list", { name: "Run files" })).getByRole("button", { name: "triage.md" }));
+
+    const contents = await screen.findByLabelText("Contents of triage.md");
+    expect(contents.textContent).toBe("DECISION: APPROVE\n<script>alert(1)</script>\n<img src=x onerror=alert(2)>");
+    expect(document.querySelector("script")).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "round-1/checks.md" }));
+    expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
   });
 });
 

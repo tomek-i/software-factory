@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { driveIssue, loadConfig, Store, type CommandRunner, type ProjectContext } from "@factory/core";
+import { driveIssue, loadConfig, runDirOf, Store, type CommandRunner, type ProjectContext } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setup, TRIAGE } from "../../../packages/core/test/driver-setup.js";
@@ -368,6 +369,101 @@ describe("runs", () => {
     },
     GIT_TEST_TIMEOUT,
   );
+
+  describe("details", () => {
+    /** A run waiting at triage, with a run folder whose files quote the repo, the worktree and the home folder. */
+    function detailed() {
+      const ctx = memoryProject();
+      issue(ctx, 12);
+      const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Run title", issue_number: 12 });
+      const worktree = join(tempDir(), "worktree");
+      ctx.store.writeState(run.id, "needs_human", { waiting_gate: "triage" });
+      ctx.store.updateRunFields(run.id, { worktree_path: worktree });
+      ctx.store.appendEvent(run.id, "triage", "needs_human", `triage rated the risk HIGH, see ${join(ctx.root, "src", "auth.ts")}`);
+      const dir = runDirOf(ctx.root, run.id);
+      mkdirSync(join(dir, "spec-1"), { recursive: true });
+      writeFileSync(join(dir, "triage.md"), TRIAGE("APPROVE", `- touches ${join(worktree, "src", "x.ts")}\n`).replace("RISK: LOW", "RISK: HIGH"));
+      writeFileSync(join(dir, "spec-1", "critic.md"), "not a verdict");
+      writeFileSync(join(dir, "notes.md"), `<script>alert(1)</script>\nat ${join(homedir(), "secret.txt")} and ${join(ctx.root, "a.ts")}\n`);
+      writeFileSync(join(dir, "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0x0d]));
+      const { app } = server([ctx]);
+      return { ctx, run, worktree, dir, app, base: `/api/projects/${projectKey(ctx.root)}/runs/${run.id}` };
+    }
+
+    it("shows a run's row, issue, files and sections, without a local path", async () => {
+      const { ctx, run, worktree, dir, app, base } = detailed();
+
+      const res = await call(app, "GET", base);
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body).toMatchObject({
+        run: { id: run.id, state: "needs_human", waitingGate: "triage", reason: `triage rated the risk HIGH, see ${join("src", "auth.ts")}` },
+        issue: { number: 12, title: "Issue 12", url: "https://github.com/o/r/issues/12" },
+        hasRunDir: true,
+        files: ["notes.md", "shot.png", "spec-1/critic.md", "triage.md"],
+        sections: [
+          { kind: "verdict", path: "triage.md", key: "DECISION", value: "APPROVE", summary: ["looks fine", `touches ${join("src", "x.ts")}`] },
+          { kind: "unparsed", path: "spec-1/critic.md" },
+        ],
+      });
+      for (const path of [dir, ctx.root, worktree, homedir()]) {
+        expect(res.body).not.toContain(path);
+        expect(res.body).not.toContain(JSON.stringify(path).slice(1, -1));
+      }
+      expect(body).not.toHaveProperty("runDir");
+      expect(body.run).not.toHaveProperty("worktree_path");
+    });
+
+    it("serves one run file as redacted text, and only from inside the run folder", async () => {
+      const { ctx, app, base } = detailed();
+
+      const notes = await call(app, "GET", `${base}/files/notes.md`);
+      expect(notes.statusCode).toBe(200);
+      expect(notes.json()).toEqual({ path: "notes.md", text: `<script>alert(1)</script>\nat ${join("~", "secret.txt")} and a.ts\n` });
+      expect(notes.body).not.toContain(ctx.root.replace(/\\/g, "\\\\"));
+      expect((await call(app, "GET", `${base}/files/spec-1/critic.md`)).json()).toEqual({ path: "spec-1/critic.md", text: "not a verdict" });
+      expect((await call(app, "GET", `${base}/files/triage`)).json().path).toBe("triage.md");
+
+      for (const path of ["..%2Fx", "..%5Cx", "spec-1%2F..%2F..%2Fx", "%2Fetc%2Fpasswd", "C:%5CWindows%5Cwin.ini", encodeURIComponent(join(ctx.root, "package.json"))]) {
+        const res = await call(app, "GET", `${base}/files/${path}`);
+        expect(res.statusCode, path).toBe(400);
+        expect(res.json().error, path).toMatch(/outside the run folder/);
+      }
+      // Dot segments in the URL itself are resolved before routing: they never reach the file route.
+      for (const path of ["%2E%2E/x", "spec-1/%2E%2E/%2E%2E/x", "../../../../package.json"]) {
+        expect((await call(app, "GET", `${base}/files/${path}`)).statusCode, path).toBe(404);
+      }
+      const missing = await call(app, "GET", `${base}/files/nope.md`);
+      expect(missing.statusCode).toBe(400);
+      expect(missing.body).not.toContain(ctx.root.replace(/\\/g, "\\\\"));
+      expect((await call(app, "GET", `${base}/files/shot.png`)).json()).toEqual({ error: '"shot.png" is not a text file.' });
+    });
+
+    it("answers 404 for an unknown run or one of another project, and goes through the token and Host checks", async () => {
+      const { ctx, run, app, base } = detailed();
+      const key = projectKey(ctx.root);
+
+      for (const url of [base, `${base}/files/triage.md`]) {
+        expect((await app.inject({ method: "GET", url, headers: { host: HOST } })).statusCode, url).toBe(401);
+        expect((await app.inject({ method: "GET", url, headers: { host: "evil.example:4180", ...AUTH } })).statusCode, url).toBe(403);
+      }
+      for (const url of [`/api/projects/${key}/runs/nope`, `/api/projects/${key}/runs/nope/files/triage.md`, `/api/projects/${key}/runs/${run.id.slice(0, 4)}`, `/api/projects/${key}/runs/%2312`]) {
+        const res = await call(app, "GET", url);
+        expect(res.statusCode, url).toBe(404);
+      }
+    });
+
+    it("shows a run without an issue or a run folder", async () => {
+      const ctx = memoryProject();
+      const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Loose run" });
+      const { app } = server([ctx]);
+
+      const res = await call(app, "GET", `/api/projects/${projectKey(ctx.root)}/runs/${run.id}`);
+
+      expect(res.json()).toMatchObject({ run: { id: run.id, state: "intake", issue: null }, issue: null, hasRunDir: false, files: [], sections: [] });
+    });
+  });
 
   it("reports the scheduler's state", async () => {
     const status = { running: [{ project: "demo", issue: 3 }], pausedUntil: "2026-11-16T12:00:00.000Z" };
