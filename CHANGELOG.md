@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/tomek-i/software-factory/compare/v0.3.0...v0.3.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **core:** show agent activity paths relative to the worktree or repo ([#150](https://github.com/tomek-i/software-factory/issues/150)) ([5a76b71](https://github.com/tomek-i/software-factory/commit/5a76b71b864dcf338bfd891c96c1c20cb78b0f2e))
+
 ## [0.3.0](https://github.com/tomek-i/software-factory/compare/v0.2.0...v0.3.0) (2026-11-16)
 
 
