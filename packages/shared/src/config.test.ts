@@ -81,7 +81,7 @@ describe("resolveModel", () => {
     models: {
       default: "opus",
       effort: "high",
-      roles: { triage: "fable", reviewer: { model: "sonnet", effort: "medium" }, verifier: { effort: "low" } },
+      roles: { triage: "fable", builder: {}, reviewer: { model: "sonnet", effort: "medium" }, verifier: { effort: "low" } },
       reviews: { docs: { model: "haiku", effort: "low" }, security: "opus" },
       high_risk: { code: { model: "opus" }, builder: { effort: "xhigh" } },
     },
@@ -119,8 +119,21 @@ describe("resolveModel", () => {
     expect(resolveModel(config, { role: "builder", risk: "HIGH" })).toEqual({ model: "opus", effort: "xhigh" });
   });
 
-  it("leaves effort unset when nothing configures it", () => {
-    expect(resolveModel(factoryConfigSchema.parse({ version: 1 }), { role: "builder" })).toEqual({ model: "opus" });
+  it("uses the recommended models when the config sets none", () => {
+    const defaults = factoryConfigSchema.parse({ version: 1 });
+    expect(resolveModel(defaults, { role: "triage" })).toEqual({ model: "opus", effort: "high" });
+    expect(resolveModel(defaults, { role: "builder" })).toEqual({ model: "opus", effort: "medium" });
+    expect(resolveModel(defaults, { role: "builder", risk: "HIGH" })).toEqual({ model: "opus", effort: "high" });
+    expect(resolveModel(defaults, { role: "reviewer", lens: "docs" })).toEqual({ model: "haiku", effort: "low" });
+    expect(resolveModel(defaults, { role: "capture" })).toEqual({ model: "haiku", effort: "low" });
+  });
+
+  it("replaces only the default entries the config sets, so a better default still reaches the others", () => {
+    const custom = factoryConfigSchema.parse({ version: 1, models: { roles: { builder: "sonnet" }, reviews: { docs: "sonnet" } } });
+    expect(resolveModel(custom, { role: "builder" })).toEqual({ model: "sonnet", effort: "high" });
+    expect(resolveModel(custom, { role: "reviewer", lens: "docs" })).toEqual({ model: "sonnet", effort: "medium" });
+    expect(resolveModel(custom, { role: "triage" })).toEqual({ model: "opus", effort: "high" });
+    expect(resolveModel(custom, { role: "reviewer", lens: "ui" })).toEqual({ model: "haiku", effort: "low" });
   });
 });
 

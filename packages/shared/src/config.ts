@@ -67,6 +67,48 @@ const modelSpec = z
   ])
   .transform((spec): ModelSpec => (typeof spec === "string" ? { model: spec } : spec));
 
+/**
+ * The recommended model per agent, so a config only holds what a project chose itself and a better
+ * default reaches every project that did not override it. An entry in the config replaces the
+ * default entry for that role or lens; the others stay.
+ */
+export const DEFAULT_MODELS = {
+  default: "opus",
+  effort: "high",
+  roles: {
+    triage: { model: "opus" },
+    issue_writer: { model: "opus" },
+    refine: { model: "sonnet", effort: "medium" },
+    critic: { model: "opus" },
+    // Most of the tokens go here; high effort only when triage rated the risk HIGH.
+    builder: { model: "opus", effort: "medium" },
+    // Lenses without their own entry.
+    reviewer: { model: "sonnet", effort: "medium" },
+    // A different model from the reviewers it checks.
+    verifier: { model: "sonnet" },
+    approver: { model: "opus" },
+    capture: { model: "haiku", effort: "low" },
+    learner: { model: "sonnet", effort: "medium" },
+  },
+  reviews: {
+    code: { model: "sonnet", effort: "medium" },
+    security: { model: "opus", effort: "high" },
+    docs: { model: "haiku", effort: "low" },
+    ux: { model: "sonnet", effort: "medium" },
+    ui: { model: "haiku", effort: "low" },
+  },
+  high_risk: {
+    builder: { model: "opus", effort: "high" },
+    code: { model: "opus", effort: "high" },
+  },
+} as const satisfies {
+  default: string;
+  effort: Effort;
+  roles: Partial<Record<AgentRole, ModelSpec>>;
+  reviews: Partial<Record<ReviewLens, ModelSpec>>;
+  high_risk: Partial<Record<AgentRole | ReviewLens, ModelSpec>>;
+};
+
 export const factoryConfigSchema = z.object({
   version: z.literal(1),
   project: z
@@ -141,14 +183,22 @@ export const factoryConfigSchema = z.object({
     .prefault({}),
   models: z
     .object({
-      default: z.string().min(1).default("opus"),
-      // Unset means Claude Code's own default effort.
-      effort: z.enum(EFFORT_LEVELS).optional(),
-      roles: z.partialRecord(z.enum(AGENT_ROLES), modelSpec).default({}),
+      default: z.string().min(1).default(DEFAULT_MODELS.default),
+      effort: z.enum(EFFORT_LEVELS).default(DEFAULT_MODELS.effort),
+      roles: z
+        .partialRecord(z.enum(AGENT_ROLES), modelSpec)
+        .default({})
+        .transform((roles): Partial<Record<AgentRole, ModelSpec>> => ({ ...DEFAULT_MODELS.roles, ...roles })),
       // Per review lens; a lens without an entry uses roles.reviewer.
-      reviews: z.partialRecord(z.enum(REVIEW_LENSES), modelSpec).default({}),
+      reviews: z
+        .partialRecord(z.enum(REVIEW_LENSES), modelSpec)
+        .default({})
+        .transform((reviews): Partial<Record<ReviewLens, ModelSpec>> => ({ ...DEFAULT_MODELS.reviews, ...reviews })),
       // Applied on top of everything else when triage rated the issue RISK: HIGH.
-      high_risk: z.partialRecord(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec).default({}),
+      high_risk: z
+        .partialRecord(z.enum([...AGENT_ROLES, ...REVIEW_LENSES]), modelSpec)
+        .default({})
+        .transform((highRisk): Partial<Record<AgentRole | ReviewLens, ModelSpec>> => ({ ...DEFAULT_MODELS.high_risk, ...highRisk })),
     })
     .prefault({}),
   concurrency: z

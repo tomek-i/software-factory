@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveModel } from "@factory/shared";
-import { loadConfig } from "../config/load.js";
+import { loadConfig, parseConfig } from "../config/load.js";
 import { listRegistered } from "../registry.js";
 import { Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { parseGithubRemote } from "../util/git.js";
 import { detectProject } from "./detect.js";
 import { ensureGitignore, initRepo, InitError } from "./init.js";
+import { renderConfig } from "./template.js";
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "factory-init-"));
@@ -104,6 +105,19 @@ describe("ensureGitignore", () => {
   });
 });
 
+describe("renderConfig", () => {
+  it("shows the recommended models commented out, and uncommenting them changes nothing", () => {
+    const text = renderConfig(detectProject(tempDir()));
+    const lines = text.split("\n");
+    const start = lines.indexOf("# models:");
+    const end = lines.indexOf("", start);
+    const uncommented = lines.slice(start, end).map((l) => l.replace(/^# /, "")).join("\n");
+    expect(start).toBeGreaterThan(-1);
+    expect(parseConfig(`version: 1\n${uncommented}\n`).models).toEqual(parseConfig("version: 1\n").models);
+    expect(parseConfig(text).models).toEqual(parseConfig("version: 1\n").models);
+  });
+});
+
 describe("initRepo", () => {
   it("refuses to run outside a git repository", () => {
     expect(() => initRepo({ cwd: tempDir() })).toThrow(InitError);
@@ -120,9 +134,10 @@ describe("initRepo", () => {
     expect(loadConfig(dir).checks).toEqual([{ name: "test", run: "npm run test", timeout_sec: 900 }]);
     expect(loadConfig(dir).github.status_labels).toBe(false);
     expect(loadConfig(dir).trust).toEqual({ authors: ["alice"], everyone: false });
-    // The starter config spells out a model and effort for every agent.
+    // The starter config leaves the models to the recommended defaults, so they improve with updates.
     const config = loadConfig(dir);
-    expect(resolveModel(config, { role: "triage" })).toEqual({ model: "fable", effort: "high" });
+    expect(readFileSync(join(dir, ".factory", "config.yaml"), "utf8")).not.toMatch(/^models:/m);
+    expect(resolveModel(config, { role: "triage" })).toEqual({ model: "opus", effort: "high" });
     expect(resolveModel(config, { role: "reviewer", lens: "docs" })).toEqual({ model: "haiku", effort: "low" });
     expect(resolveModel(config, { role: "reviewer", lens: "code", risk: "HIGH" })).toEqual({ model: "opus", effort: "high" });
     expect(existsSync(join(dir, ".factory", "lessons.md"))).toBe(true);
