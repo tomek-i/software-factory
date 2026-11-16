@@ -87,14 +87,14 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 
 ## Requirements
 
-- Node.js 22.12+ and pnpm
+- Node.js 22.12+ (and pnpm, to work on the factory from source)
 - Git
 - GitHub CLI (`gh`) 2.50 or newer, logged in
 - Claude Code (`claude`), logged in with your subscription.
   - The factory removes `ANTHROPIC_API_KEY` from the agents' environment, so runs use your subscription, not API billing. It also keeps your GitHub login away from agents (see "Agent permissions" under [Running an issue](#running-an-issue)).
 - Optional, for screenshots and videos of UI changes: Playwright's Chromium.
-  - `pnpm install` installs the `playwright` package (an optional dependency) but never downloads browsers.
-  - Run `pnpm exec playwright install chromium` once in the factory's checkout.
+  - Installing the factory installs the `playwright` package (an optional dependency) but never downloads browsers.
+  - Run `npx playwright install chromium` once (`pnpm exec playwright install chromium` in a source checkout).
   - Without it the capture stage is skipped with a note and runs carry on.
   - If the factory's own `playwright` package is missing, the copy the [narrate](https://github.com/tomek-i/narrate-plugin) Claude Code plugin ships with is used, as far as `app.narrate` allows: with `auto` (the default) the newest plugin in the cache, with a path to `narrate.mjs` only the plugin that path belongs to, and with `off` not at all.
 - Optional, so everyone can see the screenshots and videos in the factory's PRs: run `factory login github` once. See [Where the media goes](#where-the-media-goes).
@@ -103,15 +103,15 @@ Yellow hexagons are where the run stops for a person. Dotted lines show where it
 ## Usage
 
 ```sh
-pnpm install
-pnpm build
-pnpm add -g "$(pwd)/apps/cli"   # puts `factory` on your PATH
+npm i -g @tomek-i/software-factory   # puts `factory` on your PATH
 
 # in the repo you want to use the factory on
 factory init
 ```
 
-Run it from this repo's root. It needs pnpm's global bin folder on your `PATH`: if `pnpm add -g` complains, run `pnpm setup` once and open a new shell. `pnpm add -g` links the checkout rather than copying it, so a later `pnpm build` updates the global `factory`. `pnpm remove -g @factory/cli` takes it off again. `pnpm -C <path-to-this-repo> factory` is not a substitute: pnpm runs the script in the factory's own folder, and the CLI acts on its working directory, so it would always act on this repo.
+- **Update** with `npm i -g @tomek-i/software-factory@latest`; **remove** with `npm rm -g @tomek-i/software-factory`.
+- **With pnpm:** `pnpm add -g @tomek-i/software-factory`. It needs pnpm's global bin folder on your `PATH` (run `pnpm setup` once if it complains). If pnpm reports that it skipped `better-sqlite3`'s build script, run `pnpm approve-builds -g` and approve it.
+- **From source** (to work on the factory itself): in a checkout, `pnpm install`, `pnpm build`, then `pnpm add -g "$(pwd)/apps/cli"`. This links the checkout instead of copying it, so a later `pnpm build` updates the global `factory`, but it cannot run the factory on this repo's own issues (see [Dogfooding](#dogfooding)). `pnpm -C <path-to-this-repo> factory` is not a substitute: pnpm runs the script in the factory's own folder, and the CLI acts on its working directory, so it would always act on this repo.
 
 `factory init`:
 
@@ -590,7 +590,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 pnpm test        # vitest
 pnpm typecheck   # tsc, including tests
 pnpm lint        # eslint
-pnpm build       # tsc -b, then the web app with Vite
+pnpm build       # tsc -b, the web app with Vite, then the npm package's bundle (apps/cli/dist)
 pnpm factory status # run the CLI from source, on this repo
 ```
 
@@ -609,7 +609,7 @@ The quality gate runs `pnpm test` with your environment, so leave the flag unset
 Layout:
 
 ```
-apps/cli          the `factory` command
+apps/cli          the `factory` command, published to npm as @tomek-i/software-factory
 apps/server       `factory serve`'s local HTTP server: API over the run actions, event stream, session token
 apps/web          the web app (React, Vite, Tailwind), served by apps/server
 packages/core     engine: config, SQLite store, state machine, gates, agent runner, prompts,
@@ -624,34 +624,31 @@ packages/shared   zod schemas shared by everything (config, run states, agent ve
 
 ### Dogfooding
 
-The factory works on its own issues. It runs from a **pinned copy** of `main`, never from the code its runs change.
+The factory works on its own issues. It runs from the **published npm package**, never from the code its runs change.
 
-- **Why:** a merged PR, or an agent reaching outside its worktree, would otherwise change the code that is running. `factory run`, `approve`, `resume` and `new "<idea>"` refuse to start agents with a copy that lives inside the repository they would change (its checkout or one of its `.worktrees/`). Other commands, such as `pnpm factory status` or `approve --no-run`, still work from source.
-- **Set up the pinned copy** once, outside every repository (PowerShell):
+- **Why:** a merged PR, or an agent reaching outside its worktree, would otherwise change the code that is running. `factory run`, `approve`, `resume` and `new "<idea>"` refuse to start agents with a copy that lives inside the repository they would change (its checkout or one of its `.worktrees/`). A global `factory` linked from the checkout with `pnpm add -g "$(pwd)/apps/cli"` counts as inside. Other commands, such as `pnpm factory status` or `approve --no-run`, still work from source.
+- **Install** with `npm i -g @tomek-i/software-factory`. It replaces a global `factory` linked from a checkout.
+- **Register this repo** with `factory init` in your checkout. The committed `.factory/config.yaml` is kept.
+- **Run an issue** with `factory run <issue>` in your checkout.
+  - In `.factory/config.yaml` every gate but `merge` is on `auto`: agents decide, and a run stops for you only on an escalation (a hard rule, an untrusted author, a loop cap) and at the merge gate.
+  - The first run had every gate on `human`. Note that on `human` the spec critic runs no agent; the gate only asks you to accept the spec triage already showed you.
+- **Update** with `npm i -g @tomek-i/software-factory@latest` after a release, when no run is in progress.
+- **Unreleased `main`:** to run code that is merged but not released yet, build a clone outside every repository and link it instead (PowerShell):
 
   ```powershell
   $pinned = "$env:LOCALAPPDATA\software-factory\pinned"
   git clone https://github.com/tomek-i/software-factory $pinned
   pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
-  pnpm add -g "$pinned\apps\cli"   # the global `factory` now runs the pinned copy, replacing one linked from a dev checkout
-  ```
-
-- **Register this repo** with `factory init` in your checkout. The committed `.factory/config.yaml` is kept.
-- **Run an issue** with `factory run <issue>` in your checkout.
-  - In `.factory/config.yaml` every gate but `merge` is on `auto`: agents decide, and a run stops for you only on an escalation (a hard rule, an untrusted author, a loop cap) and at the merge gate.
-  - The first run had every gate on `human`. Note that on `human` the spec critic runs no agent; the gate only asks you to accept the spec triage already showed you.
-- **Update the pinned copy** only after a PR merged and no run is in progress:
-
-  ```powershell
-  $pinned = "$env:LOCALAPPDATA\software-factory\pinned"
-  git -C $pinned pull --ff-only; pnpm -C $pinned install --frozen-lockfile; pnpm -C $pinned build
+  pnpm add -g "$pinned\apps\cli"
   ```
 
 ### Releases
 
-[release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, and bumps the version in `package.json` and in `factory --version`. Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
+[release-please](https://github.com/googleapis/release-please) keeps a release PR open with the changelog built from the conventional commits on `main`. Merging that PR tags `v<version>`, publishes a GitHub release, bumps the version in `package.json`, `apps/cli/package.json` and `factory --version`, and publishes the CLI to npm as [`@tomek-i/software-factory`](https://www.npmjs.com/package/@tomek-i/software-factory). Only `feat`, `fix`, `perf`, `refactor`, `docs` and `revert` commits show in the changelog.
 
 CI does not run on the release PR: it is opened with the default `GITHUB_TOKEN`, and GitHub does not start workflows for that token's events. The PR only changes `CHANGELOG.md`, `.release-please-manifest.json` and version strings.
+
+The npm package is `apps/cli`. `apps/cli/scripts/bundle.mjs` bundles the CLI and the workspace packages into `dist/main.js` with esbuild and copies the shipped prompts and the built web app next to it. npm dependencies stay external, so every one the bundle imports must be listed in `apps/cli/package.json`. CI packs it on every push and checks the tarball (`apps/cli/scripts/check-pack.mjs`). The release workflow publishes with npm [trusted publishing](https://docs.npmjs.com/trusted-publishers), so no npm token is stored. npm only allows a trusted publisher on a package that exists, so the first version is published by hand (`npm login`, then `pnpm build` and `pnpm --filter @tomek-i/software-factory publish` on a clean `main`).
 
 ## Contributing
 

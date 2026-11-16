@@ -1,3 +1,4 @@
+/* global process */
 // Builds the published package: the CLI and the workspace packages it uses bundled into
 // dist/main.js, with the shipped prompts and the built web app next to it. npm dependencies stay
 // external (better-sqlite3 is native), so they must be listed in this package's dependencies.

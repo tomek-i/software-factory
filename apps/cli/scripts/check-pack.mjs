@@ -1,3 +1,4 @@
+/* global process, console */
 // Checks a packed tarball of the npm package before it can be published: the bundle, the prompts
 // and the web app are in it, and no workspace package is left for users to install.
 // Usage: node apps/cli/scripts/check-pack.mjs <folder holding the one tarball>
