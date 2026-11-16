@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
@@ -9,15 +10,19 @@ import {
   ensureQueued,
   GithubError,
   reconcileAndSweep,
+  redactPaths,
   rejectRun,
   reportLines,
   resumeRun,
   resumeTargets,
   runCost,
+  runFile,
+  runOverview,
   ServiceError,
   syncIssues,
   type CommandRunner,
   type GithubPort,
+  type OverviewSection,
   type Project,
   type ProjectContext,
   type Run,
@@ -67,6 +72,18 @@ export interface RunRow {
   reason?: string;
   /** Where a run parked for a human can be sent. */
   resumeTargets: Run["state"][];
+}
+
+/** One run in full, for its detail view: no absolute local path in it. */
+export interface RunDetail {
+  run: RunRow;
+  /** The run's issue, with its GitHub link when it is synced. */
+  issue: { number: number; title: string; url: string | null } | null;
+  /** Whether the run folder exists yet; without it there are no files or sections. */
+  hasRunDir: boolean;
+  /** Every file in the run folder, sorted, `/`-separated. */
+  files: string[];
+  sections: OverviewSection[];
 }
 
 const WAITING: Run["state"][] = ["needs_human", "needs_info"];
@@ -131,6 +148,31 @@ function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow 
     updatedAt: run.updated_at,
     reason: events.at(-1)?.reason,
     resumeTargets: run.state === "needs_human" ? resumeTargets(run) : [],
+  };
+}
+
+/**
+ * Run files hold agent output, which can quote local paths: shown relative to the worktree or the
+ * repository, the home folder as `~`, as `factory` does in what it publishes.
+ */
+function redactorOf(ctx: ProjectContext, run: Run): (text: string) => string {
+  const roots = [ctx.project.repo_path, ...(run.worktree_path ? [run.worktree_path] : [])];
+  return (text) => redactPaths(text, { home: homedir(), roots });
+}
+
+function redactSection(section: OverviewSection, redact: (text: string) => string): OverviewSection {
+  if (section.kind === "unparsed") return { ...section, problem: redact(section.problem) };
+  if (section.kind === "capture") return { ...section, summary: section.summary.map(redact) };
+  return {
+    ...section,
+    value: redact(section.value),
+    summary: section.summary.map(redact),
+    blocking: section.blocking.map((f) => ({
+      ...f,
+      claim: redact(f.claim),
+      evidence: redact(f.evidence),
+      ...(f.file === undefined ? {} : { file: redact(f.file) }),
+    })),
   };
 }
 
@@ -261,6 +303,34 @@ export function createServer(options: ServerOptions): FastifyInstance {
     runs.sort((a, b) => (a.run.updated_at < b.run.updated_at ? 1 : a.run.updated_at > b.run.updated_at ? -1 : 0));
     // Rows cost a query or two each, so cut before building them.
     return (view === "all" ? runs.slice(0, ALL_LIMIT) : runs).map(({ key, ctx, run }) => rowOf(key, ctx, run, now));
+  });
+
+  type RunParams = { Params: { key: string; id: string } };
+  app.get<RunParams>("/api/projects/:key/runs/:id", async (req): Promise<RunDetail> => {
+    const ctx = projects.byKey(req.params.key);
+    // Looked up here first, so an unknown run is a 404 and an id prefix or `#12` is no run.
+    const run = runOf(ctx, req.params.id);
+    const overview = runOverview(ctx.store, ctx.project, run.id);
+    const redact = redactorOf(ctx, run);
+    const row = rowOf(req.params.key, ctx, run, new Date().toISOString());
+    const synced = run.issue_number === null ? undefined : ctx.store.getIssue(ctx.project.id, run.issue_number);
+    return {
+      run: { ...row, ...(row.reason === undefined ? {} : { reason: redact(row.reason) }) },
+      issue: run.issue_number === null ? null : { number: run.issue_number, title: synced?.title ?? run.title, url: synced?.url ?? null },
+      hasRunDir: overview.hasRunDir,
+      files: overview.files,
+      sections: overview.sections.map((s) => redactSection(s, redact)),
+    };
+  });
+
+  // The file's path may hold `/` (`round-1/checks.md`); resolveInRunDir alone decides what is inside the run folder.
+  app.get<{ Params: { key: string; id: string; "*": string } }>("/api/projects/:key/runs/:id/files/*", async (req) => {
+    const ctx = projects.byKey(req.params.key);
+    const run = runOf(ctx, req.params.id);
+    const file = runFile(ctx.store, ctx.project, run.id, req.params["*"]);
+    // A screenshot or other binary file has no text to show.
+    if (file.text.includes(String.fromCharCode(0))) throw new BadRequest(`"${file.path}" is not a text file.`);
+    return { path: file.path, text: redactorOf(ctx, run)(file.text) };
   });
 
   type RunAction = { Params: { key: string; id: string }; Body: unknown };
