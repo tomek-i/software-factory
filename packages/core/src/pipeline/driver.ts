@@ -29,7 +29,6 @@ import { CLEANUP_MARKER, cleanupFinishedRun, describeCleanup } from "./cleanup.j
 import { factoryComment, type PullRequestState, type RequiredCheck } from "../github/port.js";
 import { PORT_BLOCK_SIZE, type Issue, type Run, type RunPatch } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
-import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate, type GateInput } from "./gates.js";
 import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
@@ -37,6 +36,7 @@ import { intake, triage } from "./stages/triage.js";
 import { refine } from "./stages/refine.js";
 import { critic } from "./stages/critic.js";
 import { build } from "./stages/build.js";
+import { gate } from "./stages/gate.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
 import {
@@ -233,6 +233,10 @@ export class PipelineDriver {
 
   // ---- stages ---------------------------------------------------------------
 
+  private gate(run: Run): Promise<StepResult> {
+    return gate(this.ctx, run);
+  }
+
   private build(run: Run): Promise<StepResult> {
     return build(this.ctx, run);
   }
@@ -251,45 +255,6 @@ export class PipelineDriver {
 
   private triage(run: Run): Promise<StepResult> {
     return triage(this.ctx, run);
-  }
-
-  private async gate(run: Run): Promise<StepResult> {
-    const dir = this.runDir(run);
-    const worktree = this.worktreeOf(run);
-    const round = run.round;
-    // Every entry into the gate starts a new round, so this folder should have no reviews yet. Should
-    // one be left over anyway (runs from before the round counter), it is for another commit and must
-    // not be reused for whatever this gate passes.
-    for (const lens of REVIEW_LENSES) rmSync(reviewPath(join(dir, `round-${round}`), lens), { force: true });
-    rmSync(join(dir, `round-${round}`, "verify.md"), { force: true });
-    const result = await runQualityGate({
-      runId: run.id,
-      worktreePath: worktree.path,
-      defaultBranch: this.defaultBranch,
-      checks: this.deps.config.checks,
-      roundDir: join(dir, `round-${round}`),
-      run: this.run,
-      events: this.deps.events,
-      signal: this.signal,
-    });
-    const git = gitEvidence(worktree, this.defaultBranch, this.run);
-    const fingerprint = gateFingerprint(result, worktree.path);
-    const evidence: Evidence = { ...runEvidence(dir, round, git), gateFingerprint: () => fingerprint };
-
-    if (result.passed) {
-      // The same facts the gate->review guard needs: the pass is for HEAD, nothing changed since,
-      // and it is pushed. Checks that leave the tree dirty or a commit made meanwhile show up here.
-      const problems: string[] = [];
-      if (git.head() !== result.head) problems.push("HEAD changed after the gate ran");
-      if (!git.isClean()) problems.push("the checks left uncommitted changes in the worktree");
-      if (!git.isPushed()) problems.push("the checked commit is not pushed");
-      if (problems.length) return this.escalate(run, `quality gate passed but ${problems.join("; ")}`);
-      this.move(run, "review", `quality gate passed (round ${round})`, { round, commit: result.head }, evidence);
-      return undefined;
-    }
-    return this.loopBack(run, `quality gate failed (round ${round})`, { round }, evidence, "quality gate", `quality gate still failing after round ${round}`, (reason, data) =>
-      this.escalate(run, reason, data),
-    );
   }
 
   /**
