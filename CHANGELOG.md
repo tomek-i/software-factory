@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/tomek-i/software-factory/compare/v0.1.1...v0.2.0) (2026-11-16)
+
+
+### Features
+
+* **config:** recommended models as defaults, add factory config reset ([#153](https://github.com/tomek-i/software-factory/issues/153)) ([eeb314a](https://github.com/tomek-i/software-factory/commit/eeb314a253128d88e7e6cd83c0368ebf3681d92f))
+
+
+### Performance
+
+* **builder:** leave the full test suite to the gate and run slow tests in parallel ([#156](https://github.com/tomek-i/software-factory/issues/156)) ([d8551f1](https://github.com/tomek-i/software-factory/commit/d8551f1ab83799f25cddc2549c912e58ef0cee70))
+
 ## [0.1.1](https://github.com/tomek-i/software-factory/compare/v0.1.0...v0.1.1) (2026-11-16)
 
 
