@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, ProjectInfo, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, ProjectInfo, RunDetail, RunRow } from "./lib/api";
+import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
 
@@ -33,9 +35,39 @@ class FakeServer {
   runs: RunRow[] = [];
   backlog: Backlog = { github: "acme/shop", syncedAt: null, issues: [] };
   posts: { path: string; body: unknown }[] = [];
+  /** The paths of every GET, in order. */
+  gets: string[] = [];
   /** Answers to posts by path suffix, e.g. a refusal. */
   failures = new Map<string, { status: number; error: string }>();
+  /** Successful answers to posts by path suffix; others get {}. */
+  answers = new Map<string, unknown>();
+  /** Pending drafts, and each draft's page by id. */
+  drafts: DraftView[] = [];
+  draftDetails: Record<string, DraftDetail> = {};
   projectsStatus = 200;
+  /** Run files by path, served for every run. */
+  files: Record<string, string> = {};
+  /** The detail of a run is built from its row in runs. */
+  detail = (run: RunRow): RunDetail => ({
+    run,
+    issue: run.issue === null ? null : { number: run.issue, title: `Issue ${run.issue}`, url: `https://github.com/acme/shop/issues/${run.issue}` },
+    hasRunDir: true,
+    files: Object.keys(this.files),
+    sections: [
+      { kind: "verdict", path: "triage.md", key: "DECISION", value: "APPROVE", summary: ["risk is HIGH: it touches auth"], blocking: [], refuted: 0 },
+      { kind: "verdict", path: "spec-1/critic.md", key: "VERDICT", value: "ACCEPT", summary: ["the spec holds"], blocking: [], refuted: 0 },
+      {
+        kind: "verdict",
+        path: "round-1/review-security.md",
+        key: "VERDICT",
+        value: "CHANGES_REQUESTED",
+        summary: [],
+        blocking: [{ id: "S1", severity: "major", file: "src/auth.ts", line: 4, claim: "the token is logged", evidence: "line 4" }],
+        refuted: 1,
+      },
+      { kind: "unparsed", path: "build.md", problem: "STATUS is missing" },
+    ],
+  });
   /** The token each request carried. */
   tokens = new Set<string | null>();
   private stream?: ReadableStreamDefaultController<string>;
@@ -55,11 +87,13 @@ data: ${JSON.stringify(event)}
       const body = new ReadableStream<string>({ start: (controller) => void (this.stream = controller) }).pipeThrough(new TextEncoderStream());
       return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
     }
+    if (init?.method !== "POST") this.gets.push(url.pathname);
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
     if (init?.method === "POST") {
       this.posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
       for (const [suffix, failure] of this.failures) if (url.pathname.endsWith(suffix)) return json(failure.status, { error: failure.error });
       if (url.pathname.endsWith("/sync")) return json(200, { open: 3, closed: 1, queued: 2, lines: [] });
+      for (const [suffix, answer] of this.answers) if (url.pathname.endsWith(suffix)) return json(200, answer);
       return json(200, {});
     }
     if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, [PROJECT]) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
@@ -69,6 +103,20 @@ data: ${JSON.stringify(event)}
       return json(200, this.runs.filter((r) => view !== "waiting" || r.state === "needs_human" || r.state === "needs_info"));
     }
     if (url.pathname === "/api/projects/p1/issues") return json(200, this.backlog);
+    if (url.pathname === "/api/drafts") return json(200, this.drafts);
+    const draft = /^\/api\/projects\/p1\/drafts\/([^/]+)$/.exec(url.pathname);
+    if (draft) {
+      const found = this.draftDetails[decodeURIComponent(draft[1]!)];
+      return found ? json(200, found) : json(404, { error: "No draft." });
+    }
+    const file = /^\/api\/projects\/p1\/runs\/([^/]+)\/files\/(.+)$/.exec(url.pathname);
+    if (file) {
+      const path = file[2]!.split("/").map(decodeURIComponent).join("/");
+      return path in this.files ? json(200, { path, text: this.files[path] }) : json(400, { error: `No file "${path}".` });
+    }
+    const detail = /^\/api\/projects\/p1\/runs\/([^/]+)$/.exec(url.pathname);
+    const run = detail && this.runs.find((r) => r.id === decodeURIComponent(detail[1]!));
+    if (run) return json(200, this.detail(run));
     return json(404, { error: "Not found." });
   };
 }
@@ -104,6 +152,19 @@ describe("layout", () => {
 
     expect(await screen.findByLabelText("1 waiting")).toBeTruthy();
     expect([...server.tokens]).toEqual(["t".repeat(64)]);
+  });
+
+  it("lines the header row and the page content up in one column that widens only on large screens", async () => {
+    renderAt("/runs");
+
+    await screen.findByLabelText("Project");
+    const classes = (el: Element) => new Set(el.className.split(/\s+/));
+    const header = classes(screen.getByRole("banner").firstElementChild!);
+    const main = classes(screen.getByRole("main"));
+    for (const c of ["mx-auto", "max-w-6xl", "px-4", "xl:px-6", "2xl:max-w-(--breakpoint-2xl)", "2xl:px-8", "min-[120rem]:max-w-[1800px]"]) {
+      expect(header.has(c), `header has ${c}`).toBe(true);
+      expect(main.has(c), `main has ${c}`).toBe(true);
+    }
   });
 
   it("asks for the printed link when there is no session", async () => {
@@ -174,6 +235,81 @@ describe("inbox", () => {
   });
 });
 
+describe("run details", () => {
+  it("opens from an Inbox card with the gate, the full reason and the run's verdicts, and approves from there", async () => {
+    server.runs = [runRow({ reason: "triage rated the risk HIGH: the change touches the login flow and the session store" })];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /Add the feature/ }));
+
+    expect(await screen.findByRole("heading", { name: /#12\s*Issue 12/ })).toBeTruthy();
+    expect(screen.getByText("triage gate")).toBeTruthy();
+    expect(screen.getByText("triage rated the risk HIGH: the change touches the login flow and the session store")).toBeTruthy();
+    expect(screen.getByText("DECISION: APPROVE")).toBeTruthy();
+    expect(screen.getByText("risk is HIGH: it touches auth")).toBeTruthy();
+    expect(screen.getByText("VERDICT: ACCEPT")).toBeTruthy();
+    expect(screen.getByText("the token is logged")).toBeTruthy();
+    expect(screen.getByText("1 refuted by the verifier")).toBeTruthy();
+    expect(screen.getByText("STATUS is missing")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Issue on GitHub/ }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/12");
+
+    await user.click(screen.getByRole("button", { name: /Approve/ }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "triage" } }]));
+  });
+
+  it("rejects, resumes and cancels from the detail view with the card's rules", async () => {
+    server.runs = [runRow(), runRow({ id: "run-2", waitingGate: null, reason: "the build agent failed", resumeTargets: ["build", "triage"] })];
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Reject/ }));
+    const reject = screen.getByRole("button", { name: "Reject" });
+    expect((reject as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Reason"), "too risky");
+    await user.click(reject);
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/reject", body: { state: "needs_human", gate: "triage", message: "too risky" } }]));
+
+    cleanup();
+    server.posts = [];
+    renderAt("/runs/p1/run-2");
+    expect(await screen.findByText("escalation")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Resume/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /Send it to/ }), "triage");
+    await user.type(screen.getByLabelText("Reason"), "try again");
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-2/resume", body: { state: "needs_human", to: "triage", message: "try again" } }]));
+
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-2/cancel", body: { state: "needs_human" } }));
+  });
+
+  it("opens from a run row, read-only for a run that isn't waiting, and shows a file's script tag as text", async () => {
+    server.runs = [runRow({ state: "build", waitingGate: null, reason: "triage approved" })];
+    server.files = { "triage.md": "DECISION: APPROVE\n<script>alert(1)</script>\n<img src=x onerror=alert(2)>", "round-1/checks.md": "GATE: PASS" };
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /Add the feature/ }));
+
+    expect(await screen.findByRole("heading", { name: /#12\s*Issue 12/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve|Reject|Resume|Cancel run/ })).toBeNull();
+    await user.click(within(screen.getByRole("list", { name: "Run files" })).getByRole("button", { name: "triage.md" }));
+
+    const contents = await screen.findByLabelText("Contents of triage.md");
+    expect(contents.textContent).toBe("DECISION: APPROVE\n<script>alert(1)</script>\n<img src=x onerror=alert(2)>");
+    expect(document.querySelector("script")).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "round-1/checks.md" }));
+    expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
+  });
+});
+
 describe("backlog", () => {
   it("queues and unqueues issues, shows their place and trust, and syncs", async () => {
     server.backlog.issues = [
@@ -196,6 +332,86 @@ describe("backlog", () => {
     expect(await screen.findByText("Synced: 3 open, 1 closed since last sync, 2 queued.")).toBeTruthy();
     expect(server.posts.map((p) => p.path)).toEqual(["/api/projects/p1/issues/5/unqueue", "/api/projects/p1/issues/4/queue", "/api/projects/p1/sync"]);
   });
+
+  function issue(patch: Partial<BacklogIssue> & Pick<BacklogIssue, "number" | "title">): BacklogIssue {
+    return {
+      author: "alice",
+      url: `https://github.com/acme/shop/issues/${patch.number}`,
+      labels: [],
+      queued: false,
+      position: null,
+      trusted: true,
+      run: { id: `r${patch.number}`, state: "build", waitingGate: null },
+      ...patch,
+    };
+  }
+
+  it("shows each issue's labels and filters by one label without asking the server", async () => {
+    server.backlog.issues = [
+      issue({ number: 1, title: "Broken checkout", labels: ["bug", "Area: web"] }),
+      issue({ number: 2, title: "New endpoint", labels: ["api"] }),
+      issue({ number: 3, title: "Plain one" }),
+    ];
+    renderAt("/backlog");
+    const user = userEvent.setup();
+
+    const checkout = (await screen.findByText("Broken checkout")).closest("tr")!;
+    expect(screen.getByRole("columnheader", { name: "Labels" })).toBeTruthy();
+    expect([...checkout.querySelectorAll("td")][2]!.textContent).toBe("bugArea: web");
+    expect(within(screen.getByText("New endpoint").closest("tr")!).getByText("api")).toBeTruthy();
+    expect(within(screen.getByText("Plain one").closest("tr")!).getByText("none")).toBeTruthy();
+
+    const filter = screen.getByRole("combobox", { name: "Filter by label" });
+    expect(within(filter).getAllByRole("option").map((o) => o.textContent)).toEqual(["All labels", "api", "Area: web", "bug"]);
+    const gets = server.gets.filter((p) => p === "/api/projects/p1/issues").length;
+
+    await user.selectOptions(filter, "Area: web");
+    expect(screen.getByText("Broken checkout")).toBeTruthy();
+    expect(screen.queryByText("New endpoint")).toBeNull();
+    expect(screen.queryByText("Plain one")).toBeNull();
+
+    await user.selectOptions(filter, "");
+    expect(screen.getByText("Broken checkout")).toBeTruthy();
+    expect(screen.getByText("New endpoint")).toBeTruthy();
+    expect(screen.getByText("Plain one")).toBeTruthy();
+
+    expect(server.posts).toEqual([]);
+    expect(server.gets.filter((p) => p === "/api/projects/p1/issues").length).toBe(gets);
+  });
+
+  it("falls back to all labels when a sync removes the chosen one, and hides the filter without labels", async () => {
+    server.backlog.issues = [issue({ number: 1, title: "Broken checkout", labels: ["bug"] }), issue({ number: 2, title: "New endpoint", labels: ["api"] })];
+    renderAt("/backlog");
+    const user = userEvent.setup();
+
+    await user.selectOptions(await screen.findByRole("combobox", { name: "Filter by label" }), "bug");
+    expect(screen.queryByText("New endpoint")).toBeNull();
+
+    server.backlog = { ...server.backlog, issues: [issue({ number: 2, title: "New endpoint", labels: ["api"] }), issue({ number: 3, title: "Plain one" })] };
+    await user.click(screen.getByRole("button", { name: /Sync now/ }));
+
+    expect(await screen.findByText("Plain one")).toBeTruthy();
+    expect(screen.getByText("New endpoint")).toBeTruthy();
+    expect((screen.getByRole("combobox", { name: "Filter by label" }) as HTMLSelectElement).value).toBe("");
+
+    server.backlog = { ...server.backlog, issues: [issue({ number: 3, title: "Plain one" })] };
+    await user.click(screen.getByRole("button", { name: /Sync now/ }));
+    await waitFor(() => expect(screen.queryByText("New endpoint")).toBeNull());
+    expect(screen.queryByRole("combobox", { name: "Filter by label" })).toBeNull();
+  });
+
+  it("says so when no issue carries the chosen label", () => {
+    const client = newQueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <BacklogTable project="p1" issues={[issue({ number: 1, title: "Broken checkout", labels: ["bug"] })]} label="docs" />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("No open issues with label docs.")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByText(/No open issues synced/)).toBeNull();
+  });
 });
 
 describe("runs", () => {
@@ -210,5 +426,243 @@ describe("runs", () => {
 
     expect(await screen.findByText("Editing feature.txt")).toBeTruthy();
     expect(screen.queryByText("triage approved")).toBeNull();
+  });
+});
+
+const SECTIONS = "## Why\nBecause.\n\n## What\nDo it.\n\n## Acceptance criteria\n- [ ] it works\n\n## Scope\nThis.\n\n## Out of scope\nThat.";
+
+function draftView(patch: Partial<DraftView> = {}): DraftView {
+  return {
+    project: "p1",
+    projectName: "shop",
+    id: "draft-1a2b3c4d",
+    idea: "Export orders as CSV",
+    createdAt: new Date().toISOString(),
+    running: false,
+    draft: {
+      decision: "PROCEED",
+      summary: ["one issue"],
+      reasons: [],
+      issue: { title: "Add CSV export", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+      subIssues: [],
+    },
+    problems: [],
+    refusal: null,
+    created: [],
+    ...patch,
+  };
+}
+
+describe("new issue", () => {
+  it("starts the issue writer, follows it live, refuses a broken edit with the reason, and creates the issue", async () => {
+    const id = "draft-1a2b3c4d";
+    server.answers.set("/p1/drafts", { id, ignored: [] });
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ running: true, draft: null }), text: null },
+      job: { running: true, events: [{ type: "agent:start", runId: id, role: "issue_writer" }] },
+    };
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /New issue/ }));
+    await user.type(await screen.findByLabelText("Idea"), "Export orders as CSV");
+    await user.click(screen.getByLabelText(/Queue the issues/));
+    await user.click(screen.getByRole("button", { name: /Start the issue writer/ }));
+
+    expect(await screen.findByText("issue_writer started")).toBeTruthy();
+    expect(server.posts).toEqual([{ path: "/api/projects/p1/drafts", body: { idea: "Export orders as CSV", queue: true } }]);
+    await waitFor(() => expect(screen.getByTitle("Live")).toBeTruthy());
+    server.send({ type: "draft", project: "p1", draftId: id, event: { type: "agent:activity", runId: id, agentRunId: "a", summary: "Reading src/orders.ts" } });
+    expect(await screen.findByText("Reading src/orders.ts")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Stop the issue writer/ })).toBeTruthy();
+
+    // The gate wants a human: the draft comes up as fields.
+    const text = "DECISION: PROCEED\n\n=== ISSUE ===\nTITLE: Add CSV export\n";
+    server.draftDetails[id] = {
+      ...server.draftDetails[id]!,
+      pending: { ...draftView(), text },
+      job: { running: false, events: [], result: { kind: "waiting", reasons: ["gate is set to human"] } },
+    };
+    server.send({ type: "draft:done", project: "p1", draftId: id, result: { kind: "waiting", reasons: ["gate is set to human"] } });
+    expect(await screen.findByText("Waiting for you: gate is set to human")).toBeTruthy();
+    const title = screen.getByLabelText("Issue title");
+    expect((title as HTMLInputElement).value).toBe("Add CSV export");
+
+    const body = screen.getByLabelText("Issue body");
+    await user.clear(body);
+    await user.click(body);
+    await user.paste("## Why\nBecause.");
+    const refusal = `Draft ${id} is not valid:\n- issue: section ## Acceptance criteria is missing\nNothing was saved. Fix it and save it again, or discard it.`;
+    server.failures.set("/save", { status: 400, error: refusal });
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+    expect((await screen.findByRole("alert")).textContent).toBe(refusal);
+    expect(server.posts.at(-1)).toEqual({
+      path: `/api/projects/p1/drafts/${id}/save`,
+      body: { issue: { title: "Add CSV export", ui: false, risk: "LOW", body: "## Why\nBecause." }, subIssues: [] },
+    });
+
+    server.failures.delete("/save");
+    await user.clear(body);
+    await user.click(body);
+    await user.paste(SECTIONS);
+    await user.clear(title);
+    await user.type(title, "Export orders as CSV");
+    const published = { issue: { number: 20, title: "Export orders as CSV", url: "https://github.com/acme/shop/issues/20" }, subIssues: [], buildable: [20], queued: [] };
+    server.answers.set("/publish", published);
+    server.draftDetails[id] = { ...server.draftDetails[id]!, pending: null, job: { running: false, events: [], result: { kind: "published", published } } };
+    await user.click(screen.getByRole("button", { name: /Save and create on GitHub/ }));
+
+    expect(await screen.findByText("Created on GitHub")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /#20\s*Export orders as CSV/ }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/20");
+    expect(screen.getByText(/Not queued/)).toBeTruthy();
+    expect(server.posts.slice(-2)).toEqual([
+      { path: `/api/projects/p1/drafts/${id}/save`, body: { issue: { title: "Export orders as CSV", ui: false, risk: "LOW", body: SECTIONS }, subIssues: [] } },
+      { path: `/api/projects/p1/drafts/${id}/publish`, body: { queue: false } },
+    ]);
+  });
+
+  it("edits sub-issues and what they depend on, and shows the issues a gate let through", async () => {
+    const id = "draft-1a2b3c4d";
+    const big = draftView({
+      draft: {
+        decision: "ESCALATE",
+        summary: [],
+        reasons: ["the export format is a guess"],
+        issue: { title: "Exports", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+        subIssues: [
+          { title: "CSV export", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+          { title: "Excel export", ui: true, risk: "MEDIUM", dependsOn: [1], body: SECTIONS },
+        ],
+      },
+    });
+    server.draftDetails[id] = { project: "p1", projectName: "shop", id, pending: { ...big, text: "x" }, job: null };
+    renderAt(`/new/p1/${id}`);
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("the export format is a guess")).toBeTruthy();
+    expect((screen.getByLabelText("Sub-issue 2 depends on") as HTMLInputElement).value).toBe("1");
+    await user.selectOptions(screen.getByLabelText("Sub-issue 1 risk"), "HIGH");
+    await user.type(screen.getByLabelText("Sub-issue 2 depends on"), ", x");
+    expect((await screen.findByRole("alert")).textContent).toBe("sub-issue 2: DEPENDS_ON x is not a sub-issue number");
+    await user.clear(screen.getByLabelText("Sub-issue 2 depends on"));
+    await user.type(screen.getByLabelText("Sub-issue 2 depends on"), "#1");
+    await user.click(screen.getByRole("button", { name: /^Save$/ }));
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        {
+          path: `/api/projects/p1/drafts/${id}/save`,
+          body: {
+            issue: { title: "Exports", ui: false, risk: "LOW", body: SECTIONS },
+            subIssues: [
+              { title: "CSV export", ui: false, risk: "HIGH", body: SECTIONS, dependsOn: [] },
+              { title: "Excel export", ui: true, risk: "MEDIUM", body: SECTIONS, dependsOn: [1] },
+            ],
+          },
+        },
+      ]),
+    );
+
+    cleanup();
+    const published = {
+      issue: { number: 20, title: "Exports", url: "https://github.com/acme/shop/issues/20" },
+      subIssues: [
+        { number: 21, title: "CSV export", url: "https://github.com/acme/shop/issues/21" },
+        { number: 22, title: "Excel export", url: "javascript:alert(1)" },
+      ],
+      buildable: [21, 22],
+      queued: [21, 22],
+    };
+    server.draftDetails[id] = { project: "p1", projectName: "shop", id, pending: null, job: { running: false, events: [], result: { kind: "published", published } } };
+    renderAt(`/new/p1/${id}`);
+    expect(await screen.findByText("Queued #21, #22 for the factory.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /#21\s*CSV export/ })).toBeTruthy();
+    // Only GitHub pages are linked.
+    expect(screen.queryByRole("link", { name: /#22/ })).toBeNull();
+    expect(screen.getByText("Excel export")).toBeTruthy();
+  });
+
+  it("keeps the newest progress line in view, unless the person scrolled up to read", async () => {
+    const id = "draft-1a2b3c4d";
+    const activity = (summary: string) => ({ type: "agent:activity", runId: id, agentRunId: "a", summary });
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ running: true, draft: null }), text: null },
+      job: { running: true, events: Array.from({ length: 30 }, (_, i) => activity(`step ${i}`)) },
+    };
+    renderAt(`/new/p1/${id}`);
+
+    const list = await screen.findByRole("list", { name: "Issue writer's progress" });
+    // jsdom has no layout: a 16rem box over a taller list, where each line adds 20px.
+    let scrollTop = 0;
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, get: () => 256 },
+      scrollHeight: { configurable: true, get: () => list.querySelectorAll("li").length * 20 },
+      scrollTop: { configurable: true, get: () => scrollTop, set: (v: number) => void (scrollTop = v) },
+    });
+    await waitFor(() => expect(screen.getByTitle("Live")).toBeTruthy());
+
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Reading src/orders.ts") });
+    expect(await within(list).findByText("Reading src/orders.ts")).toBeTruthy();
+    expect(scrollTop).toBe(list.scrollHeight);
+
+    // Scrolled up to an earlier line: a new one does not pull the box back down.
+    scrollTop = 0;
+    act(() => void list.dispatchEvent(new Event("scroll")));
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Writing the draft") });
+    expect(await within(list).findByText("Writing the draft")).toBeTruthy();
+    expect(scrollTop).toBe(0);
+
+    // Back at the bottom: it follows again.
+    scrollTop = list.scrollHeight - list.clientHeight;
+    act(() => void list.dispatchEvent(new Event("scroll")));
+    server.send({ type: "draft", project: "p1", draftId: id, event: activity("Checking the sections") });
+    expect(await within(list).findByText("Checking the sections")).toBeTruthy();
+    expect(scrollTop).toBe(list.scrollHeight);
+  });
+
+  it("shows why the issue writer failed, and discards the draft it left", async () => {
+    const id = "draft-1a2b3c4d";
+    const error = "The issue writer failed (aborted). Drop the draft with `factory new --discard draft-1a2b3c4d`.";
+    server.draftDetails[id] = {
+      project: "p1",
+      projectName: "shop",
+      id,
+      pending: { ...draftView({ draft: null, problems: ["the issue writer did not write a draft"] }), text: null },
+      job: { running: false, events: [], result: { kind: "failed", error } },
+    };
+    renderAt(`/new/p1/${id}`);
+    const user = userEvent.setup();
+
+    expect((await screen.findByRole("alert")).textContent).toBe(error);
+    expect(screen.getByText("the issue writer did not write a draft")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Create on GitHub/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Discard/ }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: `/api/projects/p1/drafts/${id}/discard`, body: {} }]));
+    expect(await screen.findByRole("heading", { name: "Inbox" })).toBeTruthy();
+  });
+
+  it("lists pending drafts in the Inbox, each opening its draft; a refused one says why and can't be created", async () => {
+    const refusal = ".factory/drafts/draft-9f9f9f9f/draft.md is tracked by git, so the draft may come from someone else's commit";
+    server.drafts = [draftView(), draftView({ id: "draft-9f9f9f9f", idea: "planted", refusal })];
+    server.draftDetails["draft-9f9f9f9f"] = { project: "p1", projectName: "shop", id: "draft-9f9f9f9f", pending: { ...server.drafts[1]!, text: "DECISION: PROCEED\n" }, job: null };
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const list = await screen.findByRole("list", { name: "Pending drafts" });
+    const links = within(list).getAllByRole("link", { name: "Add CSV export" });
+    expect(links.map((l) => l.getAttribute("href"))).toEqual(["/new/p1/draft-1a2b3c4d", "/new/p1/draft-9f9f9f9f"]);
+    expect(within(list).getByText(/waiting for you · shop/)).toBeTruthy();
+    expect(within(list).getByText(/refused: tracked by git · shop/)).toBeTruthy();
+    await user.click(links[1]!);
+
+    expect(await screen.findByText(`This draft can't be created: ${refusal}.`)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Create on GitHub|^Save$/ })).toBeNull();
+    expect(screen.getByLabelText("Draft text").textContent).toBe("DECISION: PROCEED\n");
   });
 });

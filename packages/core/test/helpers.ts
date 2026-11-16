@@ -12,7 +12,7 @@ export const FAKE_CLAUDE = join(here, "fake-claude.mjs");
 export interface FakeStep {
   /** Only this role's agent takes the step (the system prompt file name, e.g. "reviewer-code"). */
   role?: string;
-  stream?: "success" | "error_max_turns" | "rate_limited";
+  stream?: "success" | "error_max_turns" | "rate_limited" | "write_in_cwd";
   files?: Record<string, string>;
   exec?: string[][];
   output?: string;

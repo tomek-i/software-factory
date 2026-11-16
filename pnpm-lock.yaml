@@ -193,6 +193,28 @@ importers:
 
   apps/cli:
     dependencies:
+      '@fastify/static':
+        specifier: 10.1.8
+        version: 10.1.8
+      better-sqlite3:
+        specifier: ^12.4.1
+        version: 12.11.1
+      commander:
+        specifier: ^15.1.0
+        version: 15.1.0
+      execa:
+        specifier: ^10.2.1
+        version: 10.2.1
+      fastify:
+        specifier: 5.12.7
+        version: 5.12.7
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.1
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
       '@factory/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -202,9 +224,16 @@ importers:
       '@factory/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      commander:
-        specifier: ^15.1.0
-        version: 15.1.0
+      '@factory/web':
+        specifier: workspace:*
+        version: link:../web
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+    optionalDependencies:
+      playwright:
+        specifier: ^1.65.0
+        version: 1.65.0
 
   apps/server:
     dependencies:

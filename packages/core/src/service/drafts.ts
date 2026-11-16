@@ -3,8 +3,20 @@ import { relative } from "node:path";
 import { VerdictParseError } from "@factory/shared";
 import { createAgentRunner } from "../agents/runner.js";
 import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
-import { parseDraft } from "../drafts/draft.js";
-import { approvableDraft, discardDraft, DraftError, listDrafts, publishDraft, writeDraft, type DraftContext, type DraftEntry, type PublishedDraft } from "../drafts/writer.js";
+import { parseDraft, type IssueDraft } from "../drafts/draft.js";
+import {
+  approvableDraft,
+  discardDraft,
+  DraftError,
+  editDraft,
+  listDrafts,
+  publishDraft,
+  writeDraft,
+  type DraftContext,
+  type DraftEdit,
+  type DraftEntry,
+  type PublishedDraft,
+} from "../drafts/writer.js";
 import type { FactoryEvents } from "../events.js";
 import { ghPort, type IssueWriterPort } from "../github/port.js";
 import { ensureGitignore } from "../init/init.js";
@@ -18,6 +30,8 @@ export interface DraftDeps {
   github?: IssueWriterPort;
   /** Told the draft's text right before it is created on GitHub, so it can be shown in full first. */
   onCreate?: (text: string) => void;
+  /** Queue the buildable issues once they are created. Off by default. */
+  queue?: boolean;
 }
 
 function draftContext(ctx: ServiceContext, run?: CommandRunner): DraftContext {
@@ -43,14 +57,22 @@ export type DraftOutcome =
 export async function draftIssue(
   ctx: ServiceContext,
   idea: string,
-  deps: { run?: CommandRunner; env?: NodeJS.ProcessEnv; events?: FactoryEvents; signal?: AbortSignal },
+  deps: {
+    run?: CommandRunner;
+    env?: NodeJS.ProcessEnv;
+    events?: FactoryEvents;
+    signal?: AbortSignal;
+    /** Told the draft's id as soon as its folder exists, while the issue writer still works. */
+    onStart?: (id: string) => void;
+  },
 ): Promise<DraftOutcome> {
   const root = ctx.project.repo_path;
   // The gate, the model and the prompt steer an agent, so they come from the default branch.
   const defaultBranch = ctx.config.project.default_branch;
   const read = trustedReader(root, defaultBranch, deps.run);
   const config = loadTrustedConfig(read, defaultBranch);
-  const written = await writeDraft({ root, config, read, runAgent: createAgentRunner({ events: deps.events, env: deps.env }), idea, signal: deps.signal });
+  const runAgent = createAgentRunner({ events: deps.events, env: deps.env });
+  const written = await writeDraft({ root, config, read, runAgent, idea, signal: deps.signal, onStart: deps.onStart });
 
   const { id, file, turn } = written;
   const fileRef = relative(root, file);
@@ -91,7 +113,7 @@ export function approveDraft(ctx: ServiceContext, ref: string, deps: DraftDeps =
   try {
     const entry = approvableDraft(draftCtx, ref);
     deps.onCreate?.(readFileSync(entry.file, "utf8"));
-    return publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id });
+    return publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id, queue: deps.queue });
   } catch (err) {
     if (err instanceof VerdictParseError) {
       throw new ServiceError([`Draft ${ref} is not valid:`, ...err.problems.map((p) => `- ${p}`), "Fix it and approve it again, or discard it."].join("\n"));
@@ -99,6 +121,22 @@ export function approveDraft(ctx: ServiceContext, ref: string, deps: DraftDeps =
     if (err instanceof DraftError) throw new ServiceError(err.message);
     // What was created is recorded in the store, so approving again only does the rest.
     throw new ServiceError(`${(err as Error).message}\nApprove it again to finish; issues recorded as created are not created again.`);
+  }
+}
+
+/**
+ * Save an edited draft, as a hand edit of its file would, but validated first: an invalid edit is
+ * refused with the problems approving it would report, and the file stays as it was.
+ */
+export function saveDraft(ctx: ServiceContext, ref: string, edit: DraftEdit, run?: CommandRunner): DraftEntry & { draft: IssueDraft } {
+  try {
+    return editDraft(draftContext(ctx, run), ref, edit);
+  } catch (err) {
+    if (err instanceof VerdictParseError) {
+      throw new ServiceError([`Draft ${ref} is not valid:`, ...err.problems.map((p) => `- ${p}`), "Nothing was saved. Fix it and save it again, or discard it."].join("\n"));
+    }
+    if (err instanceof DraftError) throw new ServiceError(err.message);
+    throw err;
   }
 }
 

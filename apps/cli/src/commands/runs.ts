@@ -328,6 +328,9 @@ export async function runLogs(
       let events = 0;
       const offsets = new Map<string, number>();
       for (;;) {
+        // Read each time: the worktree appears only once the build starts.
+        const worktree = store.getRun(run.id)?.worktree_path;
+        const roots = [project.repo_path, ...(worktree ? [worktree] : [])];
         for (const e of store.listEvents(run.id).slice(events)) {
           print(style.transition(`-> ${style.state(e.to_state)}: ${e.reason}`));
           events++;
@@ -341,7 +344,7 @@ export async function runLogs(
           const end = text.lastIndexOf("\n") + 1;
           if (end <= from) continue;
           for (const line of text.slice(from, end).split("\n")) {
-            for (const activity of applyStreamLine(emptySummary(), line)) print(`[${agent.role}] ${activity}`);
+            for (const activity of applyStreamLine(emptySummary(), line, roots)) print(`[${agent.role}] ${activity}`);
           }
           offsets.set(agent.id, end);
         }

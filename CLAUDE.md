@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Orientation for Claude Code sessions working on this repo: where things live, what must stay true, and what reviews keep catching. The README has the long versions; follow the links.
+Orientation for Claude Code sessions working on this repo: where things live, what must stay true, and what reviews keep catching. The README and `docs/` have the long versions; follow the links.
 
 Factory agents start with `--setting-sources ""`, so Claude Code does not load this file for them; the engine appends the default branch's copy to the prompts of the roles that read code (`projectNotes` in `packages/core/src/agents/prompts.ts`, capped at `PROJECT_NOTES_MAX_CHARS`).
 
@@ -10,14 +10,18 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `packages/shared/src`: zod schemas used everywhere
 - `states.ts`: `STAGES`, parked and terminal states, `GATES` and gate modes
-- `config.ts`: the `.factory/config.yaml` schema and defaults, `AGENT_ROLES` for per-role models
+- `config.ts`: the `.factory/config.yaml` schema and defaults, `AGENT_ROLES` for per-role models, `DEFAULT_MODELS` for the recommended ones
 - `verdict.ts`: agent output headers (`verdictHeaderSchemas`), `parseVerdict`, findings, lessons
 - `capture.ts`: the capture agent's plan (`capturePlanSchema`), data only, same-origin paths
 - `registry.ts`: the per-user project list's file format (`registryFileSchema`)
+- `snapshot.ts`: the `factory export` file (`snapshotSchema`), checked before an import writes anything
 
 `packages/core/src`: the engine, exported through `index.ts`
 - `pipeline/transitions.ts`: `RunMachine`, the forward edges and the guards on them
-- `pipeline/driver.ts`: `PipelineDriver`, whose private `step` has a `case` per stage; `approveTarget`, `prBody`
+- `pipeline/driver.ts`: `PipelineDriver`, the orchestrator: `startRun`, `drive` (lease, abort signal), `onError`, and `step`, which has a `case` per stage. It re-exports the public names of the files below
+- `pipeline/stages/<stage>.ts`: one module per stage (`triage` with intake, `refine`, `critic`, `build`, `gate`, `review` with the verifier, `capture`, `pr`, `merge` with re-sync and approver, `learn`), each a function `(ctx, run) => StepResult`
+- `pipeline/stages/context.ts`: `StageContext`, what every stage gets (store, project, config, ports, run machine, the abort signal, and helpers such as `move`, `waitForHuman`, `escalate`, `loopBack`, `agentBase`); `DriverDeps`, `DriveOutcome`
+- `pipeline/shared.ts`: helpers that need no driver: `approveTarget`, `nextAfterTriage`, `runDirOf`, `prBody`, `verdictPath`, `runEvidence`, spec rounds, `readValid`, `section`; `pipeline/reviews.ts`: blocking findings, what the verifier must judge, review notes
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
@@ -26,11 +30,11 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `agents/runner.ts`: spawns `claude` with `claudeArgs` and `agentEnv`
 - `agents/prompts.ts`: `PromptRole`, `rolePrompt`, `permissionProfile`, `issueBlock`, `renderTask`
 - `agents/turn.ts`: one agent turn plus parsing its output file; `agents/stream.ts`: stream-json summary
-- `store/store.ts`: the SQLite store; `store/migrations.ts`: `MIGRATIONS`
+- `store/store.ts`: the SQLite store; `store/migrations.ts`: `MIGRATIONS`; `store/snapshot.ts`: `exportSnapshot`, `importSnapshot` behind `factory export` / `factory import`
 - `github/port.ts`: `GithubPort` and its real `gh` implementation, `ghPort`
 - `github/issues.ts`: issue sync; `github/media.ts`, `github/attachments.ts`: videos and images on PRs; `github/labels.ts`: status labels
 - `capture/`: starts the app (`server.ts`), drives Chromium (`browser.ts`), renders narrated video (`narrate.ts`), writes the report (`report.ts`)
-- `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`
+- `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`; `config/reset.ts`: `resetConfigText`, behind `factory config reset`
 - `gate/gate.ts`: the quality gate (`runQualityGate`); `gate/secrets.ts`: secret scan of the diff
 - `git/worktrees.ts`: creates and removes run worktrees in the repo's `.worktrees` folder
 - `lessons/publish.ts`: the lessons PR (`publishLessons`)
@@ -50,14 +54,16 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `main.ts` and `program.ts`: entry point and commander wiring
 - `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`, `work.ts`, `serve.ts`: formatting over `packages/core/src/service/`
 - `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
+- `apps/cli/scripts/bundle.mjs`: builds the npm package (see [Releases](README.md#releases)). The bundle defines `__FACTORY_BUNDLE__`, which `SHIPPED_PROMPTS_DIR` and `defaultWebRoot` check to find the prompts and the web app next to the bundle's folder. A new runtime dependency of any package must also go in `apps/cli/package.json`
 
-`apps/server/src`: `factory serve` (see [Web mode](README.md#web-mode))
+`apps/server/src`: `factory serve` (see [Web mode](docs/web-mode.md))
 - `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
+- `drafts.ts`: the New issue screen's routes (`draftRoutes`) over the core draft service, and `DraftJobs`, the issue writers the server started (one per project at a time), with their progress; `rate-limit.ts`: `RateLimiter`, the per-route limit on the draft routes
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
 
 `apps/web/src`: the web app (React, Vite, Tailwind), built by Vite into its `dist` folder and served by the server
-- `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, Backlog; `components/ui/`: shadcn-style parts
+- `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, RunDetail, Backlog, NewIssue and Draft (a draft's progress and editor); `components/ui/`: shadcn-style parts
 
 ## Core invariants
 
@@ -71,17 +77,17 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 A stage:
 - Add it to `STAGES` in `packages/shared/src/states.ts`, in pipeline order.
 - Add its edges to `FORWARD` and any guards to `GUARDS` in `packages/core/src/pipeline/transitions.ts`.
-- Add a step method and a `case` in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
+- Write it as a function `(ctx, run) => StepResult` in `packages/core/src/pipeline/stages/<stage>.ts`, and add a `case` for it in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
 - If it has a gate, add it to `GATES` and handle it in `approveTarget`.
 - Summarise its output file in `runOverview` (`packages/core/src/service/show.ts`) and format it in `apps/cli/src/commands/show.ts`.
-- Update the README [Pipeline](README.md#pipeline) diagram and text.
+- Update the README [Pipeline](README.md#pipeline) diagram and give the stage its own section in [docs/pipeline.md](docs/pipeline.md).
 
 An agent role:
 - Add it to `PromptRole` in `packages/core/src/agents/prompts.ts` and `AGENT_ROLES` in `packages/shared/src/config.ts`.
 - Write `packages/core/prompts/<role>.md`.
 - Give it a profile in `permissionProfile`: no shell, writing only its own output file, unless it truly needs more.
-- Add its kind to `verdictHeaderSchemas` and its file to `verdictPath` (a private function in `packages/core/src/pipeline/driver.ts`).
-- Add a row to the README's role table under [Running an issue](README.md#running-an-issue).
+- Add its kind to `verdictHeaderSchemas` and its file to `verdictPath` (in `packages/core/src/pipeline/shared.ts`).
+- Add a row to the role table in [Agent permissions](docs/agent-permissions.md#roles).
 
 A migration:
 - Append a new entry to `MIGRATIONS` in `packages/core/src/store/migrations.ts`. Never edit or reorder an applied one: the version is the entry's position.
@@ -93,7 +99,7 @@ A `GithubPort` method:
 ## Security checklist
 
 From the adversarial reviews of #58 to #61. The protections are summarised in [SECURITY.md](SECURITY.md).
-- Issue text, comments and agent output derived from them are untrusted data. Frame them as data (`issueBlock`), and never let them become a trusted spec without a human. See [Trusted authors](README.md#trusted-authors).
+- Issue text, comments and agent output derived from them are untrusted data. Frame them as data (`issueBlock`), and never let them become a trusted spec without a human. See [Trusted authors](docs/trust.md#trusted-authors).
 - Never read trust, config or progress from files a branch can plant in the working tree. Use the trusted reader, the store or the run folder.
 - Know what each child process's environment holds. Only the app started for capture gets an allowlist (`APP_ENV_ALLOWLIST` in `packages/core/src/capture/server.ts`). Checks get the full environment minus `CHECK_ENV_DENYLIST`, so no tokens. Agents get the full environment minus `AGENT_ENV_DENYLIST`, with `gh` logged out and git's credential helpers, askpass and ssh keys off (`agentEnv`); they still run as the user, so an agent can undo this on purpose (a barrier, not a sandbox). A new child process whose output is published gets an allowlist.
 - Clean up processes, worktrees and temp dirs on every path: success, error, timeout, cancel and signal. Kill whole process trees with `killTree`.
@@ -123,4 +129,4 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 - No AI attribution or co-author trailers.
 - Comments explain why, not what.
 - Every change comes with tests; never weaken, skip or delete a test to make it pass.
-- Update the README when behaviour, config or commands change.
+- Update the README and `docs/` when behaviour, config or commands change: one fact per line, wrapped at sentence or clause boundaries.

@@ -183,7 +183,7 @@ describe("drafts", () => {
 });
 
 describe("publishDraft", () => {
-  it("creates a single issue, syncs it as created by the factory and queues it", () => {
+  it("creates a single issue and syncs it as created by the factory, without queuing it by default", () => {
     const root = repo();
     draftFolder(root, "draft-11112222", SINGLE);
     const { github, run, created, links } = fakeGithub();
@@ -192,23 +192,23 @@ describe("publishDraft", () => {
 
     const published = publishDraft({ ...ctx, github, ref: "draft-1111" });
 
-    expect(published).toEqual({ id: "draft-11112222", issue: { number: 20, title: "Add CSV export" }, subIssues: [], queued: [20] });
+    expect(published).toEqual({ id: "draft-11112222", issue: { number: 20, title: "Add CSV export" }, subIssues: [], buildable: [20], queued: [] });
     expect(created[0]!.body).toBe(`${SECTIONS.trim()}\n\n---\n\n**UI change:** no · **Risk:** low\n`);
     expect(links).toEqual([]);
     expect(store.getIssue(project.id, 20)).toMatchObject({ author: "someone", created_by_factory: true });
-    expect(store.getIssue(project.id, 20)!.queued_at).not.toBeNull();
+    expect(store.getIssue(project.id, 20)!.queued_at).toBeNull();
     // Created drafts are no longer pending.
     expect(listDrafts(ctx)).toEqual([]);
     expect(() => publishDraft({ ...ctx, github, ref: "draft-11112222" })).toThrow(/No pending draft/);
   });
 
-  it("creates a parent and linked sub-issues in order, and queues only the sub-issues", () => {
+  it("creates a parent and linked sub-issues in order, and with queue queues only the sub-issues", () => {
     const root = repo();
     draftFolder(root, "draft-11112222", PARENT);
     const { github, run, created, links } = fakeGithub();
     const ctx = contextFor(root, run);
 
-    const published = publishDraft({ ...ctx, github, ref: "draft-11112222" });
+    const published = publishDraft({ ...ctx, github, ref: "draft-11112222", queue: true });
 
     expect(created.map((c) => [c.number, c.title])).toEqual([
       [20, "Exports"],
@@ -224,8 +224,23 @@ describe("publishDraft", () => {
       { number: 21, title: "CSV" },
       { number: 22, title: "Excel" },
     ]);
+    expect(published.buildable).toEqual([21, 22]);
     expect(published.queued).toEqual([21, 22]);
     expect(ctx.store.listIssues({ project_id: ctx.project.id, queued: true }).map((i) => i.number)).toEqual([21, 22]);
+    expect(ctx.store.listIssues({ project_id: ctx.project.id }).every((i) => i.created_by_factory)).toBe(true);
+  });
+
+  it("leaves a parent and its sub-issues unqueued without queue, but says which ones are buildable", () => {
+    const root = repo();
+    draftFolder(root, "draft-11112222", PARENT);
+    const { github, run } = fakeGithub();
+    const ctx = contextFor(root, run);
+
+    const published = publishDraft({ ...ctx, github, ref: "draft-11112222" });
+
+    expect(published.buildable).toEqual([21, 22]);
+    expect(published.queued).toEqual([]);
+    expect(ctx.store.listIssues({ project_id: ctx.project.id, queued: true })).toEqual([]);
     expect(ctx.store.listIssues({ project_id: ctx.project.id }).every((i) => i.created_by_factory)).toBe(true);
   });
 
@@ -238,14 +253,15 @@ describe("publishDraft", () => {
     before?.(ctx);
     const failure = (() => {
       try {
-        publishDraft({ ...ctx, github: gh.github, ref: "draft-11112222" });
+        publishDraft({ ...ctx, github: gh.github, ref: "draft-11112222", queue: true });
       } catch (err) {
         return (err as Error).message;
       }
     })();
     const createdBefore = gh.created.map((c) => c.number);
     for (const key of Object.keys(gh.state)) delete gh.state[key as keyof typeof gh.state];
-    publishDraft({ ...ctx, github: gh.github, ref: "draft-11112222" });
+    // Queuing comes last, so the attempt that finishes the draft also queues it.
+    publishDraft({ ...ctx, github: gh.github, ref: "draft-11112222", queue: true });
     return { ...gh, ctx, failure, createdBefore };
   }
 

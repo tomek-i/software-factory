@@ -25,6 +25,9 @@ describe("redactPaths", () => {
     expect(redactPaths("cannot read d:/Work/Repo/x.js", windows)).toBe("cannot read x.js");
     expect(redactPaths("cannot read /srv/repo/packages/core/x.js", posix)).toBe("cannot read packages/core/x.js");
     expect(redactPaths("cwd /srv/repo", posix)).toBe("cwd .");
+    // A trailing separator with nothing after it stays a `.`, not an empty string.
+    expect(redactPaths("cd /srv/repo/ && pnpm test", posix)).toBe("cd ./ && pnpm test");
+    expect(redactPaths("ls D:\\work\\repo\\", windows)).toBe("ls .\\");
     // The innermost root wins: a worktree inside the repository.
     expect(redactPaths("/srv/repo/.worktrees/r1/src/a.ts", { ...posix, roots: ["/srv/repo", "/srv/repo/.worktrees/r1"] })).toBe("src/a.ts");
     // Only the folder itself, not one whose name starts the same.

@@ -1,0 +1,180 @@
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router";
+import { RunActions } from "../components/RunActions";
+import { StateBadge } from "../components/StateBadge";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardHeader } from "../components/ui/card";
+import { api, type OverviewSection, type RunRow } from "../lib/api";
+import { ago, money } from "../lib/utils";
+
+/** Where a run's detail view lives: the Inbox and Runs screens link here. */
+export const runPath = (run: Pick<RunRow, "project" | "id">) => `/runs/${encodeURIComponent(run.project)}/${encodeURIComponent(run.id)}`;
+
+/** Only a GitHub page is linked; anything else in the store is shown as nothing. */
+export const githubUrl = (url: string | null) => (url && url.startsWith("https://github.com/") ? url : undefined);
+
+// Everything below comes from agents that read untrusted issue text: it is rendered as React text
+// (escaped), never as HTML or markdown.
+
+function Section({ section }: { section: OverviewSection }) {
+  return (
+    <div className="space-y-1 border-t pt-3 first:border-t-0 first:pt-0">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <code className="font-mono text-xs text-muted-foreground">{section.path}</code>
+        {section.kind === "verdict" && (
+          <span className="font-mono font-medium">
+            {section.key}: {section.value}
+          </span>
+        )}
+        {section.kind === "unparsed" && <span className="text-destructive">does not parse</span>}
+      </div>
+      {section.kind === "unparsed" && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{section.problem}</p>}
+      {section.kind !== "unparsed" && section.summary.length > 0 && (
+        <ul className="list-disc space-y-0.5 pl-5 text-sm">
+          {section.summary.map((line, i) => (
+            <li key={i} className="whitespace-pre-wrap">
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
+      {section.kind === "verdict" && section.blocking.length > 0 && (
+        <div className="text-sm">
+          <p className="font-medium">Blocking findings</p>
+          <ul className="space-y-1 pl-1">
+            {section.blocking.map((f) => (
+              <li key={f.id} className="whitespace-pre-wrap">
+                <span className="mr-1.5 font-mono text-xs text-destructive">{f.severity}</span>
+                {f.file && (
+                  <code className="mr-1.5 font-mono text-xs text-muted-foreground">
+                    {f.file}
+                    {f.line ? `:${f.line}` : ""}
+                  </code>
+                )}
+                {f.claim}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {section.kind === "verdict" && section.refuted > 0 && <p className="text-xs text-muted-foreground">{section.refuted} refuted by the verifier</p>}
+    </div>
+  );
+}
+
+function FileView({ project, id, path }: { project: string; id: string; path: string }) {
+  const file = useQuery({ queryKey: ["run-file", project, id, path], queryFn: () => api.runFile(project, id, path) });
+  return (
+    <Card>
+      <CardHeader>
+        <code className="font-mono text-sm">{path}</code>
+      </CardHeader>
+      <CardContent>
+        {file.error && <p className="text-sm text-destructive">{file.error.message}</p>}
+        {file.data && (
+          <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs" aria-label={`Contents of ${path}`}>
+            {file.data.text}
+          </pre>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** One run in full: its issue, why it waits, the verdicts of its run folder, its files and the decisions on it. */
+export function RunDetail() {
+  const { project = "", id = "" } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const detail = useQuery({ queryKey: ["run", project, id], queryFn: () => api.run(project, id) });
+  const [file, setFile] = useState<string>();
+  // Opened from a link of the app, back goes where it came from; opened directly, to the Inbox.
+  const back = () => (location.key === "default" ? navigate("/inbox") : navigate(-1));
+
+  const data = detail.data;
+  const run = data?.run;
+  const url = githubUrl(data?.issue?.url ?? null);
+
+  return (
+    <section className="space-y-4">
+      <Button size="sm" variant="ghost" onClick={back}>
+        <ArrowLeft aria-hidden /> Back
+      </Button>
+      {detail.error && <p className="text-sm text-destructive">{detail.error.message}</p>}
+      {data && run && (
+        <>
+          <div className="space-y-1">
+            <h1 className="text-xl font-semibold">
+              {data.issue && <span className="mr-2 font-mono text-muted-foreground">#{data.issue.number}</span>}
+              {data.issue?.title ?? run.title}
+            </h1>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <StateBadge state={run.state} />
+              <code className="font-mono">{run.id}</code>
+              <span>{run.projectName}</span>
+              <span>
+                b{run.build} r{run.review}
+              </span>
+              <span>{money(run.cost)}</span>
+              <span title={run.updatedAt}>{ago(run.updatedAt)}</span>
+              {url && (
+                <a href={url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 underline">
+                  Issue on GitHub <ExternalLink className="size-3" aria-hidden />
+                </a>
+              )}
+            </div>
+          </div>
+
+          <Card>
+            <CardHeader>
+              {run.state === "needs_human" ? (
+                <Badge className="bg-amber-500/15 font-mono text-amber-700 dark:text-amber-300">{run.waitingGate ? `${run.waitingGate} gate` : "escalation"}</Badge>
+              ) : (
+                <span className="text-sm font-medium">Where it is</span>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {run.reason ? <p className="whitespace-pre-wrap text-sm">{run.reason}</p> : <p className="text-sm text-muted-foreground">No reason recorded.</p>}
+              <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <h2 className="text-sm font-medium">Verdicts</h2>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {data.sections.length === 0 && <p className="text-sm text-muted-foreground">{data.hasRunDir ? "No verdicts yet." : "No run folder yet."}</p>}
+              {data.sections.map((s) => (
+                <Section key={s.path} section={s} />
+              ))}
+            </CardContent>
+          </Card>
+
+          {data.files.length > 0 && (
+            <Card>
+              <CardHeader>
+                <h2 className="text-sm font-medium">Files</h2>
+              </CardHeader>
+              <CardContent>
+                <ul className="flex flex-wrap gap-1" aria-label="Run files">
+                  {data.files.map((f) => (
+                    <li key={f}>
+                      <Button size="sm" variant={file === f ? "secondary" : "ghost"} aria-pressed={file === f} className="font-mono" onClick={() => setFile(file === f ? undefined : f)}>
+                        {f}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
+          {file && <FileView project={project} id={id} path={file} />}
+        </>
+      )}
+    </section>
+  );
+}

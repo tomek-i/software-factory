@@ -1,16 +1,51 @@
 {
-  "name": "@factory/cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@tomek-i/software-factory",
+  "version": "0.4.0",
+  "description": "AI software factory: turns GitHub issues into reviewed, tested pull requests",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomek-i/software-factory.git",
+    "directory": "apps/cli"
+  },
+  "homepage": "https://github.com/tomek-i/software-factory#readme",
+  "bugs": "https://github.com/tomek-i/software-factory/issues",
   "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
   "bin": {
     "factory": "./dist/main.js"
   },
+  "files": [
+    "dist",
+    "prompts",
+    "web"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "bundle": "node scripts/bundle.mjs",
+    "prepack": "node scripts/bundle.mjs"
+  },
   "dependencies": {
+    "@fastify/static": "10.1.8",
+    "better-sqlite3": "^12.4.1",
+    "commander": "^15.1.0",
+    "execa": "^10.2.1",
+    "fastify": "5.12.7",
+    "yaml": "^2.6.1",
+    "zod": "^4.6.7"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.65.0"
+  },
+  "devDependencies": {
     "@factory/core": "workspace:*",
     "@factory/server": "workspace:*",
     "@factory/shared": "workspace:*",
-    "commander": "^15.1.0"
+    "@factory/web": "workspace:*",
+    "esbuild": "^0.28.2"
   }
 }

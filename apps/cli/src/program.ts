@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { DEFAULT_PORT } from "@factory/server";
 import { runCleanup } from "./commands/cleanup.js";
+import { runConfigReset } from "./commands/config.js";
 import { runInit } from "./commands/init.js";
 import { runIssues, runQueue, runSync } from "./commands/issues.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./commands/lessons.js";
@@ -11,6 +12,7 @@ import { runProjects, runProjectsRemove } from "./commands/projects.js";
 import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus } from "./commands/runs.js";
 import { parsePort, runServe } from "./commands/serve.js";
 import { runShow } from "./commands/show.js";
+import { runExport, runImport } from "./commands/snapshot.js";
 import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork } from "./commands/work.js";
 import { refuseRunningOnItself } from "./self.js";
 import { styleFor } from "./style.js";
@@ -19,13 +21,24 @@ export function buildProgram(): Command {
   const program = new Command()
     .name("factory")
     .description("AI software factory: turns GitHub issues into reviewed, tested pull requests")
-    .version("0.1.1"); // x-release-please-version (release-please bumps it on each release)
+    .version("0.4.0"); // x-release-please-version (release-please bumps it on each release)
 
   program
     .command("init")
     .description("set up the factory in the current git repository")
     .action(() => {
       console.log(runInit(process.cwd()));
+    });
+
+  const config = program.command("config").description("manage .factory/config.yaml");
+
+  config
+    .command("reset")
+    .description("take settings out of .factory/config.yaml so the factory's defaults apply to them")
+    .argument("[settings...]", "sections or dotted entries, e.g. models or models.roles.builder")
+    .option("--all", "reset everything except project, checks, app and trust")
+    .action((settings: string[], options: { all?: boolean }) => {
+      console.log(runConfigReset(process.cwd(), settings, options));
     });
 
   const projects = program
@@ -59,12 +72,31 @@ export function buildProgram(): Command {
     });
 
   program
+    .command("export")
+    .description("write this project's local state (queue, finished runs, lessons, drafts) as JSON, to move it to another machine")
+    .argument("[file]", "where to write it, outside the repo (default: stdout)")
+    .action((file: string | undefined) => {
+      const text = runExport(process.cwd(), file);
+      process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+    });
+
+  program
+    .command("import")
+    .description("merge a snapshot from `factory export` into this project's local state")
+    .argument("<file>", "the snapshot; only import your own")
+    .option("--dry-run", "list what would be added or changed, write nothing")
+    .action((file: string, options: { dryRun?: boolean }) => {
+      console.log(runImport(process.cwd(), file, options));
+    });
+
+  program
     .command("new")
-    .description("draft a GitHub issue from an idea, and create and queue it once approved")
+    .description("draft a GitHub issue from an idea, and create it once approved")
     .argument("[idea...]", 'the idea, e.g. "export orders as CSV"')
-    .option("--approve <draft>", "create a saved draft on GitHub and queue it")
+    .option("--approve <draft>", "create a saved draft on GitHub")
     .option("--discard <draft>", "drop a saved draft")
     .option("--list", "list drafts waiting for approval")
+    .option("--queue", "queue the created issues for the factory to work on")
     .action(async (idea: string[], options: NewOptions) => {
       // Drafting runs the issue writer agent in the checkout; the other options only handle saved drafts.
       if (!options.approve && !options.discard && !options.list) refuseRunningOnItself(process.cwd());

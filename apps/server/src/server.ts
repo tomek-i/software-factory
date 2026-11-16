@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
@@ -9,15 +10,20 @@ import {
   ensureQueued,
   GithubError,
   reconcileAndSweep,
+  redactPaths,
   rejectRun,
   reportLines,
   resumeRun,
   resumeTargets,
   runCost,
+  runFile,
+  runOverview,
   ServiceError,
   syncIssues,
   type CommandRunner,
   type GithubPort,
+  type IssueWriterPort,
+  type OverviewSection,
   type Project,
   type ProjectContext,
   type Run,
@@ -25,8 +31,11 @@ import {
 } from "@factory/core";
 import { isTerminal, isTrustedIssue } from "@factory/shared";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { DraftJobs, draftRoutes } from "./drafts.js";
+import { BadRequest, Conflict } from "./errors.js";
 import type { EventHub } from "./hub.js";
 import { NotFoundError, type ProjectSet } from "./projects.js";
+import { TooManyRequests, type RateLimit } from "./rate-limit.js";
 import { hostAllowed, originAllowed, TOKEN_HEADER, tokenMatches } from "./security.js";
 
 export interface ServerOptions {
@@ -39,11 +48,17 @@ export interface ServerOptions {
   scheduler?: { status(): SchedulerStatus };
   run?: CommandRunner;
   github?: (project: Project) => GithubPort | undefined;
+  /** Creates the New issue screen's issues; without it, `gh` as `factory new` uses. */
+  issueWriter?: (project: Project) => IssueWriterPort | undefined;
+  /** The environment agents get, as the scheduler's (tests point FACTORY_CLAUDE_BIN at the fake). */
+  env?: NodeJS.ProcessEnv;
   /** The built web app; none serves the API only. */
   webRoot?: string;
   /** Where unexpected errors go: the terminal, never the browser. */
   log?: (line: string) => void;
   heartbeatMs?: number;
+  /** Per draft route; tests lower it. */
+  draftLimit?: RateLimit;
 }
 
 export type RunView = "active" | "waiting" | "all";
@@ -69,15 +84,23 @@ export interface RunRow {
   resumeTargets: Run["state"][];
 }
 
+/** One run in full, for its detail view: no absolute local path in it. */
+export interface RunDetail {
+  run: RunRow;
+  /** The run's issue, with its GitHub link when it is synced. */
+  issue: { number: number; title: string; url: string | null } | null;
+  /** Whether the run folder exists yet; without it there are no files or sections. */
+  hasRunDir: boolean;
+  /** Every file in the run folder, sorted, `/`-separated. */
+  files: string[];
+  sections: OverviewSection[];
+}
+
 const WAITING: Run["state"][] = ["needs_human", "needs_info"];
 // Routes anyone may fetch: the app's page and its static files, which hold nothing of the user's.
 // Decided on the route Fastify matched, never on the raw URL, which can spell a path many ways.
 const PUBLIC_ROUTES = new Set(["/", "/*"]);
 const ALL_LIMIT = 200;
-
-class BadRequest extends Error {}
-/** The run moved on since the page showed it: the decision was made about something else. */
-class Conflict extends Error {}
 
 function issueNumber(value: string): number {
   const n = Number(value);
@@ -134,6 +157,31 @@ function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow 
   };
 }
 
+/**
+ * Run files hold agent output, which can quote local paths: shown relative to the worktree or the
+ * repository, the home folder as `~`, as `factory` does in what it publishes.
+ */
+function redactorOf(ctx: ProjectContext, run: Run): (text: string) => string {
+  const roots = [ctx.project.repo_path, ...(run.worktree_path ? [run.worktree_path] : [])];
+  return (text) => redactPaths(text, { home: homedir(), roots });
+}
+
+function redactSection(section: OverviewSection, redact: (text: string) => string): OverviewSection {
+  if (section.kind === "unparsed") return { ...section, problem: redact(section.problem) };
+  if (section.kind === "capture") return { ...section, summary: section.summary.map(redact) };
+  return {
+    ...section,
+    value: redact(section.value),
+    summary: section.summary.map(redact),
+    blocking: section.blocking.map((f) => ({
+      ...f,
+      claim: redact(f.claim),
+      evidence: redact(f.evidence),
+      ...(f.file === undefined ? {} : { file: redact(f.file) }),
+    })),
+  };
+}
+
 function inView(run: Run, view: RunView): boolean {
   if (view === "waiting") return WAITING.includes(run.state);
   if (view === "active") return !isTerminal(run.state);
@@ -161,6 +209,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return address && typeof address === "object" ? address.port : options.port;
   };
   const changed = (project?: string) => hub.publish({ type: "changed", project });
+  const drafts = new DraftJobs({ hub, run: options.run, env: options.env, issueWriter: options.issueWriter, log });
 
   app.addHook("onRequest", async (req, reply) => {
     // Only the origin form (`GET /path`): an absolute URL in the request line is a proxy's business.
@@ -181,6 +230,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
     if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
     if (err instanceof Conflict) return reply.code(409).send({ error: err.message });
+    if (err instanceof TooManyRequests) return reply.code(429).header("Retry-After", String(err.retryAfter)).send({ error: err.message });
     if (err instanceof ServiceError || err instanceof BadRequest) return reply.code(400).send({ error: err.message });
     if (err instanceof GithubError) return reply.code(502).send({ error: `GitHub: ${err.message}` });
     // Fastify's own (a malformed JSON body, say) carry a 4xx status and a message meant for the client.
@@ -263,6 +313,34 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return (view === "all" ? runs.slice(0, ALL_LIMIT) : runs).map(({ key, ctx, run }) => rowOf(key, ctx, run, now));
   });
 
+  type RunParams = { Params: { key: string; id: string } };
+  app.get<RunParams>("/api/projects/:key/runs/:id", async (req): Promise<RunDetail> => {
+    const ctx = projects.byKey(req.params.key);
+    // Looked up here first, so an unknown run is a 404 and an id prefix or `#12` is no run.
+    const run = runOf(ctx, req.params.id);
+    const overview = runOverview(ctx.store, ctx.project, run.id);
+    const redact = redactorOf(ctx, run);
+    const row = rowOf(req.params.key, ctx, run, new Date().toISOString());
+    const synced = run.issue_number === null ? undefined : ctx.store.getIssue(ctx.project.id, run.issue_number);
+    return {
+      run: { ...row, ...(row.reason === undefined ? {} : { reason: redact(row.reason) }) },
+      issue: run.issue_number === null ? null : { number: run.issue_number, title: synced?.title ?? run.title, url: synced?.url ?? null },
+      hasRunDir: overview.hasRunDir,
+      files: overview.files,
+      sections: overview.sections.map((s) => redactSection(s, redact)),
+    };
+  });
+
+  // The file's path may hold `/` (`round-1/checks.md`); resolveInRunDir alone decides what is inside the run folder.
+  app.get<{ Params: { key: string; id: string; "*": string } }>("/api/projects/:key/runs/:id/files/*", async (req) => {
+    const ctx = projects.byKey(req.params.key);
+    const run = runOf(ctx, req.params.id);
+    const file = runFile(ctx.store, ctx.project, run.id, req.params["*"]);
+    // A screenshot or other binary file has no text to show.
+    if (file.text.includes(String.fromCharCode(0))) throw new BadRequest(`"${file.path}" is not a text file.`);
+    return { path: file.path, text: redactorOf(ctx, run)(file.text) };
+  });
+
   type RunAction = { Params: { key: string; id: string }; Body: unknown };
   const runAction = (name: string, act: (ctx: ProjectContext, run: Run, body: unknown) => object) =>
     app.post<RunAction>(`/api/projects/:key/runs/:id/${name}`, async (req) => {
@@ -292,6 +370,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned };
   });
 
+  draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });
+
   app.get("/api/scheduler", async () => options.scheduler?.status() ?? null);
 
   app.get("/api/events", (req, reply) => {
@@ -315,6 +395,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
   // An open stream would keep close() waiting forever.
   app.addHook("preClose", async () => {
     for (const end of [...streams.values()]) end();
+    // An issue writer nobody can follow any more; its draft stays for `factory new --list`.
+    drafts.stopAll();
   });
 
   const webRoot = options.webRoot;

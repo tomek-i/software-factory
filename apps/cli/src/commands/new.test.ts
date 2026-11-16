@@ -58,7 +58,7 @@ function setup(steps: FakeStep[], gate?: string) {
 }
 
 describe("factory new", () => {
-  it("shows the draft and waits for approval by default, then creates, syncs and queues it", async () => {
+  it("shows the draft and waits for approval by default, then creates and syncs it without queuing", async () => {
     const { dir, root, deps, fake, created, printed, issues, draftId } = setup([{ role: "issue_writer", output: SINGLE }]);
 
     const output = await runNew(dir, ["Export", "orders as CSV"], {}, deps);
@@ -79,10 +79,44 @@ describe("factory new", () => {
     // What becomes a trusted issue is shown in full before it is created.
     expect(printed).toEqual([`${SINGLE.trim()}
 `]);
-    expect(approved).toBe("Created #20 Add CSV export.\nQueued #20.\nRun it with `factory run 20`.");
-    expect(issues()).toMatchObject([{ number: 20, author: "factory-operator", created_by_factory: true }]);
-    expect(issues()[0]!.queued_at).not.toBeNull();
+    expect(approved).toBe("Created #20 Add CSV export.\nNot queued. Queue it with `factory queue 20`, or run it now with `factory run 20`.");
+    expect(issues()).toMatchObject([{ number: 20, author: "factory-operator", created_by_factory: true, queued_at: null }]);
     expect(await runNew(dir, [], { list: true }, deps)).toMatch(/^No pending drafts/);
+  });
+
+  it("with --queue, carries the flag into the approval hint and queues the issue on --approve --queue", async () => {
+    const { dir, deps, issues, draftId } = setup([{ output: SINGLE }]);
+
+    const output = await runNew(dir, ["an idea"], { queue: true }, deps);
+    const id = draftId(output);
+    expect(output).toContain(`create it with \`factory new --approve ${id} --queue\`, or drop it with \`factory new --discard ${id}\``);
+
+    expect(await runNew(dir, [], { approve: id, queue: true }, deps)).toBe("Created #20 Add CSV export.\nQueued #20.\nRun it with `factory run 20`.");
+    expect(issues()[0]!.queued_at).not.toBeNull();
+  });
+
+  it("finishes an approval that failed partway with --approve --queue, then queues the sub-issues", async () => {
+    const big = draft(block("Exports") + block("CSV export", true) + block("Excel export", true));
+    const { dir, deps, created, issues, draftId } = setup([{ output: big }]);
+    const id = draftId(await runNew(dir, ["exports"], {}, deps));
+
+    const createIssue = deps.github.createIssue;
+    deps.github.createIssue = (issue) => {
+      if (created.length === 2) throw new Error("GitHub is down");
+      return createIssue(issue);
+    };
+    await expect(runNew(dir, [], { approve: id, queue: true }, deps)).rejects.toThrow(/GitHub is down\nApprove it again to finish/);
+    expect(issues()).toEqual([]);
+
+    deps.github.createIssue = createIssue;
+    const output = await runNew(dir, [], { approve: id, queue: true }, deps);
+    expect(output).toContain("Queued #21, #22.\nRun them with `factory run 21 22`.");
+    expect(created.map((c) => c.title)).toEqual(["Exports", "CSV export", "Excel export"]);
+    expect(issues().map((i) => [i.number, i.queued_at !== null])).toEqual([
+      [22, true],
+      [21, true],
+      [20, false],
+    ]);
   });
 
   it("re-reads the saved draft on approval, so edits count and broken edits are refused", async () => {
@@ -98,11 +132,11 @@ describe("factory new", () => {
     expect(await runNew(dir, [], { approve: id.slice(0, 10) }, deps)).toContain("Created #20 Export orders as CSV.");
   });
 
-  it("creates a parent with linked sub-issues and queues only the sub-issues when the gate is always", async () => {
+  it("creates a parent with linked sub-issues and, with --queue, queues only the sub-issues when the gate is always", async () => {
     const big = draft(block("Exports") + block("CSV export", true) + block("Excel export", true, "DEPENDS_ON: 1\n"));
     const { dir, deps, created, links, issues, printed } = setup([{ output: big }], "always");
 
-    const output = await runNew(dir, ["exports in every format"], {}, deps);
+    const output = await runNew(dir, ["exports in every format"], { queue: true }, deps);
 
     expect(output).toBe(
       "Created #20 Exports, with sub-issues:\n  #21 CSV export\n  #22 Excel export\nQueued #21, #22.\nRun them with `factory run 21 22`.",
@@ -118,6 +152,22 @@ describe("factory new", () => {
       [22, true, true],
       [21, true, true],
       [20, true, false],
+    ]);
+  });
+
+  it("creates but does not queue a parent and its sub-issues without --queue when the gate is always", async () => {
+    const big = draft(block("Exports") + block("CSV export", true) + block("Excel export", true));
+    const { dir, deps, issues } = setup([{ output: big }], "always");
+
+    const output = await runNew(dir, ["exports in every format"], {}, deps);
+
+    expect(output).toBe(
+      "Created #20 Exports, with sub-issues:\n  #21 CSV export\n  #22 Excel export\nNot queued. Queue them with `factory queue 21 22`, or run them now with `factory run 21 22`.",
+    );
+    expect(issues().map((i) => [i.number, i.created_by_factory, i.queued_at])).toEqual([
+      [22, true, null],
+      [21, true, null],
+      [20, true, null],
     ]);
   });
 
@@ -166,5 +216,11 @@ describe("factory new", () => {
     await expect(runNew(dir, [], {}, deps)).rejects.toThrow(/Give an idea/);
     await expect(runNew(dir, ["  "], {}, deps)).rejects.toThrow(/Give an idea/);
     await expect(runNew(dir, ["idea"], { list: true }, deps)).rejects.toThrow(/Give an idea/);
+  });
+
+  it("refuses --queue with --list or --discard", async () => {
+    const { dir, deps } = setup([]);
+    await expect(runNew(dir, [], { list: true, queue: true }, deps)).rejects.toThrow("--queue only goes with an idea or --approve <draft>.");
+    await expect(runNew(dir, [], { discard: "draft-x", queue: true }, deps)).rejects.toThrow("--queue only goes with an idea or --approve <draft>.");
   });
 });

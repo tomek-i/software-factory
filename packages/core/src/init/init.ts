@@ -61,7 +61,7 @@ export function initRepo(options: InitOptions): InitResult {
 
   const configFile = join(factoryDir, CONFIG_FILE);
   if (existsSync(configFile)) {
-    steps.push({ status: "skipped", message: `${FACTORY_DIR}/${CONFIG_FILE} already exists, left unchanged` });
+    steps.push({ status: "skipped", message: `${FACTORY_DIR}/${CONFIG_FILE} already exists, left unchanged (\`factory config reset\` brings settings back to the defaults)` });
   } else {
     writeFileSync(configFile, renderConfig(detection, { operatorLogin: githubLogin(root, run) }));
     const found = detection.checks.map((c) => c.name).join(", ") || "none - add them by hand";

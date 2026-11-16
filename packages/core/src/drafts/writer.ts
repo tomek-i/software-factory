@@ -10,7 +10,7 @@ import { fetchIssue } from "../github/issues.js";
 import type { IssueWriterPort } from "../github/port.js";
 import type { Project, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
-import { issueBody, parseDraft, parseIssueBlocks, type DraftIssue, type IssueDraft } from "./draft.js";
+import { formatDraft, ISSUE_DELIMITER, issueBody, parseDraft, parseIssueBlocks, SUB_ISSUE_DELIMITER, type DraftIssue, type IssueDraft } from "./draft.js";
 
 /** Drafts live here until they are created or discarded: there is no issue or run for them yet. */
 export const DRAFTS_DIR = join(".factory", "drafts");
@@ -27,6 +27,8 @@ export interface WriteDraftOptions {
   idea: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Told the draft's id once its folder exists, before the agent starts. */
+  onStart?: (id: string) => void;
 }
 
 export interface WrittenDraft {
@@ -70,6 +72,7 @@ export async function writeDraft(options: WriteDraftOptions): Promise<WrittenDra
   const dir = join(root, DRAFTS_DIR, id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, IDEA_FILE), `${options.idea.trim()}\n`);
+  options.onStart?.(id);
   const file = join(dir, DRAFT_FILE);
   // Other drafts may hold anything (a hand edit, a planted file); this one starts from the idea alone.
   const otherDrafts = readdirSync(join(root, DRAFTS_DIR), { withFileTypes: true })
@@ -204,9 +207,65 @@ export function approvableDraft(ctx: DraftContext, ref: string): DraftEntry & { 
   return entry as DraftEntry & { draft: IssueDraft };
 }
 
+/** One issue of a draft as the operator edited it. RISK is checked when the draft is parsed again. */
+export interface DraftIssueEdit {
+  title: string;
+  ui: boolean;
+  risk: string;
+  body: string;
+  /** Sub-issues only: positions (1-based) of earlier sub-issues. */
+  dependsOn?: number[];
+}
+
+export interface DraftEdit {
+  issue: DraftIssueEdit;
+  subIssues: DraftIssueEdit[];
+}
+
+/** Fields that would reach past their own place in the file, where parseDraft would misread them. */
+function editProblems(edit: DraftEdit): string[] {
+  return [edit.issue, ...edit.subIssues].flatMap((issue, position) => {
+    const name = position === 0 ? "issue" : `sub-issue ${position}`;
+    const problems: string[] = [];
+    if (/[\r\n]/.test(issue.title)) problems.push(`${name}: TITLE must be one line`);
+    if (/[\r\n]/.test(issue.risk)) problems.push(`${name}: RISK must be LOW, MEDIUM or HIGH`);
+    const lines = issue.body.split(/\r?\n/).map((line) => line.trim().toUpperCase());
+    for (const delimiter of [ISSUE_DELIMITER, SUB_ISSUE_DELIMITER]) {
+      if (lines.includes(delimiter)) problems.push(`${name}: the body may not hold a "${delimiter}" line`);
+    }
+    return problems;
+  });
+}
+
+/**
+ * Write an edited draft back, keeping its decision, summary and reasons. It is validated as
+ * strictly as on approval before anything is written: an invalid edit throws VerdictParseError and
+ * leaves the file as it was.
+ */
+export function editDraft(ctx: DraftContext, ref: string, edit: DraftEdit): DraftEntry & { draft: IssueDraft } {
+  const entry = findDraft(ctx, ref);
+  if (entry.refusal) throw new DraftError(`Draft ${entry.id} cannot be saved: ${entry.refusal}.`);
+  if (!entry.draft) throw new DraftError(`Draft ${entry.id} does not parse, so it has no fields to edit; fix its ${DRAFT_FILE} by hand or discard it.`);
+  const problems = editProblems(edit);
+  if (problems.length) throw new VerdictParseError("invalid issue draft", problems);
+  const toIssue = (issue: DraftIssueEdit, sub: boolean): DraftIssue => ({
+    title: issue.title.trim(),
+    ui: issue.ui,
+    risk: issue.risk.trim().toUpperCase() as DraftIssue["risk"],
+    dependsOn: sub ? (issue.dependsOn ?? []) : [],
+    body: issue.body,
+  });
+  const text = formatDraft({ ...entry.draft, issue: toIssue(edit.issue, false), subIssues: edit.subIssues.map((s) => toIssue(s, true)) });
+  const draft = parseDraft(text);
+  writeFileSync(entry.file, text);
+  return { ...entry, draft };
+}
+
 export interface PublishOptions extends DraftContext {
   github: IssueWriterPort;
   ref: string;
+  /** Queue the buildable issues for the factory once they are created. Off by default. */
+  queue?: boolean;
 }
 
 export interface PublishedDraft {
@@ -214,7 +273,9 @@ export interface PublishedDraft {
   /** The single issue, or the parent. */
   issue: { number: number; title: string };
   subIssues: { number: number; title: string }[];
-  /** Queued for the factory: the sub-issues, or the single issue; never a parent. */
+  /** What the factory can build: the sub-issues, or the single issue; never a parent. */
+  buildable: number[];
+  /** The buildable issues that were queued: all of them with `queue`, none without. */
   queued: number[];
 }
 
@@ -225,7 +286,7 @@ function fingerprint(issue: DraftIssue): string {
 
 /**
  * Open a draft's issues on GitHub, link the sub-issues to the parent, then sync them into the store,
- * mark them as created by the factory (so they count as trusted) and queue the buildable ones.
+ * mark them as created by the factory (so they count as trusted) and, with `queue`, queue the buildable ones.
  * The file is read and validated again first: the operator may have edited it. Each step is
  * recorded in the store as it happens, so after a failure the next attempt continues where this
  * one stopped; an entry edited after its issue was created is refused rather than matched by position.
@@ -268,7 +329,8 @@ export function publishDraft(options: PublishOptions): PublishedDraft {
     fetchIssue(store, project, number, run);
     store.markCreatedByFactory(project.id, number);
   }
-  const queued = children.length ? children : [parent];
+  const buildable = children.length ? children : [parent];
+  const queued = options.queue ? buildable : [];
   for (const number of queued) store.setQueued(project.id, number, true);
   store.finishDraft(project.id, entry.id);
 
@@ -276,6 +338,7 @@ export function publishDraft(options: PublishOptions): PublishedDraft {
     id: entry.id,
     issue: { number: parent, title: draft.issue.title },
     subIssues: children.map((number, i) => ({ number, title: draft.subIssues[i]!.title })),
+    buildable,
     queued,
   };
 }

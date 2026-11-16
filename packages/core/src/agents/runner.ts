@@ -25,6 +25,8 @@ export interface AgentRunOptions {
   settingsFile: string;
   /** Extra directories the agent may use besides cwd, e.g. the run folder. */
   addDirs?: string[];
+  /** Folders the activity lines show paths relative to (default: cwd). */
+  pathRoots?: string[];
   maxTurns?: number;
   /** Continue this session instead of starting a new one. */
   resumeSessionId?: string;
@@ -256,7 +258,7 @@ export function createAgentRunner(deps: { store?: Store; events?: FactoryEvents;
       const lines = createInterface({ input: child.stdout! });
       lines.on("line", (line) => {
         log.write(line + "\n");
-        for (const activity of applyStreamLine(summary, line)) {
+        for (const activity of applyStreamLine(summary, line, options.pathRoots ?? [options.cwd])) {
           deps.events?.emit({ type: "agent:activity", runId: options.runId, agentRunId, summary: activity });
         }
       });

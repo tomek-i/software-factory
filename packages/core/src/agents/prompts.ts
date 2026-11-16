@@ -8,8 +8,16 @@ import type { TrustedReader } from "../config/trusted.js";
 /** Roles that have a shipped prompt and permission profile so far. */
 export type PromptRole = "issue_writer" | "triage" | "refine" | "critic" | "builder" | "reviewer" | "verifier" | "approver" | "capture" | "learner";
 
-/** Default prompts shipped with the factory (packages/core/prompts), the same from src/ and dist/. */
-export const SHIPPED_PROMPTS_DIR = fileURLToPath(new URL("../../prompts/", import.meta.url));
+/** Set by the npm package's bundler (apps/cli/scripts/bundle.mjs); undefined everywhere else. */
+declare const __FACTORY_BUNDLE__: true | undefined;
+
+/**
+ * Default prompts shipped with the factory (packages/core/prompts), the same from src/ and dist/.
+ * The npm package bundles everything into dist/main.js and puts the prompts next to dist/.
+ */
+export const SHIPPED_PROMPTS_DIR = fileURLToPath(
+  new URL(typeof __FACTORY_BUNDLE__ !== "undefined" ? "../prompts/" : "../../prompts/", import.meta.url),
+);
 
 /** One prompt file: `.factory/prompts/<name>.md` on the default branch wins over the shipped default. */
 function promptFile(name: string, read: TrustedReader): string {

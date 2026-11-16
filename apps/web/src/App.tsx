@@ -6,7 +6,10 @@ import { ApiError } from "./lib/api";
 import { EventsProvider } from "./lib/events";
 import { ProjectProvider } from "./lib/project";
 import { Backlog } from "./screens/Backlog";
+import { Draft } from "./screens/Draft";
 import { Inbox } from "./screens/Inbox";
+import { NewIssue } from "./screens/NewIssue";
+import { RunDetail } from "./screens/RunDetail";
 import { Runs } from "./screens/Runs";
 
 export function newQueryClient(): QueryClient {
@@ -30,7 +33,10 @@ export function App({ client }: { client?: QueryClient }) {
               <Route index element={<Navigate to="/inbox" replace />} />
               <Route path="inbox" element={<Inbox />} />
               <Route path="runs" element={<Runs />} />
+              <Route path="runs/:project/:id" element={<RunDetail />} />
               <Route path="backlog" element={<Backlog />} />
+              <Route path="new" element={<NewIssue />} />
+              <Route path="new/:project/:id" element={<Draft />} />
               <Route path="*" element={<Navigate to="/inbox" replace />} />
             </Route>
           </Routes>

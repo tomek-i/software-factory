@@ -1,5 +1,7 @@
 export * from "./config/load.js";
+export * from "./config/reset.js";
 export * from "./store/store.js";
+export * from "./store/snapshot.js";
 export * from "./pipeline/gates.js";
 export * from "./pipeline/transitions.js";
 export * from "./pipeline/fingerprint.js";
@@ -10,6 +12,7 @@ export * from "./github/labels.js";
 export * from "./github/issues.js";
 export * from "./util/exec.js";
 export * from "./util/git.js";
+export * from "./util/redact.js";
 export * from "./events.js";
 export * from "./agents/stream.js";
 export * from "./agents/runner.js";

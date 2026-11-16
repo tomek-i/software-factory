@@ -2,6 +2,7 @@
 
 How `main` is protected and how the repo is set up, with the commands to apply it again.
 Run them as a repo admin with the GitHub CLI.
+Back to the [README](../README.md).
 
 ## What is protected
 
@@ -9,7 +10,7 @@ The `protect-main` ruleset applies to the default branch:
 
 - Changes land only through a pull request. No approving review is required: there is one maintainer, who cannot approve their own PRs.
 - PRs merge only by squash, so history stays linear and the PR title becomes the commit.
-- Required checks: `test (ubuntu-latest)` and `test (windows-latest)` from CI, and `conventional` from the PR-title check. They must come from GitHub Actions.
+- Required checks: `test (ubuntu-latest)` from CI and `conventional` from the PR-title check. They must come from GitHub Actions. CI runs `test (windows-latest)` only on pushes to `main`, so it is not required: a PR never reports it, and requiring it would block every merge.
 - The branch must be up to date with `main` before it merges. The factory merges `main` into its branch once, before it waits for the checks. If `main` moves during that wait, GitHub refuses the merge and the run stops for you.
 - Force pushes and deleting `main` are refused.
 - The `cla` check is not required, so GitHub does not block an outside contributor's PR that has no signed CLA. Check the CLA comment before merging one.
@@ -62,7 +63,6 @@ Save the ruleset as `ruleset.json`:
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "test (ubuntu-latest)", "integration_id": 15368 },
-          { "context": "test (windows-latest)", "integration_id": 15368 },
           { "context": "conventional", "integration_id": 15368 }
         ]
       }

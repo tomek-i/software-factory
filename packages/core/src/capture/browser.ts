@@ -7,7 +7,7 @@ import { findNarrate } from "./narrate.js";
 
 /** How to make Playwright available, for the notes when it is not. */
 export const PLAYWRIGHT_HINT =
-  "install playwright to enable screenshots: `pnpm install` in the factory's checkout (playwright is an optional dependency), then `pnpm exec playwright install chromium`; the narrate Claude Code plugin's own copy is used too, unless `app.narrate` is `off`";
+  "install Playwright's Chromium to enable screenshots: run `npx playwright install chromium` in the factory's install folder (`npm root -g`, then `@tomek-i/software-factory`), or `pnpm exec playwright install chromium` in a source checkout, so the browser matches the factory's own Playwright; the narrate Claude Code plugin's own copy is used too, unless `app.narrate` is `off`";
 
 const NAV_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 10_000;

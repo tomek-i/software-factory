@@ -7,7 +7,7 @@ import { loadConfig } from "../config/load.js";
 import { DRAFTS_DIR } from "../drafts/writer.js";
 import type { IssueWriterPort } from "../github/port.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
-import { approveDraft, discardPendingDraft, draftIssue, ensureDraftsIgnored, pendingDrafts } from "./drafts.js";
+import { approveDraft, discardPendingDraft, draftIssue, ensureDraftsIgnored, pendingDrafts, saveDraft } from "./drafts.js";
 import { ServiceError } from "./errors.js";
 import type { ServiceContext } from "./runs.js";
 
@@ -58,7 +58,8 @@ describe("drafts", () => {
     const published = approveDraft(ctx, outcome.id.slice(0, 9), { ...deps, onCreate: (text) => shown.push(text) });
 
     expect(shown).toEqual([SINGLE]);
-    expect(published).toEqual({ id: outcome.id, issue: { number: 20, title: "Add CSV export" }, subIssues: [], queued: [20] });
+    expect(published).toEqual({ id: outcome.id, issue: { number: 20, title: "Add CSV export" }, subIssues: [], buildable: [20], queued: [] });
+    expect(ctx.store.getIssue(ctx.project.id, 20)!.queued_at).toBeNull();
     expect(pendingDrafts(ctx, deps.run)).toEqual([]);
   });
 
@@ -69,8 +70,9 @@ describe("drafts", () => {
 
     expect(outcome).toEqual({ kind: "ready", id: expect.stringMatching(/^draft-[0-9a-f]{8}$/) });
     expect(created).toEqual([]);
-    expect(approveDraft(ctx, outcome.id, deps).issue).toEqual({ number: 20, title: "Add CSV export" });
+    expect(approveDraft(ctx, outcome.id, { ...deps, queue: true })).toMatchObject({ issue: { number: 20, title: "Add CSV export" }, queued: [20] });
     expect(created.map((c) => c.title)).toEqual(["Add CSV export"]);
+    expect(ctx.store.getIssue(ctx.project.id, 20)!.queued_at).not.toBeNull();
   });
 
   it("says what to do when the issue writer's draft is invalid, and discards it", async () => {
@@ -87,5 +89,54 @@ describe("drafts", () => {
     expect(existsSync(draft!.dir)).toBe(false);
     expect(() => discardPendingDraft(ctx, draft!.id, deps.run)).toThrow(new ServiceError(`No pending draft "${draft!.id}". See \`factory new --list\`.`));
     expect(readFileSync(join(ctx.project.repo_path, ".gitignore"), "utf8")).not.toContain(".factory/drafts/");
+  });
+});
+
+describe("saving an edited draft", () => {
+  const edit = (title: string, body = SECTIONS) => ({ issue: { title, ui: true, risk: "medium", body }, subIssues: [] });
+
+  it("tells the draft's id before the agent finishes, then saves a valid edit keeping the decision and summary", async () => {
+    const { ctx, deps } = context([{ output: SINGLE }], "human");
+    const started: string[] = [];
+
+    const outcome = await draftIssue(ctx, "an idea", { ...deps, onStart: (id) => started.push(id) });
+
+    expect(started).toEqual([outcome.id]);
+    const saved = saveDraft(ctx, outcome.id, edit("Export orders as CSV"), deps.run);
+    expect(saved.draft).toMatchObject({ decision: "PROCEED", summary: ["drafted"], issue: { title: "Export orders as CSV", ui: true, risk: "MEDIUM" } });
+    const [entry] = pendingDrafts(ctx, deps.run);
+    expect(entry!.draft).toEqual(saved.draft);
+    expect(readFileSync(entry!.file, "utf8")).toContain("=== ISSUE ===\nTITLE: Export orders as CSV\nUI: YES\nRISK: MEDIUM\n");
+  });
+
+  it("refuses a broken edit with the problems approval reports, and leaves the file as it was", async () => {
+    const { ctx, deps } = context([{ output: SINGLE }], "human");
+    const { id } = await draftIssue(ctx, "an idea", deps);
+    const [entry] = pendingDrafts(ctx, deps.run);
+
+    expect(() => saveDraft(ctx, id, edit("T", SECTIONS.replace("## Acceptance criteria\n- [ ] it works\n", "")), deps.run)).toThrow(
+      new ServiceError(`Draft ${id} is not valid:\n- issue: section ## Acceptance criteria is missing\nNothing was saved. Fix it and save it again, or discard it.`),
+    );
+    const sub = { title: "Only one", ui: false, risk: "LOW", body: SECTIONS };
+    expect(() => saveDraft(ctx, id, { issue: edit("T").issue, subIssues: [sub] }, deps.run)).toThrow(
+      /- a parent issue needs at least two sub-issues; write a single issue instead/,
+    );
+    expect(() => saveDraft(ctx, id, edit("Two\nTITLE: lines", `${SECTIONS}\n=== SUB-ISSUE ===\n`), deps.run)).toThrow(
+      /- issue: TITLE must be one line\n- issue: the body may not hold a "=== SUB-ISSUE ===" line\n/,
+    );
+    expect(readFileSync(entry!.file, "utf8")).toBe(SINGLE);
+  });
+
+  it("refuses to save a draft git tracks, or one that does not parse", async () => {
+    const { ctx, root, deps } = context([{ output: SINGLE }], "human");
+    const { id } = await draftIssue(ctx, "an idea", deps);
+    runCommand("git", ["add", "-f", join(DRAFTS_DIR, id, "draft.md")], { cwd: root });
+    expect(() => saveDraft(ctx, id, edit("T"), deps.run)).toThrow(/^Draft draft-[0-9a-f]{8} cannot be saved: .*draft\.md is tracked by git/);
+
+    const broken = context([{ output: "nope\n" }, { output: "nope\n" }], "human");
+    await draftIssue(broken.ctx, "an idea", broken.deps).catch(() => undefined);
+    const [entry] = pendingDrafts(broken.ctx, broken.deps.run);
+    expect(() => saveDraft(broken.ctx, entry!.id, edit("T"), broken.deps.run)).toThrow(/does not parse, so it has no fields to edit/);
+    expect(() => saveDraft(broken.ctx, "../x", edit("T"), broken.deps.run)).toThrow(/No pending draft "\.\.\/x"/);
   });
 });

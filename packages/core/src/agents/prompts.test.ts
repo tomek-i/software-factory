@@ -39,6 +39,12 @@ describe("rolePrompt", () => {
     expect(rolePrompt("builder", read)).toBe("custom builder");
     expect(rolePrompt("triage", read)).toContain("# Role: triage");
   });
+
+  it("leaves the whole test suite to the quality gate, so a build does not run it twice", () => {
+    const builder = rolePrompt("builder", () => undefined);
+    expect(builder).toContain("the tests that cover what you changed");
+    expect(builder).toContain("Do not run the whole test suite");
+  });
 });
 
 describe("rolePrompt with the project's CLAUDE.md", () => {
@@ -172,6 +178,19 @@ describe("issueBlock", () => {
 });
 
 describe("permissionProfile", () => {
+  // docs/agent-permissions.md tells users that reads are not limited, apart from the issue
+  // writer's folders. If a profile starts limiting reads, that doc must change with it.
+  it("lets every role read without a path limit, and only the issue writer has read denies", () => {
+    const roles = ["issue_writer", "triage", "refine", "critic", "builder", "reviewer", "verifier", "approver", "capture", "learner"] as const;
+    for (const role of roles) {
+      const { permissions } = permissionProfile(role, { runDirFromCwd: "../..", outputFile: join(tempDir(), "out.md") });
+      expect(permissions.allow).toEqual(expect.arrayContaining(["Read", "Grep", "Glob"]));
+      const readDenies = (permissions.deny ?? []).filter((rule) => /^(Read|Grep|Glob)\(/.test(rule));
+      if (role === "issue_writer") expect(readDenies).toEqual(["Read(.factory/runs/**)", "Read(.worktrees/**)"]);
+      else expect(readDenies).toEqual([]);
+    }
+  });
+
   it("gives triage no shell and only the run folder to write", () => {
     const { permissions } = permissionProfile("triage", { runDirFromCwd: ".factory\\runs\\run-1\\" });
     expect(permissions.allow).not.toContain("Bash");

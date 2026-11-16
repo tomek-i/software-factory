@@ -11,7 +11,7 @@
  * - files:  written relative to the agent's cwd
  * - exec:   commands run in the cwd (e.g. git commit/push)
  * - output: written to the "Output file:" named in the task on stdin; {{HEAD}} becomes HEAD's sha
- * - stream: name of a fixture in fixtures/streams, replayed on stdout with {{SESSION_ID}} filled in
+ * - stream: name of a fixture in fixtures/streams, replayed on stdout with {{SESSION_ID}}, {{CWD}} and {{ADD_DIR}} (the first --add-dir) filled in
  *
  * Every invocation is appended to FAKE_CLAUDE_LOG as one JSON line for assertions.
  */
@@ -98,5 +98,12 @@ if (step.output !== undefined) {
 }
 
 const stream = readFileSync(join(here, "fixtures", "streams", `${step.stream ?? "success"}.jsonl`), "utf8");
-process.stdout.write(stream.replaceAll("{{SESSION_ID}}", sessionId));
+// Paths go inside JSON strings, so their backslashes are escaped.
+const inJson = (path) => JSON.stringify(path).slice(1, -1);
+process.stdout.write(
+  stream
+    .replaceAll("{{SESSION_ID}}", sessionId)
+    .replaceAll("{{CWD}}", inJson(process.cwd()))
+    .replaceAll("{{ADD_DIR}}", inJson(flag("--add-dir") ?? "")),
+);
 process.exit(step.exitCode ?? 0);
