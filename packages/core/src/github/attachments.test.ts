@@ -87,9 +87,25 @@ describe.skipIf(!available)("uploadAttachments (real browser)", () => {
 
   afterAll(async () => {
     await new Promise((resolve) => server.close(resolve));
-    // Chromium's helper processes can hold the profile for a moment after it closed (Windows).
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  });
+    // Chromium's helper processes can hold the profile for a while after it closed (Windows), longer
+    // on a busy machine. The folder is in the OS temp dir: if it is still held after a minute it is
+    // left there, with a warning, rather than failing the tests above that all passed.
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EPERM" && code !== "EBUSY" && code !== "ENOTEMPTY") throw error;
+        if (Date.now() > deadline) {
+          console.warn(`could not remove ${dir} (${code}): Chromium still holds it; left in the temp folder`);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+  }, GIT_TEST_TIMEOUT);
 
   it("uploads each file through the comment box and returns its own link", async () => {
     const links = await uploadAttachments("o/r", 1, [join(dir, "a.png"), join(dir, "walkthrough.webm")], { baseUrl: base, profile: join(dir, "profile") });
