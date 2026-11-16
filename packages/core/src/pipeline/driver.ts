@@ -35,6 +35,7 @@ import { resolveGate, type GateInput } from "./gates.js";
 import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 import { intake, triage } from "./stages/triage.js";
+import { refine } from "./stages/refine.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
 import {
@@ -45,7 +46,6 @@ import {
   criticRound,
   DEFAULT_PORT_BASE,
   LONG_SUMMARY_BULLET,
-  latestRoundWith,
   latestSpecRound,
   longSummaryBullets,
   pause,
@@ -53,7 +53,6 @@ import {
   quietMentions,
   readReview,
   readValid,
-  REFINE_MARKER,
   refined,
   reviewPath,
   runDirOf,
@@ -238,101 +237,16 @@ export class PipelineDriver {
 
   // ---- stages ---------------------------------------------------------------
 
+  private refine(run: Run): Promise<StepResult> {
+    return refine(this.ctx, run);
+  }
+
   private intake(run: Run): StepResult {
     return intake(this.ctx, run);
   }
 
   private triage(run: Run): Promise<StepResult> {
     return triage(this.ctx, run);
-  }
-
-  /**
-   * Triage rated the issue INCOMPLETE, or the spec critic asked for a revision: the refine agent writes
-   * what the issue leaves open (acceptance criteria, scope, out of scope, open questions) as a new
-   * spec round, and the engine posts it on the issue.
-   */
-  private async refine(run: Run): Promise<StepResult> {
-    const issue = this.issueOf(run);
-    const dir = this.runDir(run);
-    const root = this.deps.project.repo_path;
-    const round = latestSpecRound(dir) + 1;
-    const outputFile = specFile(dir, round, "refine.md");
-    mkdirSync(dirname(outputFile), { recursive: true });
-    const files = writeRoleFiles(dir, "refine", rolePrompt("refine", this.deps.read), permissionProfile("refine", { runDirFromCwd: relative(root, dir), outputFile }));
-
-    const sections = this.triageScope(dir);
-    // The latest usable spec and verdict, skipping rounds where refine was blocked or wrote nothing valid.
-    const previous = latestRoundWith(round, (r) => readValid("refine", specFile(dir, r, "refine.md"), refined));
-    if (previous) sections.push({ title: `Your spec from round ${previous.round}`, body: previous.value.body });
-    const critique = latestRoundWith(round, (r) => readValid("critic", specFile(dir, r, "critic.md"), () => []));
-    if (critique) sections.push({ title: `The spec critic's verdict on round ${critique.round}: ${critique.value.header.VERDICT}`, body: critique.value.body });
-    // Only a human's call since refine last ran is meant for it (not, say, the triage approval): one
-    // at the critic gate, or an escalation such as a blocked refine sent back here.
-    const lastRefine = this.deps.store.listAgentRuns(run.id).filter((a) => a.role === "refine").at(-1)?.started_at ?? "";
-    const human = this.deps.store
-      .listDecisions(run.id)
-      .filter((d) => d.actor === "human" && (d.gate === "critic" || d.gate === "escalation") && d.created_at >= lastRefine)
-      .at(-1);
-    if (human) sections.push({ title: "A human sent the spec back with this comment", body: human.comment });
-
-    const turn = await runTurn({
-      run: this.deps.runAgent,
-      kind: "refine",
-      outputFile,
-      agent: {
-        ...this.agentBase(run, "refine", root),
-        ...files,
-        prompt: renderTask({
-          role: "refine",
-          runId: run.id,
-          runDir: dir,
-          workDir: root,
-          outputFile,
-          issue: this.issueText(issue),
-          trusted: isTrustedIssue(this.deps.config, issue),
-          lessons: this.lessons(),
-          sections,
-          instructions: critique
-            ? `Revise the spec of issue #${issue.number}: fix each problem the spec critic listed, then write the output file.`
-            : `Write what issue #${issue.number} leaves open, based on the issue and the code, then write the output file.`,
-        }),
-      },
-    });
-    if (turn.status !== "ok") return this.agentTrouble(run, "refine", turn);
-    const { header, body } = turn.verdict;
-    if (header.STATUS === "BLOCKED") {
-      return this.escalate(run, `refine is blocked: ${section(body, "blocker") ?? "refine reported BLOCKED without details"}`);
-    }
-    this.postSpec(run, round, body);
-    this.move(run, "critic", `refined the issue (spec round ${round})`, { specRound: round });
-    return undefined;
-  }
-
-  /**
-   * The refined spec on the issue, as one marked comment: a later round edits it in place, so the
-   * issue shows the current spec and does not fill up with old versions.
-   */
-  private postSpec(run: Run, round: number, body: string): void {
-    const { github } = this.deps;
-    const headings: [string, string][] = [
-      ["acceptance criteria", "Acceptance criteria"],
-      ["scope", "Scope"],
-      ["out of scope", "Out of scope"],
-      ["open questions", "Open questions"],
-    ];
-    const parts = headings.flatMap(([name, title]) => {
-      const text = section(body, name);
-      return text ? [`### ${title}\n${quietMentions(text)}`] : [];
-    });
-    const text = [
-      REFINE_MARKER,
-      `The factory filled in what this issue leaves open (spec round ${round}). A spec critic checks it against the code before anything is built. If any of it is wrong, edit the issue.`,
-      ...parts,
-    ].join("\n\n");
-    const issue = run.issue_number!;
-    const existing = github.findComment(issue, REFINE_MARKER);
-    if (existing === undefined) github.commentOnIssue(issue, `${text}\n`);
-    else github.editComment(existing, `${text}\n`);
   }
 
   /**
