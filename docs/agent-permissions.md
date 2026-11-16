@@ -1,6 +1,6 @@
 # Agent permissions
 
-What each agent may read and write, and what it never gets.
+What each agent may write and run, what it is given to read, and what it never gets.
 Back to the [README](../README.md).
 
 ## For every agent
@@ -9,6 +9,7 @@ Back to the [README](../README.md).
 - The allowlist is written to `.factory/runs/<run>/agent/`.
 - They ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`).
 - So nothing outside the profile applies to an agent reading issue text.
+- The profile limits writes, the shell and the web, not reads (see [Read access](#read-access)).
 - `ANTHROPIC_API_KEY` is removed from their environment, so runs use your subscription, not API billing.
 - They don't get your GitHub login.
 - The engine pushes, opens PRs and merges itself; agents never need to.
@@ -38,7 +39,7 @@ Back to the [README](../README.md).
 Each role's prompt ships in `packages/core/prompts/<role>.md`.
 A repo overrides it with `.factory/prompts/<role>.md` on its default branch.
 
-| Role | Shell | Reads | Writes | Prompt |
+| Role | Shell | Given | Writes | Prompt |
 |---|---|---|---|---|
 | Triage | no | the issue and the repo | only its run folder | `.factory/prompts/triage.md` |
 | Refine | no | the issue and the repo, read-only | only its own file in `spec-N/` | `.factory/prompts/refine.md` |
@@ -49,9 +50,18 @@ A repo overrides it with `.factory/prompts/<role>.md` on its default branch.
 | Approver | no | the run's reports and `approval.diff` | only `approval.md` | `.factory/prompts/approver.md` |
 | Capture | no | the issue, the triage scope and `round-N/change.diff` | only `capture.md` | `.factory/prompts/capture.md` |
 | Learner | no | the run's reports, reviews and decisions | only `learn.md` | `.factory/prompts/learner.md` |
-| Issue writer | no | the repo; no access to `.factory/runs/`, `.worktrees/` or other drafts | only its `draft.md` | `.factory/prompts/issue_writer.md` |
+| Issue writer | no | your idea and the repo | only its `draft.md`; may not read `.factory/runs/`, `.worktrees/` or other drafts | `.factory/prompts/issue_writer.md` |
 
+- **Given** is what the engine points the role at in its task, not a limit on what it can read.
 - Triage can read the repo.
 - Reviewers, the verifier and the approver read the change from files the engine writes.
 - For reviewers and the verifier that is `round-N/change.diff`, with the commits and the full diff.
 - `change.diff` is written with external diff programs and textconv switched off.
+
+## Read access
+
+- Every role may read, search and list any file you can (`Read`, `Grep` and `Glob` without a path limit).
+- That includes files outside the repo, such as other repos and your home folder.
+- The only read limit is the issue writer's: it may not read `.factory/runs/`, `.worktrees/` or other drafts.
+- So keep secrets out of files an agent reading untrusted issue text could find.
+- The builder can also read anything through its shell.
