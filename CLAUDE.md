@@ -2,7 +2,7 @@
 
 Orientation for Claude Code sessions working on this repo: where things live, what must stay true, and what reviews keep catching. The README has the long versions; follow the links.
 
-Factory agents start with `--setting-sources ""` and do not load this file on their own.
+Factory agents start with `--setting-sources ""`, so Claude Code does not load this file for them; the engine appends the default branch's copy to the prompts of the roles that read code (`projectNotes` in `packages/core/src/agents/prompts.ts`, capped at `PROJECT_NOTES_MAX_CHARS`).
 
 ## Architecture map
 
@@ -63,7 +63,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 - Every state change goes through `RunMachine` in `packages/core/src/pipeline/transitions.ts`: `transition` for automatic moves along guarded edges, `resume` for a human. Never write a run's state directly.
 - Every gate decision goes through `resolveGate` in `packages/core/src/pipeline/gates.ts`. Hard rules (unless the run is `--unsafe`) and untrusted authors force a human whatever the mode.
-- Config, prompts, checks, the trust list and lessons are read from `origin/<default>` through `packages/core/src/config/trusted.ts`, never from the working tree. A branch must not change the rules it is judged by.
+- Config, prompts, checks, the trust list, lessons and the `CLAUDE.md` given to agents are read from `origin/<default>` through `packages/core/src/config/trusted.ts`, never from the working tree. A branch must not change the rules it is judged by.
 - An agent writes exactly one output file, in the verdict format of `packages/shared/src/verdict.ts`: a header of `KEY: VALUE` lines, then markdown sections. The engine checks it; a missing or malformed file blocks the move.
 
 ## How to add things

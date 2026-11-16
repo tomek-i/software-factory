@@ -475,7 +475,7 @@ What `factory run` does today:
 
 **What steers the agents is read from the default branch.**
 
-- `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md` and `.factory/lessons.md` from `origin/<default branch>`, not from your working copy.
+- `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md`, `.factory/lessons.md` and the repo's root `CLAUDE.md` from `origin/<default branch>`, not from your working copy.
 - So a checked-out branch cannot change its own checks, trust list, gates or prompts.
 - Commit and push config changes before they take effect.
 
@@ -509,6 +509,7 @@ What each role may do:
 | Builder | yes | edits and Bash, but denied `git push`, `gh pr`, `gh api` and edits to `.factory/` | |
 
 - Triage can read the repo.
+- Triage, refine, the spec critic, the builder, every reviewer, the verifier and the issue writer get the default branch's root `CLAUDE.md` (if there is one) at the end of their system prompt, as the project's own notes for orientation. Agents start with `--setting-sources ""`, so Claude Code would not load it for them; the engine passes it instead, and a `CLAUDE.md` changed on the run's branch has no effect on that run's agents. The approver, capture and the learner don't get it. It is cut at a line break after 20,000 characters, with a note saying so, and its imports (`@path`) are not followed. Other files (`CLAUDE.local.md`, `.claude/CLAUDE.md`, nested ones) are not read.
 - Reviewers, the verifier and the approver read the change from files the engine writes. For reviewers and the verifier that is `round-N/change.diff`, with the commits and the full diff, written with external diff programs and textconv switched off.
 
 ### Lessons
