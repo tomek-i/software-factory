@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveModel } from "@factory/shared";
@@ -113,7 +113,9 @@ describe("resetConfig", () => {
     expect(resetConfig({ cwd: dir, target: { paths: ["loops"] } }).removed).toEqual([]);
     expect(readFileSync(file, "utf8")).toBe(CONFIG);
     const result = resetConfig({ cwd: dir, target: { paths: ["models"] } });
-    expect(result).toMatchObject({ path: file, removed: ["models"] });
+    expect(result.removed).toEqual(["models"]);
+    // git names the repo by its long path; the temp dir can be an 8.3 short name (RUNNER~1 on CI).
+    expect(realpathSync.native(result.path)).toBe(realpathSync.native(file));
     expect(readFileSync(file, "utf8")).not.toContain("models:");
   });
 
