@@ -34,6 +34,7 @@ import { gateFingerprint } from "./fingerprint.js";
 import { resolveGate, type GateInput } from "./gates.js";
 import { changeReport, diffHardRuleHits, freshBase } from "./hard-rules.js";
 import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
+import { intake, triage } from "./stages/triage.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
 import {
@@ -47,7 +48,6 @@ import {
   latestRoundWith,
   latestSpecRound,
   longSummaryBullets,
-  nextAfterTriage,
   pause,
   prBody,
   quietMentions,
@@ -239,86 +239,11 @@ export class PipelineDriver {
   // ---- stages ---------------------------------------------------------------
 
   private intake(run: Run): StepResult {
-    const issue = this.issueOf(run);
-    const dir = this.runDir(run);
-    mkdirSync(dir, { recursive: true });
-    const trusted = isTrustedIssue(this.deps.config, issue);
-    writeFileSync(
-      join(dir, "issue.md"),
-      [`# #${issue.number}: ${issue.title}`, "", `Author: @${issue.author} (${trusted ? "trusted" : "NOT trusted"})`, `URL: ${issue.url}`, "", issue.body, ""].join("\n"),
-    );
-    this.move(run, "triage", "issue loaded", { trusted });
-    return undefined;
+    return intake(this.ctx, run);
   }
 
-  private async triage(run: Run): Promise<StepResult> {
-    const issue = this.issueOf(run);
-    const dir = this.runDir(run);
-    const root = this.deps.project.repo_path;
-    const trusted = isTrustedIssue(this.deps.config, issue);
-    const outputFile = join(dir, "triage.md");
-    const files = writeRoleFiles(dir, "triage", rolePrompt("triage", this.deps.read), permissionProfile("triage", { runDirFromCwd: relative(root, dir) }));
-
-    const turn = await runTurn({
-      run: this.deps.runAgent,
-      kind: "triage",
-      outputFile,
-      agent: {
-        ...this.agentBase(run, "triage", root),
-        ...files,
-        prompt: renderTask({
-          role: "triage",
-          runId: run.id,
-          runDir: dir,
-          workDir: root,
-          outputFile,
-          issue: this.issueText(issue),
-          trusted,
-          lessons: this.lessons(),
-          instructions: "Triage this issue against the repository and write the output file.",
-        }),
-      },
-    });
-    if (turn.status !== "ok") return this.agentTrouble(run, "triage", turn);
-    const { header, body } = turn.verdict;
-
-    if (!trusted) {
-      // Untrusted text may be steering the agent, so a human confirms every outcome, even --unsafe.
-      return this.waitForHuman(run, "triage", [`@${issue.author} is not a trusted author`, `triage said ${header.DECISION}`]);
-    }
-    if (header.DECISION === "REJECT") {
-      this.comment(run, "triage-reject", `The factory will not work on this issue.\n\n${section(body, "reasons") ?? section(body, "summary") ?? ""}`);
-      this.move(run, "rejected", "triage rejected the issue");
-      return undefined;
-    }
-    if (header.DECISION === "NEEDS_INFO") {
-      this.comment(run, "triage-questions", `Before the factory can work on this, please answer:\n\n${section(body, "questions") ?? section(body, "summary") ?? ""}`);
-      this.move(run, "needs_info", "triage needs more information");
-      return undefined;
-    }
-
-    const mode = this.deps.config.gates.triage;
-    // An INCOMPLETE issue is no reason to stop: refine fills in what it leaves open.
-    const concerns = header.RISK === "HIGH" ? ["triage rated the risk HIGH"] : [];
-    const gate = resolveGate({
-      mode,
-      agentDecision: concerns.length ? { decision: "ESCALATE", reasons: concerns } : { decision: "PROCEED" },
-      hardRuleHits: [],
-      unsafe: run.unsafe,
-    });
-    if (gate.outcome === "wait_human") return this.waitForHuman(run, "triage", gate.reasons);
-
-    this.deps.store.recordDecision({
-      run_id: run.id,
-      gate: "triage",
-      mode,
-      outcome: "proceed",
-      actor: mode === "auto" ? "agent" : "system",
-      comment: mode === "auto" ? "triage approved: risk not high" : "gate is set to always",
-    });
-    const next = nextAfterTriage(dir, this.deps.config);
-    this.move(run, next, next === "refine" ? "triage approved; the issue is incomplete" : "triage approved", undefined, runEvidence(dir, 1));
-    return undefined;
+  private triage(run: Run): Promise<StepResult> {
+    return triage(this.ctx, run);
   }
 
   /**
