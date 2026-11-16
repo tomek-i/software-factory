@@ -46,6 +46,8 @@ export interface RunRow {
   waitingGate: Gate | null;
   build: number;
   review: number;
+  /** Times the merge stage went back to the builder because the default branch conflicted or broke the gate. */
+  resyncs: number;
   cost: number;
   held: boolean;
   updatedAt: string;

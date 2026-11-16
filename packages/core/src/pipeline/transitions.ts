@@ -62,6 +62,12 @@ export interface Evidence {
    * still loops, but stalls cannot be detected.
    */
   gateFingerprint?(): string;
+  /**
+   * Fingerprint of why the merge stage could not bring in the default branch (resyncFingerprint):
+   * the files that conflicted, or the quality gate's failure after the merge. Without it a failed
+   * re-sync still loops, but stalls cannot be detected.
+   */
+  resyncFingerprint?(): string;
   /** The run's pull request as GitHub sees it now. */
   pullRequest?(): PullRequestState;
   /** The latest spec round (spec-N/) that has the file, 0 when none. Without it the critic's round is not checked. */
@@ -171,8 +177,8 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
     if (pr.number !== run.pr_number) return [`PR #${pr.number} is not the run's PR (#${run.pr_number ?? "none"})`];
     return pr.state === "merged" ? [] : [`PR #${pr.number} is ${pr.state}, not merged`];
   },
-  // A failed merge attempt (conflict, failing re-gate) costs a review round so the loop is bounded.
-  "merge->build": ({ run, config }) => capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
+  // A failed re-sync (conflict, failing re-gate) is no review finding, so it has its own cap.
+  "merge->build": ({ run, config }) => capProblem(run.resync_rounds, config.loops.max_resyncs, "re-sync round"),
 };
 
 type Edge = `${RunState}->${RunState}`;
@@ -181,8 +187,8 @@ type Edge = `${RunState}->${RunState}`;
 interface LoopSpec {
   /** Names the repeated failure, e.g. "quality gate failed the same way in rounds 2 and 3". */
   describe: (rounds: string) => string;
-  /** Output file of a round, relative to the run folder. */
-  file: (round: number) => string;
+  /** Output file of a round, relative to the run folder; the fingerprint tells which kind of failure it was. */
+  file: (round: number, fingerprint: string) => string;
   /** The round that just failed (the move bumps the counter). */
   round: (run: Run) => number;
   fingerprint: (evidence: Evidence) => string | undefined;
@@ -200,6 +206,12 @@ const LOOPS: Partial<Record<Edge, LoopSpec>> = {
     file: (round) => `round-${round}/verify.md`,
     round: (run) => run.round,
     fingerprint: (evidence) => findingsFingerprint(evidence.verdict("verify").findings),
+  },
+  "merge->build": {
+    describe: (rounds) => `bringing in the default branch failed the same way in rounds ${rounds}`,
+    file: (round, fingerprint) => `round-${round}/resync/${fingerprint.startsWith("conflict:") ? "conflicts.md" : "checks.md"}`,
+    round: (run) => run.round,
+    fingerprint: (evidence) => evidence.resyncFingerprint?.(),
   },
 };
 
@@ -252,7 +264,7 @@ function stallOf(events: RunEvent[], edge: Edge, spec: LoopSpec, current: LoopFa
   const previous = previousFailure(events, edge);
   if (!previous || previous.fingerprint !== current.fingerprint) return undefined;
   const rounds: [number, number] = [previous.round, current.round];
-  const files: [string, string] = [spec.file(previous.round), spec.file(current.round)];
+  const files: [string, string] = [spec.file(previous.round, previous.fingerprint), spec.file(current.round, current.fingerprint)];
   return {
     edge,
     fingerprint: current.fingerprint,
@@ -281,7 +293,8 @@ function triageReady(evidence: Evidence): string[] {
 function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
   if (to === "gate") return { round: run.round + 1 };
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
-  if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
+  if (from === "review" && to === "build") return { review_rounds: run.review_rounds + 1 };
+  if (from === "merge" && to === "build") return { resync_rounds: run.resync_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
   // The author answered: triage reads a changed issue, so its spec gets a fresh round budget.
   if (from === "needs_info" && to === "triage") return { critic_rounds: 0 };
@@ -389,7 +402,7 @@ export class RunMachine {
       waiting_gate: null,
       parked_from: null,
       ...releaseIfTerminal(to),
-      ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0 } : {}),
+      ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0, resync_rounds: 0 } : {}),
       // A human sending the run (back) to the gate starts a new round, like the builder handing over.
       ...(to === "gate" ? { round: run.round + 1 } : {}),
     };

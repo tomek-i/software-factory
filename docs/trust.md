@@ -16,10 +16,11 @@ trust:
 - **Trusted** issues and comments are treated as the spec.
 - **Untrusted** ones (e.g. strangers on a public repo) can still be queued, but:
   - their text is handled as untrusted data;
-  - triage always waits for your approval before anything is built;
+  - triage always waits for your approval before anything is built, also after a restart;
   - the run always waits for you at the `critic` gate before build, and the spec reaches the builder marked as untrusted;
   - `factory issues` marks them `(untrusted)`.
 - `factory run <n>` on an issue by an author outside `trust.authors` still waits for you at triage.
+- For a trusted author, your approval at the triage gate carries over when a restarted run triages the unchanged issue again (see [Triage again after a restart](pipeline.md#triage-again-after-a-restart)).
 - **Issues the factory created** with `factory new` are trusted, whoever the gh login is.
   - They were written from your own idea and approved by you (or by the gate you configured).
   - The factory records this locally when it creates them, so a later `factory sync` never clears it and nobody on GitHub can set it.

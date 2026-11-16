@@ -74,6 +74,8 @@ export interface RunRow {
   waitingGate: Run["waiting_gate"];
   build: number;
   review: number;
+  /** Times the merge stage went back to the builder because the default branch conflicted or broke the gate. */
+  resyncs: number;
   cost: number;
   /** A worker holds its lease: something is driving it right now. */
   held: boolean;
@@ -149,6 +151,7 @@ function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow 
     waitingGate: run.waiting_gate,
     build: run.build_iterations + 1,
     review: run.review_rounds + 1,
+    resyncs: run.resync_rounds,
     cost: runCost(ctx.store, run.id),
     held: run.lease_expires_at !== null && run.lease_expires_at > now,
     updatedAt: run.updated_at,

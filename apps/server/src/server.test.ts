@@ -316,6 +316,7 @@ describe("runs", () => {
       waitingGate: null,
       build: 1,
       review: 1,
+      resyncs: 0,
       cost: 0,
       held: false,
       updatedAt: expect.any(String),

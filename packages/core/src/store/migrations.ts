@@ -170,4 +170,9 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX lessons_project_status ON lessons(project_id, status);
   `,
+  // Times the merge stage sent the run back to the builder because bringing in the default branch
+  // conflicted or broke the quality gate. Counted apart from review rounds, with its own cap.
+  `
+  ALTER TABLE runs ADD COLUMN resync_rounds INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
