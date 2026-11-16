@@ -5,7 +5,7 @@ import { tempDir } from "../../test/helpers.js";
 import { runDirOf } from "../pipeline/driver.js";
 import { Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
-import { latestChecks, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
+import { latestChecks, latestReviews, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n";
@@ -69,6 +69,36 @@ describe("runOverview", () => {
   it("has no files or sections before the run folder exists", () => {
     const { store, project, run } = setup();
     expect(runOverview(store, project, run.id)).toMatchObject({ hasRunDir: false, files: [], sections: [] });
+  });
+});
+
+describe("latestReviews", () => {
+  it("gives each lens of the latest gated round its verdict, its findings and how many block", () => {
+    const nit = findings("nit");
+    const { store, project } = setup({
+      "round-1/checks.md": checks("PASS", "one"),
+      "round-1/review-code.md": "VERDICT: PASS\n",
+      "round-2/checks.md": checks("PASS", "two"),
+      "round-2/review-code.md": `VERDICT: PASS\n\n## Summary\n- fine\n\n${nit}`,
+      "round-2/review-security.md": `VERDICT: CHANGES\n\n${findings("major")}`,
+      "round-2/review-docs.md": "VERDICT: MAYBE\n",
+      "round-2/verify.md": `VERDICT: CONFIRMED\n\n${findings("major")}`,
+      "round-2/resync/checks.md": checks("PASS", "resync"),
+      "round-3/review-code.md": "VERDICT: CHANGES\n",
+    });
+
+    expect(latestReviews(store, project, "#16")).toEqual([
+      { lens: "code", path: "round-2/review-code.md", verdict: "PASS", findings: 1, blocking: 0 },
+      { lens: "docs", path: "round-2/review-docs.md", problem: expect.any(String) },
+      { lens: "security", path: "round-2/review-security.md", verdict: "CHANGES", findings: 1, blocking: 1 },
+    ]);
+  });
+
+  it("is empty without a gated round or a run folder", () => {
+    const empty = setup();
+    expect(latestReviews(empty.store, empty.project, "#16")).toEqual([]);
+    const { store, project } = setup({ "round-1/review-code.md": "VERDICT: PASS\n" });
+    expect(latestReviews(store, project, "#16")).toEqual([]);
   });
 });
 

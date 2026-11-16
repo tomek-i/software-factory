@@ -125,6 +125,48 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).requiredChecks(42)).toThrow(/unexpected output/);
   });
 
+  it("reads every check on the PR's head, in each bucket, and treats a commit with none as an empty list", () => {
+    const listed = [
+      { name: "test", bucket: "pass", link: "https://ci/1" },
+      { name: "CodeQL", bucket: "fail", link: "https://ci/2" },
+      { name: "deploy", bucket: "pending" },
+      { name: "docs", bucket: "skipping", link: "" },
+      { name: "e2e", bucket: "cancel", link: "https://ci/5" },
+    ];
+    const calls: string[][] = [];
+    // gh exits 1 with a failed check, but the list is still on stdout.
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      return { code: 1, stdout: JSON.stringify(listed), stderr: "" };
+    };
+    expect(ghPort(project, run).pullRequestChecks(42)).toEqual([
+      { name: "test", bucket: "pass", link: "https://ci/1" },
+      { name: "CodeQL", bucket: "fail", link: "https://ci/2" },
+      { name: "deploy", bucket: "pending" },
+      { name: "docs", bucket: "skipping" },
+      { name: "e2e", bucket: "cancel", link: "https://ci/5" },
+    ]);
+    expect(calls[0]).toEqual(["pr", "checks", "42", "-R", "o/r", "--json", "name,bucket,link"]);
+
+    const none: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no checks reported on the 'x' branch" });
+    expect(ghPort(project, none).pullRequestChecks(42)).toEqual([]);
+    expect(() => ghPort(project, fakeGh("<html>", 0).run).pullRequestChecks(42)).toThrow(/gh pr checks failed/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ name: "x" })).run).pullRequestChecks(42)).toThrow(/gh pr checks failed/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: 5, bucket: "pass" }])).run).pullRequestChecks(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).pullRequestChecks(42)).toThrow(/unexpected output/);
+  });
+
+  it("reads a PR's head commit and diff size", () => {
+    const view = fakeGh(JSON.stringify({ headRefOid: "abc123", additions: 120, deletions: 40, changedFiles: 8 }));
+    expect(ghPort(project, view.run).pullRequestDiff(42)).toEqual({ head: "abc123", additions: 120, deletions: 40, changedFiles: 8 });
+    expect(view.calls[0]).toEqual(["pr", "view", "42", "-R", "o/r", "--json", "headRefOid,additions,deletions,changedFiles"]);
+
+    expect(() => ghPort(project, fakeGh("nope").run).pullRequestDiff(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ headRefOid: "abc", additions: "1", deletions: 0, changedFiles: 0 })).run).pullRequestDiff(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ additions: 1, deletions: 0, changedFiles: 0 })).run).pullRequestDiff(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("", 1).run).pullRequestDiff(42)).toThrow(/gh pr view failed: boom/);
+  });
+
   it("opens an issue from a body file, which it removes afterwards, and returns its number", () => {
     let sent = "";
     const calls: string[][] = [];

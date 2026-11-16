@@ -122,6 +122,8 @@ describe("issue commands", () => {
     markReady: () => undefined,
     mergePullRequest: () => undefined,
     requiredChecks: () => [],
+    pullRequestChecks: () => [],
+    pullRequestDiff: () => ({ head: "h", additions: 0, deletions: 0, changedFiles: 0 }),
       pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
     };
 

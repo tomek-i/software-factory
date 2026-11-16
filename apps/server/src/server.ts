@@ -8,6 +8,7 @@ import {
   cancelRun,
   continuation,
   ensureQueued,
+  ghPort,
   GithubError,
   reconcileAndSweep,
   redactPaths,
@@ -34,6 +35,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { DraftJobs, draftRoutes } from "./drafts.js";
 import { BadRequest, Conflict } from "./errors.js";
 import type { EventHub } from "./hub.js";
+import { MergeGateReader, type MergeGateDetails } from "./merge-gate.js";
 import { NotFoundError, type ProjectSet } from "./projects.js";
 import { TooManyRequests, type RateLimit } from "./rate-limit.js";
 import { hostAllowed, originAllowed, TOKEN_HEADER, tokenMatches } from "./security.js";
@@ -59,6 +61,8 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** Per draft route; tests lower it. */
   draftLimit?: RateLimit;
+  /** Milliseconds now, for the GitHub caches; tests move it on. */
+  clock?: () => number;
 }
 
 export type RunView = "active" | "waiting" | "all";
@@ -72,6 +76,8 @@ export interface RunRow {
   title: string;
   state: Run["state"];
   waitingGate: Run["waiting_gate"];
+  /** The run's pull request, once it has one. */
+  pr: number | null;
   build: number;
   review: number;
   cost: number;
@@ -147,6 +153,7 @@ function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow 
     title: run.title,
     state: run.state,
     waitingGate: run.waiting_gate,
+    pr: run.pr_number,
     build: run.build_iterations + 1,
     review: run.review_rounds + 1,
     cost: runCost(ctx.store, run.id),
@@ -209,6 +216,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return address && typeof address === "object" ? address.port : options.port;
   };
   const changed = (project?: string) => hub.publish({ type: "changed", project });
+  const mergeGate = new MergeGateReader(options.clock);
   const drafts = new DraftJobs({ hub, run: options.run, env: options.env, issueWriter: options.issueWriter, log });
 
   app.addHook("onRequest", async (req, reply) => {
@@ -329,6 +337,15 @@ export function createServer(options: ServerOptions): FastifyInstance {
       files: overview.files,
       sections: overview.sections.map((s) => redactSection(s, redact)),
     };
+  });
+
+  // Only on request, for one card: the run lists never call GitHub.
+  app.get<RunParams>("/api/projects/:key/runs/:id/merge-gate", async (req): Promise<MergeGateDetails> => {
+    const ctx = projects.byKey(req.params.key);
+    const run = runOf(ctx, req.params.id);
+    if (run.state !== "needs_human" || run.waiting_gate !== "merge") throw new NotFoundError(`Run ${run.id} is not waiting at the merge gate.`);
+    const github = () => options.github?.(ctx.project) ?? ghPort(ctx.project, options.run);
+    return mergeGate.details(req.params.key, ctx, run, github, redactorOf(ctx, run));
   });
 
   // The file's path may hold `/` (`round-1/checks.md`); resolveInRunDir alone decides what is inside the run folder.

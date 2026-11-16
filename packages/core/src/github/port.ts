@@ -46,19 +46,31 @@ export interface GithubPort {
    */
   mergePullRequest(number: number, head: string, method?: MergeMethod): void;
   /** The status checks branch protection requires on the PR's head; empty when none are required. */
-  requiredChecks(number: number): RequiredCheck[];
+  requiredChecks(number: number): PullRequestCheck[];
+  /** Every status check on the PR's head, required or not; empty when there are none. */
+  pullRequestChecks(number: number): PullRequestCheck[];
+  /** The PR's head commit and the size of its diff. */
+  pullRequestDiff(number: number): PullRequestDiff;
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";
 
-export interface RequiredCheck {
+/** The size of a PR's diff, at its head commit. */
+export interface PullRequestDiff {
+  head: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}
+
+export interface PullRequestCheck {
   name: string;
   /** gh's grouping of the check's state. */
   bucket: "pass" | "fail" | "pending" | "skipping" | "cancel";
   link?: string;
 }
 
-const CHECK_BUCKETS: readonly RequiredCheck["bucket"][] = ["pass", "fail", "pending", "skipping", "cancel"];
+const CHECK_BUCKETS: readonly PullRequestCheck["bucket"][] = ["pass", "fail", "pending", "skipping", "cancel"];
 
 /**
  * What `factory new` needs from GitHub to open the issues it drafted. Kept apart from GithubPort:
@@ -108,6 +120,27 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     }
     if (typeof issue.id !== "string" || !issue.id) throw new GithubError(`gh issue view returned no id for #${number}`);
     return issue.id;
+  };
+  /** The checks on a PR's head, only the required ones when `required`. */
+  const checks = (number: number, required: boolean): PullRequestCheck[] => {
+    const args = ["pr", "checks", String(number), "-R", repo, ...(required ? ["--required"] : []), "--json", "name,bucket,link"];
+    // A commit with no checks at all, or none that are required, is an error to gh, not an empty list.
+    // (Without --json gh also exits 1 for a failed check and 8 for a pending one, so stdout is read whatever the code.)
+    const result = run("gh", args, { cwd: project.repo_path });
+    if (result.code !== 0 && /no (required )?checks reported/i.test(result.stderr)) return [];
+    let listed: unknown;
+    try {
+      listed = JSON.parse(result.stdout);
+      if (!Array.isArray(listed)) throw new Error("not a list");
+    } catch {
+      throw new GithubError(`gh pr checks failed: ${result.stderr.trim() || result.stdout.slice(0, 200) || "unknown error"}`);
+    }
+    return listed.map((c: { name?: unknown; bucket?: unknown; link?: unknown }) => {
+      if (typeof c.name !== "string" || !CHECK_BUCKETS.includes(c.bucket as PullRequestCheck["bucket"])) {
+        throw new GithubError(`gh pr checks returned unexpected output: ${JSON.stringify(c).slice(0, 200)}`);
+      }
+      return { name: c.name, bucket: c.bucket as PullRequestCheck["bucket"], ...(typeof c.link === "string" && c.link ? { link: c.link } : {}) };
+    });
   };
   return {
     createIssue({ title, body }) {
@@ -229,24 +262,24 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       gh(args);
     },
     requiredChecks(number) {
-      const args = ["pr", "checks", String(number), "-R", repo, "--required", "--json", "name,bucket,link"];
-      // A commit with no checks at all, or none that are required, is an error to gh, not an empty list.
-      // (Without --json gh also exits 1 for a failed check and 8 for a pending one, so stdout is read whatever the code.)
-      const result = run("gh", args, { cwd: project.repo_path });
-      if (result.code !== 0 && /no (required )?checks reported/i.test(result.stderr)) return [];
-      let checks: unknown;
+      return checks(number, true);
+    },
+    pullRequestChecks(number) {
+      return checks(number, false);
+    },
+    pullRequestDiff(number) {
+      const out = gh(["pr", "view", String(number), "-R", repo, "--json", "headRefOid,additions,deletions,changedFiles"]);
+      let pr: { headRefOid?: unknown; additions?: unknown; deletions?: unknown; changedFiles?: unknown };
       try {
-        checks = JSON.parse(result.stdout);
-        if (!Array.isArray(checks)) throw new Error("not a list");
+        pr = JSON.parse(out) as typeof pr;
       } catch {
-        throw new GithubError(`gh pr checks failed: ${result.stderr.trim() || result.stdout.slice(0, 200) || "unknown error"}`);
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       }
-      return checks.map((c: { name?: unknown; bucket?: unknown; link?: unknown }) => {
-        if (typeof c.name !== "string" || !CHECK_BUCKETS.includes(c.bucket as RequiredCheck["bucket"])) {
-          throw new GithubError(`gh pr checks returned unexpected output: ${JSON.stringify(c).slice(0, 200)}`);
-        }
-        return { name: c.name, bucket: c.bucket as RequiredCheck["bucket"], ...(typeof c.link === "string" && c.link ? { link: c.link } : {}) };
-      });
+      const count = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n >= 0;
+      if (typeof pr.headRefOid !== "string" || !pr.headRefOid || !count(pr.additions) || !count(pr.deletions) || !count(pr.changedFiles)) {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200)}`);
+      }
+      return { head: pr.headRefOid, additions: pr.additions as number, deletions: pr.deletions as number, changedFiles: pr.changedFiles as number };
     },
     updatePullRequest(number, body) {
       withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));

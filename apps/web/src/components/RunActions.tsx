@@ -1,6 +1,6 @@
 import type { RunState } from "@factory/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, Undo2, X } from "lucide-react";
+import { Ban, Check, TriangleAlert, Undo2, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { api, type RunRow } from "../lib/api";
 import { Button } from "./ui/button";
@@ -9,12 +9,17 @@ import { Input, Select, Textarea } from "./ui/input";
 type Mode = "approve" | "reject" | "resume" | "cancel";
 
 const SUBMIT: Record<Mode, string> = { approve: "Approve", reject: "Reject", resume: "Resume", cancel: "Cancel run" };
+const APPROVE_ANYWAY = "Approve anyway";
+// Amber like the gate badge: a warning to read first, not a refusal.
+const WARNING = "bg-amber-600 text-white hover:bg-amber-600/90 dark:bg-amber-500 dark:text-black dark:hover:bg-amber-500/90";
 
 /**
  * The decisions on a run waiting for a human: approve or reject at a gate, resume an escalation to
  * a stage, cancel. Shared by the Inbox card and the run's detail view, so both follow one set of rules.
+ * With `warn` (e.g. a failed check on the PR), Approve says "Approve anyway": it still posts the
+ * same approval; the warning is the caller's to explain.
  */
-export function RunActions({ run }: { run: RunRow }) {
+export function RunActions({ run, warn = false }: { run: RunRow; warn?: boolean }) {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<Mode>();
   const [message, setMessage] = useState("");
@@ -50,8 +55,8 @@ export function RunActions({ run }: { run: RunRow }) {
       <div className="flex flex-wrap gap-2">
         {run.waitingGate ? (
           <>
-            <Button size="sm" onClick={() => open("approve")}>
-              <Check aria-hidden /> Approve
+            <Button size="sm" className={warn ? WARNING : undefined} onClick={() => open("approve")}>
+              {warn ? <TriangleAlert aria-hidden /> : <Check aria-hidden />} {warn ? APPROVE_ANYWAY : SUBMIT.approve}
             </Button>
             <Button size="sm" variant="outline" onClick={() => open("reject")}>
               <X aria-hidden /> Reject
@@ -71,8 +76,9 @@ export function RunActions({ run }: { run: RunRow }) {
     );
   }
 
+  const label = mode === "approve" && warn ? APPROVE_ANYWAY : SUBMIT[mode];
   return (
-    <form className="space-y-2" onSubmit={submit} aria-label={SUBMIT[mode]}>
+    <form className="space-y-2" onSubmit={submit} aria-label={label}>
       {mode === "resume" && (
         <label className="flex items-center gap-2 text-sm">
           Send it to
@@ -102,8 +108,14 @@ export function RunActions({ run }: { run: RunRow }) {
         </p>
       )}
       <div className="flex gap-2">
-        <Button type="submit" size="sm" variant={mode === "approve" || mode === "resume" ? "default" : "destructive"} disabled={act.isPending || (needsReason && !message.trim())}>
-          {SUBMIT[mode]}
+        <Button
+          type="submit"
+          size="sm"
+          variant={mode === "approve" || mode === "resume" ? "default" : "destructive"}
+          className={mode === "approve" && warn ? WARNING : undefined}
+          disabled={act.isPending || (needsReason && !message.trim())}
+        >
+          {label}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setMode(undefined)}>
           Back

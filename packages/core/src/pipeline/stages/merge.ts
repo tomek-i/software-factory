@@ -5,7 +5,7 @@ import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../..
 import { runTurn, type TurnResult } from "../../agents/turn.js";
 import { runQualityGate } from "../../gate/gate.js";
 import { gitEvidence, type GitEvidence, type Worktree } from "../../git/worktrees.js";
-import type { PullRequestState, RequiredCheck } from "../../github/port.js";
+import type { PullRequestState, PullRequestCheck } from "../../github/port.js";
 import type { Run } from "../../store/store.js";
 import { resolveGate, type GateInput } from "../gates.js";
 import { changeReport, freshBase } from "../hard-rules.js";
@@ -92,7 +92,7 @@ async function mergePullRequest(ctx: StageContext, run: Run, number: number, hea
   if (problems.length) return ctx.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
   try {
     if (github.pullRequestState(number).draft) github.markReady(number);
-    const waited = await awaitRequiredChecks(ctx, run, number, head, justPushed);
+    const waited = await awaitPullRequestChecks(ctx, run, number, head, justPushed);
     if (waited) return waited.result;
     // The last moment to notice a cancel (or a lost lease) before something that cannot be undone.
     if (ctx.load(run.id).state !== run.state) return undefined;
@@ -117,7 +117,7 @@ async function mergePullRequest(ctx: StageContext, run: Run, number: number, hea
  * one still running after `merge.checks_timeout_min`, needs a human; a cancel stops the wait.
  * Throws when gh cannot read the checks.
  */
-async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, head: string, justPushed: boolean): Promise<{ result: StepResult } | undefined> {
+async function awaitPullRequestChecks(ctx: StageContext, run: Run, number: number, head: string, justPushed: boolean): Promise<{ result: StepResult } | undefined> {
   const { github, config } = ctx.deps;
   const minutes = config.merge.checks_timeout_min;
   const started = Date.now();
@@ -125,7 +125,7 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
   // Right after a push, GitHub has not created the new commit's checks yet, so "none required"
   // may only mean "none yet". A repo without required checks just waits this long once.
   const graceUntil = justPushed ? started + (ctx.deps.checksGraceMs ?? 60_000) : started;
-  const describe = (c: RequiredCheck) => (c.link ? `${c.name} (${c.link})` : c.name);
+  const describe = (c: PullRequestCheck) => (c.link ? `${c.name} (${c.link})` : c.name);
   let told = false;
   for (;;) {
     const checks = github.requiredChecks(number);

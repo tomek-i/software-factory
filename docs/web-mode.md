@@ -18,6 +18,11 @@ Back to the [README](../README.md#web-mode) for the commands.
   - A run at a gate can be approved (with an optional note) or rejected (with a reason).
   - A run parked for you outside a gate, such as a failed agent, can be resumed to a stage you pick, with a reason.
   - Any of them can be cancelled.
+  - A run at the merge gate shows what it would merge: its PR linked with the diff size, the checks on the PR's head, each review lens's verdict with the count of review notes, and its rounds and cost.
+  - With a failed check, the failures are listed above the actions and Approve reads "Approve anyway"; it approves as usual.
+  - These are read from GitHub only for that card, and a head's finished checks are kept, so GitHub is not asked on every refresh.
+  - If GitHub can't be read, the card says so, and the rest of it and its actions still work.
+  - The reason "gate is set to human" is left out there, as it only repeats the gate; other reasons stay.
   - Runs waiting for the issue's author are listed below.
   - An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued.
   - Click a run's title to open its details before deciding.

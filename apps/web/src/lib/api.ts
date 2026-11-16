@@ -44,6 +44,7 @@ export interface RunRow {
   title: string;
   state: RunState;
   waitingGate: Gate | null;
+  pr: number | null;
   build: number;
   review: number;
   cost: number;
@@ -76,6 +77,19 @@ export interface RunDetail {
   hasRunDir: boolean;
   files: string[];
   sections: OverviewSection[];
+}
+
+/** One lens's review of the latest round; `problem` when its file does not parse. */
+export type ReviewSummary = { lens: string; path: string; verdict: string; findings: number; blocking: number } | { lens: string; path: string; problem: string };
+
+/** What a run at the merge gate is about to merge. Check names and links come from GitHub: show as text, link only http(s). */
+export interface MergeGateDetails {
+  pr: { number: number; url: string | null; head?: string; additions?: number; deletions?: number; changedFiles?: number } | null;
+  checks: { passed: number; failed: number; pending: number; skipped: number; failedChecks: { name: string; link?: string }[] } | null;
+  reviews: ReviewSummary[];
+  rounds: { build: number; review: number };
+  cost: number;
+  githubError?: string;
 }
 
 export interface RunFile {
@@ -212,6 +226,7 @@ export const api = {
   runs: (view: RunView, project?: string) =>
     request<RunRow[]>("GET", `/api/runs?view=${view}${project ? `&project=${encodeURIComponent(project)}` : ""}`),
   run: (project: string, id: string) => request<RunDetail>("GET", `/api/projects/${project}/runs/${encodeURIComponent(id)}`),
+  mergeGate: (run: Pick<RunRow, "project" | "id">) => request<MergeGateDetails>("GET", runPath(run, "merge-gate")),
   runFile: (project: string, id: string, path: string) =>
     request<RunFile>("GET", runPath({ project, id }, `files/${path.split("/").map(encodeURIComponent).join("/")}`)),
   backlog: (project: string) => request<Backlog>("GET", `/api/projects/${project}/issues`),

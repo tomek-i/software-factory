@@ -7,7 +7,7 @@ import { createAgentRunner } from "../src/agents/runner.js";
 import type { CapturePort } from "../src/capture/capture.js";
 import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
-import type { GithubPort, MergeMethod, RequiredCheck } from "../src/github/port.js";
+import type { GithubPort, MergeMethod, PullRequestCheck } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
@@ -111,7 +111,7 @@ export function setup(
     mergeCommit?: string;
     mergeError?: string;
     onView?: (count: number) => void;
-    checks?: RequiredCheck[][];
+    checks?: PullRequestCheck[][];
     checksError?: string;
     /** The PR's head as GitHub reports it; by default what the run's branch has on the remote. */
     head?: string;
@@ -158,6 +158,8 @@ export function setup(
       const all = pr.checks ?? [[]];
       return all[Math.min(checkViews++, all.length - 1)]!;
     },
+    pullRequestChecks: () => [],
+    pullRequestDiff: () => ({ head: pr.head ?? "", additions: 0, deletions: 0, changedFiles: 0 }),
     mergePullRequest: (number, head, method) => {
       if (pr.mergeError) throw new Error(pr.mergeError);
       if (pr.draft) throw new Error("a draft PR cannot be merged");

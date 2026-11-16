@@ -2,12 +2,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { driveIssue, loadConfig, runDirOf, Store, type CommandRunner, type ProjectContext } from "@factory/core";
+import { driveIssue, loadConfig, runDirOf, Store, type CommandRunner, type GithubPort, type ProjectContext, type PullRequestCheck } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setup, TRIAGE } from "../../../packages/core/test/driver-setup.js";
 import { GIT_TEST_TIMEOUT, tempDir } from "../../../packages/core/test/helpers.js";
 import { EventHub, type Published } from "./hub.js";
+import { GITHUB_TTL_MS } from "./merge-gate.js";
 import { projectKey, ProjectSet } from "./projects.js";
 import { createServer, type ServerOptions } from "./server.js";
 
@@ -314,6 +315,7 @@ describe("runs", () => {
       title: "Waits",
       state: "needs_human",
       waitingGate: null,
+      pr: null,
       build: 1,
       review: 1,
       cost: 0,
@@ -462,6 +464,160 @@ describe("runs", () => {
       const res = await call(app, "GET", `/api/projects/${projectKey(ctx.root)}/runs/${run.id}`);
 
       expect(res.json()).toMatchObject({ run: { id: run.id, state: "intake", issue: null }, issue: null, hasRunDir: false, files: [], sections: [] });
+    });
+  });
+
+  describe("merge gate", () => {
+    const REVIEW_PASS = "VERDICT: PASS\n\n## Findings\n```json\n[{ \"id\": \"c-1\", \"severity\": \"nit\", \"claim\": \"rename x\", \"evidence\": \"e\" }]\n```\n";
+    const CHECKS = `GATE: PASS\nCOMMIT: ${"a".repeat(40)}\n`;
+
+    /** A run waiting at the merge gate with PR #7, reviewed in round 1, and a fake GitHub that counts its calls. */
+    function atMerge(checks: PullRequestCheck[][] = [[{ name: "test", bucket: "pass", link: "https://ci/1" }]]) {
+      const ctx = memoryProject();
+      const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Merge me", issue_number: 12 });
+      ctx.store.writeState(run.id, "needs_human", { waiting_gate: "merge", pr_number: 7, build_iterations: 1, review_rounds: 2 });
+      ctx.store.appendEvent(run.id, "merge", "needs_human", "waiting at merge gate: gate is set to human", { reasons: ["gate is set to human"] });
+      const dir = runDirOf(ctx.root, run.id);
+      mkdirSync(join(dir, "round-1"), { recursive: true });
+      writeFileSync(join(dir, "round-1", "checks.md"), CHECKS);
+      writeFileSync(join(dir, "round-1", "review-code.md"), REVIEW_PASS);
+      writeFileSync(join(dir, "round-1", "review-docs.md"), `not a verdict, see ${join(ctx.root, "x.md")}`);
+      const calls = { factory: 0, diff: 0, checks: 0 };
+      let head = "h1";
+      let error: string | undefined;
+      const github = {
+        pullRequestDiff: (n: number) => {
+          calls.diff++;
+          if (error) throw new Error(error);
+          expect(n).toBe(7);
+          return { head, additions: 120, deletions: 40, changedFiles: 8 };
+        },
+        pullRequestChecks: () => checks[Math.min(calls.checks++, checks.length - 1)]!,
+      } as unknown as GithubPort;
+      let now = 1_000_000;
+      const { app } = server([ctx], {
+        github: () => {
+          calls.factory++;
+          return github;
+        },
+        clock: () => now,
+      });
+      return {
+        ctx,
+        run,
+        app,
+        calls,
+        url: `/api/projects/${projectKey(ctx.root)}/runs/${run.id}/merge-gate`,
+        later: (ms: number) => void (now += ms),
+        moveHead: (to: string) => void (head = to),
+        fail: (message?: string) => void (error = message),
+      };
+    }
+
+    it("shows the PR, its diff, the head's checks, the reviews per lens, rounds and cost", async () => {
+      const { ctx, app, url } = atMerge([
+        [
+          { name: "test", bucket: "pass", link: "https://ci/1" },
+          { name: "CodeQL", bucket: "fail", link: "https://ci/2" },
+          { name: "e2e", bucket: "cancel" },
+          { name: "deploy", bucket: "pending" },
+          { name: "docs", bucket: "skipping" },
+        ],
+      ]);
+
+      const res = await call(app, "GET", url);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({
+        pr: { number: 7, url: "https://github.com/o/r/pull/7", head: "h1", additions: 120, deletions: 40, changedFiles: 8 },
+        checks: { passed: 1, failed: 2, pending: 1, skipped: 1, failedChecks: [{ name: "CodeQL", link: "https://ci/2" }, { name: "e2e" }] },
+        reviews: [
+          { lens: "code", path: "round-1/review-code.md", verdict: "PASS", findings: 1, blocking: 0 },
+          { lens: "docs", path: "round-1/review-docs.md", problem: expect.any(String) },
+        ],
+        rounds: { build: 2, review: 3 },
+        cost: 0,
+      });
+      expect(res.body).not.toContain(ctx.root.replace(/\\/g, "\\\\"));
+    });
+
+    it("reuses a head's settled checks, and asks again for pending ones, a moved head and an expired diff", async () => {
+      const pending: PullRequestCheck[] = [{ name: "test", bucket: "pending" }];
+      const passed: PullRequestCheck[] = [{ name: "test", bucket: "pass" }];
+      const { app, url, calls, later, moveHead } = atMerge([pending, passed, passed]);
+
+      expect((await call(app, "GET", url)).json().checks).toMatchObject({ pending: 1, passed: 0 });
+      expect((await call(app, "GET", url)).json().checks).toMatchObject({ pending: 1 });
+      expect(calls).toMatchObject({ diff: 1, checks: 1 });
+
+      later(GITHUB_TTL_MS);
+      expect((await call(app, "GET", url)).json().checks).toMatchObject({ pending: 0, passed: 1 });
+      expect(calls).toMatchObject({ diff: 2, checks: 2 });
+      // Settled on this head: only the diff lookup is repeated once it expires.
+      later(GITHUB_TTL_MS * 10);
+      await call(app, "GET", url);
+      await call(app, "GET", url);
+      expect(calls).toMatchObject({ diff: 3, checks: 2 });
+
+      moveHead("h2");
+      later(GITHUB_TTL_MS);
+      expect((await call(app, "GET", url)).json().pr.head).toBe("h2");
+      expect(calls).toMatchObject({ diff: 4, checks: 3 });
+    });
+
+    it("still answers with the rest when GitHub can't be read, and reads it again next time", async () => {
+      const { app, url, calls, fail } = atMerge();
+      fail("gh pr view failed: HTTP 502\nmore detail");
+
+      const res = await call(app, "GET", url);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({
+        pr: { number: 7, url: "https://github.com/o/r/pull/7" },
+        checks: null,
+        githubError: "gh pr view failed: HTTP 502",
+        reviews: [{ lens: "code", verdict: "PASS" }, { lens: "docs" }],
+        rounds: { build: 2, review: 3 },
+      });
+      expect(res.json().pr).not.toHaveProperty("additions");
+      fail(undefined);
+      expect((await call(app, "GET", url)).json()).toMatchObject({ pr: { additions: 120 }, checks: { passed: 1 } });
+      expect(calls.diff).toBe(2);
+    });
+
+    it("never calls GitHub for the run lists, and has no details for runs not at the merge gate or without a PR", async () => {
+      const { ctx, run, app, url, calls } = atMerge();
+
+      const [row] = (await call(app, "GET", "/api/runs?view=waiting")).json();
+      expect(row).toMatchObject({ id: run.id, waitingGate: "merge", pr: 7, reason: "waiting at merge gate: gate is set to human" });
+      expect(calls.factory).toBe(0);
+
+      const triage = ctx.store.createRun({ project_id: ctx.project.id, title: "At triage", issue_number: 13 });
+      ctx.store.writeState(triage.id, "needs_human", { waiting_gate: "triage", pr_number: 8 });
+      const building = ctx.store.createRun({ project_id: ctx.project.id, title: "Builds", issue_number: 14 });
+      ctx.store.writeState(building.id, "build");
+      for (const id of [triage.id, building.id, "nope"]) {
+        expect((await call(app, "GET", url.replace(run.id, id))).statusCode, id).toBe(404);
+      }
+      expect((await app.inject({ method: "GET", url, headers: { host: HOST } })).statusCode).toBe(401);
+      expect(calls.factory).toBe(0);
+
+      ctx.store.updateRunFields(run.id, { pr_number: null });
+      expect((await call(app, "GET", url)).json()).toMatchObject({ pr: null, checks: null, reviews: [{ lens: "code" }, { lens: "docs" }] });
+      expect(calls.factory).toBe(0);
+    });
+
+    it("says so when the project has no GitHub repository", async () => {
+      const ctx = memoryProject();
+      const store = new Store(":memory:");
+      const noRepo = { ...ctx, store, project: store.upsertProject({ name: "local", repo_path: ctx.root, github_repo: null }) };
+      const run = noRepo.store.createRun({ project_id: noRepo.project.id, title: "Local", issue_number: 1 });
+      noRepo.store.writeState(run.id, "needs_human", { waiting_gate: "merge", pr_number: 3 });
+      const { app } = server([noRepo], { github: () => { throw new Error("not called"); } });
+
+      const res = await call(app, "GET", `/api/projects/${projectKey(noRepo.root)}/runs/${run.id}/merge-gate`);
+
+      expect(res.json()).toMatchObject({ pr: { number: 3, url: null }, checks: null, githubError: "This project has no GitHub repository." });
     });
   });
 
