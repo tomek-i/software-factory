@@ -137,7 +137,9 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
     }
     const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
     if (failed.length) {
-      return { result: ctx.escalate(run, `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`) };
+      // As data too, so a front end can offer the failure to the builder without parsing the reason.
+      const failedChecks = failed.map((c) => ({ name: c.name, ...(c.link ? { link: c.link } : {}) }));
+      return { result: ctx.escalate(run, `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`, { pr: number, failedChecks }) };
     }
     const pending = checks.filter((c) => c.bucket === "pending");
     if (checks.length && pending.length === 0) return undefined;

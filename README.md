@@ -248,6 +248,7 @@ factory serve --port 4181 --max-runs 2 --no-open
 ```
 
 - It does what `factory work` does and serves a web app for every project in the project list.
+- From the Inbox or a run's details you can approve, reject, send a run back to a stage (with the failure it waits on and fresh loop counters), dismiss a false-positive code scanning alert, or cancel.
 - It prints a link with a session token and opens it in your browser (`--no-open` only prints it).
 - Its screens are Inbox, Runs, Run details, Backlog and New issue; click a run to open its details.
 - The screens, the actions and how it stays private: [Web mode](docs/web-mode.md).
@@ -263,7 +264,9 @@ factory show 12            # overview: state, gate, branch, PR, verdict summarie
 factory show 12 triage     # one file in full: triage, refine and critic (latest spec round), build, checks or capture (latest round), approval, learn, or a path like round-2/checks.md
 factory approve <run>      # let a run waiting at a gate continue and keep running it; -m "why", --no-run to only record it
 factory reject <run> -m "why"   # end a run waiting at a gate
-factory resume <run> --to build -m "why"   # send an escalated run back to a stage and keep running it; --reset-loops, --no-run
+factory resume <run> --to build -m "why"   # send a run that waits for you (at a gate too) back to a stage and keep running it; --reset-loops, --no-run
+factory checks <run>       # the required checks that failed on the run's PR, with their open code scanning alerts
+factory dismiss <run> <alert> --reason false-positive -m "why"   # dismiss a code scanning alert; the run goes back to merge once the check passes
 factory cancel <run>       # stop the run, its agent and running checks; -m "why" is optional (see Cleaning up finished runs)
 factory cleanup            # remove the worktrees and branches finished runs left behind; --dry-run lists them first
 factory lessons            # lessons the learner proposed, waiting for you; -a/--all includes approved and rejected ones

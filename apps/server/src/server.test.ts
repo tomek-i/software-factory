@@ -370,6 +370,101 @@ describe("runs", () => {
     GIT_TEST_TIMEOUT,
   );
 
+  describe("sending a waiting run back, and its failed checks", () => {
+    /** A real repo (the service reads the trusted config) with a run of issue 12 waiting as given. */
+    function waiting(patch: Parameters<Store["writeState"]>[2], reason: string, data?: unknown) {
+      const s = setup([]);
+      const ctx: ProjectContext = { root: s.root, store: s.store, project: s.project, config: loadConfig(s.root) };
+      const run = s.store.createRun({ project_id: s.project.id, title: "t", issue_number: 12 });
+      s.store.writeState(run.id, "needs_human", patch);
+      s.store.appendEvent(run.id, patch?.parked_from ?? null, "needs_human", reason, data);
+      const { app } = server([ctx], { github: () => s.github });
+      return { s, ctx, run, app, base: `/api/projects/${projectKey(s.root)}/runs/${run.id}` };
+    }
+
+    it(
+      "offers a run at a gate the earlier working stages, says which cap stopped it and what failed, without a local path",
+      async () => {
+        const { s, run, app, base } = waiting(
+          { parked_from: "review", waiting_gate: "review", round: 3 },
+          "waiting at review gate: reviews still have confirmed findings after round 3: review round cap reached (3)",
+        );
+        mkdirSync(join(runDirOf(s.root, run.id), "round-3"), { recursive: true });
+        const verify = `VERDICT: CONFIRMED\n\n## Findings\n\`\`\`json\n[{"id":"code-1","severity":"major","file":${JSON.stringify(join(s.root, "src", "a.ts"))},"line":12,"claim":${JSON.stringify(`skips ${join(homedir(), "x")}`)},"evidence":"e"}]\n\`\`\`\n`;
+        writeFileSync(join(runDirOf(s.root, run.id), "round-3", "verify.md"), verify);
+
+        const res = await call(app, "GET", base);
+
+        expect(res.json().run).toMatchObject({
+          resumeTargets: ["refine", "build"],
+          capReached: "review round cap reached (3)",
+          failure: {
+            kind: "findings",
+            source: "round-3/verify.md",
+            items: [{ name: "code-1 (major)", summary: `skips ${join("~", "x")}`, file: join("src", "a.ts"), line: 12 }],
+          },
+        });
+        const [row] = (await call(app, "GET", "/api/runs?view=waiting")).json();
+        expect(row.failure.items[0].file).toBe(join("src", "a.ts"));
+      },
+      GIT_TEST_TIMEOUT,
+    );
+
+    it(
+      "resumes a run waiting at a gate to an earlier stage with fresh loops, through the same checks as the other actions",
+      async () => {
+        const { s, run, app, base } = waiting({ parked_from: "review", waiting_gate: "review", review_rounds: 2, build_iterations: 1 }, "review round cap reached (3)");
+        const shown = { state: "needs_human", gate: "review" };
+
+        const noOrigin = await app.inject({ method: "POST", url: `${base}/resume`, payload: { ...shown, to: "build", message: "fix it" }, headers: { host: HOST, ...AUTH } });
+        expect(noOrigin.statusCode).toBe(403);
+        expect((await call(app, "POST", `${base}/resume`, { state: "needs_human", to: "build", message: "fix it" })).statusCode).toBe(409);
+        const odd = await call(app, "POST", `${base}/resume`, { ...shown, to: "build", message: "fix it", resetLoops: "yes" });
+        expect(odd.statusCode).toBe(400);
+        expect(odd.json()).toEqual({ error: "resetLoops must be true or false." });
+        const refused = await call(app, "POST", `${base}/resume`, { ...shown, to: "merge", message: "ship" });
+        expect(refused.statusCode).toBe(400);
+        expect(refused.json().error).toMatch(/can resume to: .*build/);
+        expect((await call(app, "POST", `${base}/resume`, { ...shown, to: "build", message: " " })).json()).toEqual({ error: "Say why with -m." });
+        expect(s.store.getRun(run.id)).toMatchObject({ state: "needs_human", review_rounds: 2 });
+
+        const resumed = await call(app, "POST", `${base}/resume`, { ...shown, to: "build", message: "code-1: the limiter is skipped", resetLoops: true });
+
+        expect(resumed.json()).toMatchObject({ run: { state: "build", review_rounds: 0, build_iterations: 0 }, to: "build", continuation: "ready" });
+        expect(s.store.listEvents(run.id).at(-1)).toMatchObject({ reason: "human: code-1: the limiter is skipped", data: { gate: "review", resetLoops: true } });
+      },
+      GIT_TEST_TIMEOUT,
+    );
+
+    it(
+      "lists a run's failed checks with their alerts, and dismisses one, going back to merge once the check passes",
+      async () => {
+        const { s, run, app, base } = waiting({ parked_from: "merge", pr_number: 7 }, "required check failed on PR #7: CodeQL", { pr: 7, failedChecks: [{ name: "CodeQL" }] });
+        const alert = (number: number) => ({ number, rule: "js/missing-rate-limiting", description: "Missing rate limiting", severity: "high", tool: "CodeQL", url: `https://gh/a/${number}` });
+        s.pr.alerts = [alert(26), alert(27)];
+        s.pr.checks = [[{ name: "CodeQL", bucket: "fail" }]];
+        s.pr.checksWhenClear = [{ name: "CodeQL", bucket: "pass" }];
+        const shown = { state: "needs_human" };
+
+        expect((await call(app, "GET", base)).json().run.failure).toEqual({ kind: "checks", items: [{ name: "CodeQL" }] });
+        expect((await call(app, "GET", `${base}/checks`)).json()).toEqual({ pr: 7, failed: [{ name: "CodeQL", alerts: [alert(26), alert(27)] }], otherAlerts: [] });
+        expect((await app.inject({ method: "GET", url: `${base}/checks`, headers: { host: HOST } })).statusCode).toBe(401);
+
+        expect((await call(app, "POST", `${base}/dismiss`, { ...shown, alert: "26", reason: "false positive", comment: "x" })).json()).toEqual({ error: "alert must be an alert number." });
+        expect((await call(app, "POST", `${base}/dismiss`, { state: "merge", alert: 26, reason: "false positive", comment: "x" })).statusCode).toBe(409);
+        expect((await call(app, "POST", `${base}/dismiss`, { ...shown, alert: 26, reason: "false positive", comment: "" })).json()).toEqual({ error: "Say why with -m." });
+        expect(s.dismissals).toEqual([]);
+
+        const first = await call(app, "POST", `${base}/dismiss`, { ...shown, alert: 26, reason: "false positive", comment: "a limiter covers it" });
+        expect(first.json()).toMatchObject({ continued: false, failing: ["CodeQL"], run: { state: "needs_human" } });
+        const second = await call(app, "POST", `${base}/dismiss`, { ...shown, alert: 27, reason: "used in tests", comment: "test fixture" });
+        expect(second.json()).toMatchObject({ continued: true, failing: [], continuation: "ready", run: { state: "merge" } });
+        expect(s.store.listDecisions(run.id).map((d) => d.actor)).toEqual(["human", "human", "human"]);
+      },
+      GIT_TEST_TIMEOUT,
+    );
+  });
+
   describe("details", () => {
     /** A run waiting at triage, with a run folder whose files quote the repo, the worktree and the home folder. */
     function detailed() {

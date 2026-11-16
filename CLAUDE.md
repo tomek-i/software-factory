@@ -41,6 +41,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `drafts/`: issue writer drafts for `factory new`
 - `init/`: `factory init`, project detection and the config template
 - `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
+- `service/waiting.ts`: `waitingOn`, what a run waiting for a human is stuck on (a loop cap, failed checks, a failed gate, confirmed findings); `service/checks.ts`: `runChecks` and `dismissAlert`, the human-only dismissal of a code scanning alert
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
 - `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `stop.ts` for `factory stop`

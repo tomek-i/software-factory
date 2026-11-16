@@ -52,6 +52,18 @@ export function resumeTargets(run: Pick<Run, "parked_from">): RunState[] {
   return [...new Set<RunState>([...back, ...onward, "rejected", "cancelled"])];
 }
 
+/** The working stages a human sends work back to with a message, in pipeline order. */
+const SEND_BACK: readonly RunState[] = ["refine", "build", "review"];
+
+/**
+ * Where a run waiting at a gate can be sent back to besides approving or rejecting it: the working
+ * stages before the one it waits in. A subset of resumeTargets, so RunMachine.resume allows each.
+ */
+export function sendBackTargets(run: Pick<Run, "parked_from">): RunState[] {
+  const parked = run.parked_from && STAGES.includes(run.parked_from as Stage) ? STAGES.indexOf(run.parked_from as Stage) : 0;
+  return resumeTargets(run).filter((s) => SEND_BACK.includes(s) && STAGES.indexOf(s as Stage) < parked);
+}
+
 /** Facts about the run's worktree and output files, injected so guards stay testable. */
 export interface Evidence {
   verdict<K extends VerdictKind>(kind: K): ParsedVerdict<K>;
@@ -318,6 +330,8 @@ export interface ResumeOptions {
   resetLoops?: boolean;
   owner?: string;
   commitSha?: string;
+  /** More facts about the decision for the resume event, e.g. the alert a human dismissed. */
+  data?: Record<string, unknown>;
 }
 
 /**
@@ -405,6 +419,7 @@ export class RunMachine {
         commit_sha: options.commitSha ?? null,
       });
       this.store.appendEvent(runId, from, to, `human: ${options.comment}`, {
+        ...options.data,
         gate,
         resetLoops: !!options.resetLoops,
         // The commit the human approved, so the merge stage can tell whether the approval still holds.

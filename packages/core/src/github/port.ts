@@ -47,9 +47,42 @@ export interface GithubPort {
   mergePullRequest(number: number, head: string, method?: MergeMethod): void;
   /** The status checks branch protection requires on the PR's head; empty when none are required. */
   requiredChecks(number: number): RequiredCheck[];
+  /**
+   * Open code scanning alerts on the PR's head ref (`refs/pull/<n>/head`; its merge ref lists none in
+   * practice). Empty when the repository has no code scanning.
+   */
+  codeScanningAlerts(number: number): CodeScanningAlert[];
+  /**
+   * Dismiss a code scanning alert. A human decision only (`dismissAlert` in the run service): no
+   * agent or stage may call it.
+   */
+  dismissCodeScanningAlert(alert: number, reason: DismissReason, comment: string): void;
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";
+
+/** GitHub's reasons for dismissing a code scanning alert. */
+export const DISMISS_REASONS = ["false positive", "won't fix", "used in tests"] as const;
+export type DismissReason = (typeof DISMISS_REASONS)[number];
+/** GitHub refuses a longer dismissal comment. */
+export const DISMISS_COMMENT_MAX = 280;
+
+/** An open code scanning alert, as a human needs it to judge whether it is real. */
+export interface CodeScanningAlert {
+  number: number;
+  /** The rule's id, e.g. `js/missing-rate-limiting`. */
+  rule: string;
+  /** The rule's short description, e.g. "Missing rate limiting". */
+  description: string;
+  /** The security severity when the rule has one (critical, high, ...), otherwise the rule's severity. */
+  severity: string;
+  /** The tool that raised it, e.g. `CodeQL`. */
+  tool: string;
+  file?: string;
+  line?: number;
+  /** The alert on GitHub. */
+  url: string;
+}
 
 export interface RequiredCheck {
   name: string;
@@ -248,8 +281,66 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
         return { name: c.name, bucket: c.bucket as RequiredCheck["bucket"], ...(typeof c.link === "string" && c.link ? { link: c.link } : {}) };
       });
     },
+    codeScanningAlerts(number) {
+      const args = ["api", "-X", "GET", `repos/${repo}/code-scanning/alerts`, "-f", `ref=refs/pull/${number}/head`, "-f", "state=open", "-F", "per_page=100"];
+      const result = run("gh", args, { cwd: project.repo_path });
+      // A repository without code scanning answers 404 (or 403 without Advanced Security): it has no alerts.
+      if (result.code !== 0 && /no analysis found|code scanning is not enabled|advanced security must be enabled/i.test(result.stderr + result.stdout)) return [];
+      if (result.code !== 0) throw new GithubError(`gh api code-scanning/alerts failed: ${result.stderr.trim() || "unknown error"}`);
+      let alerts: unknown;
+      try {
+        alerts = JSON.parse(result.stdout);
+        if (!Array.isArray(alerts)) throw new Error("not a list");
+      } catch {
+        throw new GithubError(`gh api code-scanning/alerts returned unexpected output: ${result.stdout.slice(0, 200) || "(empty)"}`);
+      }
+      return alerts.map((a: Record<string, unknown>) => parseAlert(a));
+    },
+    dismissCodeScanningAlert(alert, reason, comment) {
+      if (!Number.isInteger(alert) || alert <= 0) throw new GithubError(`${alert} is not an alert number`);
+      if (!DISMISS_REASONS.includes(reason)) throw new GithubError(`"${reason}" is not a reason GitHub accepts`);
+      // -f, never -F: a comment starting with @ must stay text, not name a file to upload.
+      gh([
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repo}/code-scanning/alerts/${alert}`,
+        "-f",
+        "state=dismissed",
+        "-f",
+        `dismissed_reason=${reason}`,
+        "-f",
+        `dismissed_comment=${comment}`,
+        "--silent",
+      ]);
+    },
     updatePullRequest(number, body) {
       withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));
     },
+  };
+}
+
+/** One alert of GitHub's code scanning API, checked field by field. */
+function parseAlert(a: Record<string, unknown>): CodeScanningAlert {
+  const rule = (a.rule ?? {}) as Record<string, unknown>;
+  const tool = (a.tool ?? {}) as Record<string, unknown>;
+  const instance = (a.most_recent_instance ?? {}) as { location?: Record<string, unknown> };
+  const location = instance.location ?? {};
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const number = a.number;
+  const url = str(a.html_url);
+  if (typeof number !== "number" || !Number.isInteger(number) || !url || !str(rule.id) || !str(tool.name)) {
+    throw new GithubError(`gh api code-scanning/alerts returned unexpected output: ${JSON.stringify(a).slice(0, 200)}`);
+  }
+  const line = location.start_line;
+  return {
+    number,
+    rule: str(rule.id)!,
+    description: str(rule.description) ?? str(rule.name) ?? str(rule.id)!,
+    severity: str(rule.security_severity_level) ?? str(rule.severity) ?? "unknown",
+    tool: str(tool.name)!,
+    ...(str(location.path) ? { file: str(location.path) } : {}),
+    ...(typeof line === "number" && Number.isInteger(line) && line > 0 ? { line } : {}),
+    url,
   };
 }
