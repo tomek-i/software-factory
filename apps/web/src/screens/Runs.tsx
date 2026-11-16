@@ -57,7 +57,7 @@ export function Runs() {
                         {run.held && <span className="size-2 animate-pulse rounded-full bg-sky-500" title="A worker is driving it" aria-label="working" />}
                       </div>
                     </TableCell>
-                    <TableCell className="max-w-md">
+                    <TableCell className="max-w-md xl:max-w-xl 2xl:max-w-3xl">
                       <Link to={runPath(run)} className="block truncate hover:underline">
                         {run.issue !== null && <span className="mr-1.5 font-mono text-muted-foreground">#{run.issue}</span>}
                         {run.title}

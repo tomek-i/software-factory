@@ -23,6 +23,12 @@ function SchedulerState() {
   );
 }
 
+/**
+ * The page column shared by the header row and the content, so their edges always line up. It keeps
+ * the 1152px column below `2xl` and grows on large screens, up to a cap so lines never span an ultrawide.
+ */
+const column = "mx-auto max-w-6xl px-4 xl:px-6 2xl:max-w-(--breakpoint-2xl) 2xl:px-8 min-[120rem]:max-w-[1800px]";
+
 const tab = ({ isActive }: { isActive: boolean }) =>
   cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium [&_svg]:size-4", isActive ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground");
 
@@ -51,7 +57,7 @@ export function Layout() {
   return (
     <div className="min-h-screen">
       <header className="border-b">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+        <div className={cn(column, "flex flex-wrap items-center gap-x-6 gap-y-2 py-3")}>
           <span className="font-semibold">Software factory</span>
           <nav className="flex items-center gap-1" aria-label="Main">
             <NavLink to="/inbox" className={tab}>
@@ -90,7 +96,7 @@ export function Layout() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-6">
+      <main className={cn(column, "py-6")}>
         <Outlet />
       </main>
     </div>

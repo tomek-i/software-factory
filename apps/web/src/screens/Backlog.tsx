@@ -71,7 +71,7 @@ function ProjectBacklog({ project }: { project: ProjectInfo }) {
             <TableBody>
               {backlog.data.issues.map((issue) => (
                 <TableRow key={issue.number}>
-                  <TableCell className="max-w-lg">
+                  <TableCell className="max-w-lg xl:max-w-xl 2xl:max-w-3xl">
                     <div className="flex items-center gap-1.5">
                       <a href={issue.url} target="_blank" rel="noreferrer" className="font-mono text-muted-foreground hover:underline">
                         #{issue.number}
