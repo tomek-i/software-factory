@@ -38,7 +38,8 @@ function folderPattern(folder: string): RegExp | undefined {
   const body = segments.map(escape).join(sep);
   const forms = [`${LONG_PATH}${FILE_URL}${body}`];
   if (drive) forms.push(String.raw`\/${[drive, ...segments.slice(1).map(escape)].join(sep)}`);
-  return new RegExp(`${BEFORE}(?:${forms.join("|")})${AFTER}([\\\\/]+)?`, windows ? "gi" : "g");
+  // The separator is taken only with a segment after it: `<root>/ &&` must keep its `.`.
+  return new RegExp(`${BEFORE}(?:${forms.join("|")})${AFTER}([\\\\/]+(?=${NAME}))?`, windows ? "gi" : "g");
 }
 
 /** Anything shaped like a user profile folder, whoever's it is. */

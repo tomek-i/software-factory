@@ -43,7 +43,9 @@ function describeToolUse(block: Json, roots: string[]): string | undefined {
   const input = isObject(block.input) ? block.input : {};
   const detail = input.command ?? input.file_path ?? input.pattern ?? input.path;
   // Shortened before the cut, so a deep path keeps its file name rather than the folders above it.
-  const text = typeof detail === "string" ? redactPaths(detail, { roots }).replace(/\s+/g, " ").slice(0, 120) : "";
+  // A search pattern is a regex or glob, not a path, so it is shown as given.
+  const shown = typeof detail === "string" && detail !== input.pattern ? redactPaths(detail, { roots }) : detail;
+  const text = typeof shown === "string" ? shown.replace(/\s+/g, " ").slice(0, 120) : "";
   return text ? `${block.name}: ${text}` : String(block.name);
 }
 

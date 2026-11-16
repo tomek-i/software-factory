@@ -55,6 +55,11 @@ describe("applyStreamLine", () => {
       expect(line).toMatch(/file\.ts$/);
     });
 
+    it("leaves search patterns alone: they are regexes and globs, not paths", () => {
+      expect(tool("Grep", { pattern: "C:\\\\Users\\\\al" }, [repo])).toEqual(["Grep: C:\\\\Users\\\\al"]);
+      expect(tool("Glob", { pattern: "/home/al/**" }, [repo])).toEqual(["Glob: /home/al/**"]);
+    });
+
     it("shows a user profile outside the roots as ~", () => {
       expect(tool("Read", { file_path: "C:\\Users\\al\\notes.md" })).toEqual(["Read: ~\\notes.md"]);
     });
