@@ -7,7 +7,6 @@ import {
   parseCapturePlan,
   parseLessons,
   parseVerdict,
-  pullRequestTitleProblem,
   REVIEW_LENSES,
   resolveModel,
   type AgentRole,
@@ -23,8 +22,8 @@ import { permissionProfile, renderTask, rolePrompt, writeRoleFiles, type IssueTe
 import { runTurn, type TurnResult } from "../agents/turn.js";
 import type { CapturePort } from "../capture/capture.js";
 import { renderCaptureReport, screenshotsSection, type CaptureOutcome } from "../capture/report.js";
-import { runQualityGate, scanSecrets } from "../gate/gate.js";
-import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
+import { runQualityGate } from "../gate/gate.js";
+import { gitEvidence, type GitEvidence, type Worktree } from "../git/worktrees.js";
 import { MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { CLEANUP_MARKER, cleanupFinishedRun, describeCleanup } from "./cleanup.js";
 import { factoryComment, type PullRequestState, type RequiredCheck } from "../github/port.js";
@@ -37,6 +36,7 @@ import { RunMachine, TransitionError, type Evidence } from "./transitions.js";
 import { intake, triage } from "./stages/triage.js";
 import { refine } from "./stages/refine.js";
 import { critic } from "./stages/critic.js";
+import { build } from "./stages/build.js";
 import { StageContext, type DriveOutcome, type DriverDeps, type StepResult } from "./stages/context.js";
 import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
 import {
@@ -44,10 +44,7 @@ import {
   approveTarget,
   bullets,
   clip,
-  DEFAULT_PORT_BASE,
-  LONG_SUMMARY_BULLET,
   latestSpecRound,
-  longSummaryBullets,
   pause,
   prBody,
   readReview,
@@ -236,6 +233,10 @@ export class PipelineDriver {
 
   // ---- stages ---------------------------------------------------------------
 
+  private build(run: Run): Promise<StepResult> {
+    return build(this.ctx, run);
+  }
+
   private critic(run: Run): Promise<StepResult> {
     return critic(this.ctx, run);
   }
@@ -250,90 +251,6 @@ export class PipelineDriver {
 
   private triage(run: Run): Promise<StepResult> {
     return triage(this.ctx, run);
-  }
-
-  private async build(run: Run): Promise<StepResult> {
-    const dir = this.runDir(run);
-    const issue = this.issueOf(run);
-    const worktree = this.ensureWorktree(run);
-    run = this.load(run.id);
-    const git = gitEvidence(worktree, this.defaultBranch, this.run);
-    const outputFile = join(dir, "build.md");
-    const files = writeRoleFiles(dir, "builder", rolePrompt("builder", this.deps.read), permissionProfile("builder", { runDirFromCwd: relative(worktree.path, dir) }));
-    const session = this.deps.store.latestSession(run.id, "builder");
-
-    const prompt = session
-      ? this.builderFollowUp(run, outputFile)
-      : renderTask({
-          role: "builder",
-          runId: run.id,
-          runDir: dir,
-          workDir: worktree.path,
-          outputFile,
-          issue: this.issueText(issue),
-          trusted: isTrustedIssue(this.deps.config, issue),
-          lessons: this.lessons(),
-          branch: worktree.branch,
-          defaultBranch: this.defaultBranch,
-          portBase: run.port_base,
-          checks: this.deps.config.checks,
-          sections: [...this.triageScope(dir), ...this.acceptedSpec(run)],
-          instructions: [
-            `Implement issue #${issue.number} in the working directory on branch \`${worktree.branch}\`.`,
-            "Add tests, run the quick checks and the tests that cover your change, commit (do not push), then write the output file.",
-          ].join("\n"),
-        });
-
-    const turn = await runTurn({
-      run: this.deps.runAgent,
-      kind: "build",
-      outputFile,
-      agent: {
-        ...this.agentBase(run, "builder", worktree.path),
-        ...files,
-        addDirs: [dir],
-        resumeSessionId: session,
-        prompt,
-      },
-      validate: (verdict) =>
-        verdict.header.STATUS === "READY"
-          ? [
-              // Only the hand-over that opens the PR names it; later rounds keep its title.
-              ...(run.pr_number == null ? [pullRequestTitleProblem(verdict.header.TITLE)].filter((p) => p !== undefined) : []),
-              ...this.handOverProblems(worktree, git, verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)),
-            ]
-          : [],
-    });
-    if (turn.status !== "ok") return this.agentTrouble(run, "builder", turn);
-
-    if (turn.verdict.header.STATUS === "BLOCKED") {
-      const blocker = section(turn.verdict.body, "blocker") ?? "the builder reported BLOCKED without details";
-      return this.escalate(run, `builder is blocked: ${blocker}`);
-    }
-    const long = longSummaryBullets(turn.verdict.body);
-    if (long > 0) this.info(run, `note: ${long} Summary bullet(s) longer than ${LONG_SUMMARY_BULLET} characters; the PR's What section may be hard to scan`);
-    const pr = this.publish(worktree, turn.verdict.header.TITLE ?? issue.title, issue, turn.verdict.body, run.unsafe);
-    this.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.round + 1, git), {
-      pr_number: pr,
-    });
-    return undefined;
-  }
-
-  /**
-   * Push the branch (never forced) and make sure a draft PR exists. Done by the engine, after the
-   * secret scan, so nothing the builder committed reaches GitHub unchecked. The PR keeps the title
-   * of the hand-over that opened it.
-   */
-  private publish(worktree: Worktree, title: string, issue: Issue, buildBody: string, unsafe: boolean): number {
-    this.push(worktree);
-    const existing = this.deps.github.findPullRequest(worktree.branch);
-    if (existing !== undefined) return existing;
-    return this.deps.github.createDraftPullRequest({
-      head: worktree.branch,
-      base: this.defaultBranch,
-      title,
-      body: prBody(buildBody, issue.number, unsafe),
-    });
   }
 
   private async gate(run: Run): Promise<StepResult> {
@@ -1429,95 +1346,6 @@ export class PipelineDriver {
       signal: this.signal,
       timeoutMs: timeouts?.[role] ?? (role === "builder" ? 90 * 60_000 : 20 * 60_000),
     };
-  }
-
-  /**
-   * What the builder's resumed session is told: why the run came back (the failed gate's report or
-   * the findings the verifier confirmed) and/or the human's instruction.
-   */
-  private builderFollowUp(run: Run, outputFile: string): string {
-    const parts: string[] = [];
-    const roundDir = join(this.runDir(run), `round-${run.round}`);
-    const events = this.deps.store.listEvents(run.id);
-    const last = events.findLastIndex((e) => e.to_state === "build");
-    let back = events[last]?.from_state;
-    // Sent back by a human: what failed is whatever made the run stop where it was parked.
-    if (back === "needs_human") back = events.slice(0, last).findLast((e) => e.to_state === "needs_human")?.from_state;
-    const checks = back === "gate" ? readValid("checks", join(roundDir, "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
-    const verify = back === "review" ? readValid("verify", join(roundDir, "verify.md"), (v) => (v.header.VERDICT === "CONFIRMED" ? [] : ["none confirmed"])) : undefined;
-    // The merge stage clears conflicts.md before each re-sync, so one that exists is from the attempt that sent the run back.
-    const conflicts = back === "merge" && existsSync(join(roundDir, "resync", "conflicts.md"));
-    const resynced = back === "merge" && !conflicts ? readValid("checks", join(roundDir, "resync", "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
-    if (checks) {
-      parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(join(roundDir, "checks.md"), "utf8").trim(), "");
-      // The engine pushes after checking the commits; the builder cannot (see permissionProfile).
-      parts.push("Fix the cause, rerun what failed, commit (do not push), then write the output file again.");
-    } else if (verify) {
-      const { findings } = verify;
-      parts.push(
-        `The reviewers of round ${run.round} found problems, and a verifier confirmed these against the code:`,
-        "",
-        "```json",
-        JSON.stringify(findings, null, 2),
-        "```",
-        "",
-        "Fix each one (with a test where it fits), run the quick checks and the tests that cover your fixes, commit (do not push), then write the output file again.",
-      );
-    } else if (conflicts) {
-      parts.push(
-        readFileSync(join(roundDir, "resync", "conflicts.md"), "utf8").trim(),
-        "",
-        `Merge origin/${this.defaultBranch} into your branch with git merge, resolve the conflicts so both sides keep working, run the quick checks and the tests that cover the conflicting files, commit, then write the output file again.`,
-      );
-    } else if (resynced) {
-      parts.push(
-        `After origin/${this.defaultBranch} was merged into your branch, the quality gate failed in round ${run.round}. Its report:`,
-        "",
-        readFileSync(join(roundDir, "resync", "checks.md"), "utf8").trim(),
-        "",
-        "The merge commit is on your branch. Fix the cause, rerun what failed, commit, then write the output file again.",
-      );
-    }
-    // Only decisions made since the builder last ran were meant for it (not, say, the triage approval).
-    const lastBuild = this.deps.store.listAgentRuns(run.id).filter((a) => a.role === "builder").at(-1)?.started_at ?? "";
-    const human = this.deps.store
-      .listDecisions(run.id)
-      .filter((d) => d.actor === "human" && d.created_at >= lastBuild)
-      .at(-1);
-    if (human) parts.push("", `A human sent this back to you with this comment: ${human.comment}`);
-    if (parts.length === 0) parts.push("Continue where you stopped and finish the hand-over.");
-    parts.push("", `Output file: \`${outputFile}\``);
-    return parts.join("\n").trim() + "\n";
-  }
-
-  /** The hand-over must be the checked-out commit, fully committed, with no secrets in any new commit. */
-  private handOverProblems(worktree: Worktree, git: GitEvidence, commit: string, reportDir: string): string[] {
-    const problems: string[] = [];
-    const head = git.head();
-    if (commit !== head) problems.push(`COMMIT ${commit.slice(0, 7)} is not HEAD (${head.slice(0, 7)})`);
-    if (!git.isClean()) problems.push("the worktree has uncommitted changes");
-    if (git.commitsAhead() < 1) problems.push(`the branch has no commits ahead of origin/${this.defaultBranch}`);
-    const secrets = scanSecrets({ worktreePath: worktree.path, defaultBranch: this.defaultBranch, reportDir }, this.run);
-    for (const hit of secrets.hits) {
-      problems.push(`possible secret in ${hit.file}:${hit.line} (${hit.rule}): remove it from the unpushed commits`);
-    }
-    return problems;
-  }
-
-  private ensureWorktree(run: Run): Worktree {
-    if (run.worktree_path && run.branch) return this.worktreeOf(run);
-    const issue = this.issueOf(run);
-    const worktree = createWorktree({
-      root: this.deps.project.repo_path,
-      runId: run.id,
-      branch: branchName(issue.number, issue.title),
-      defaultBranch: this.defaultBranch,
-      run: this.run,
-    });
-    this.deps.store.updateRunFields(run.id, { branch: worktree.branch, worktree_path: worktree.path });
-    this.deps.store.allocatePorts(run.id, this.deps.portBase ?? DEFAULT_PORT_BASE);
-    this.info(run, `worktree ${relative(this.deps.project.repo_path, worktree.path)} on ${worktree.branch}`);
-    return worktree;
   }
 
   private worktreeOf(run: Run): Worktree {
