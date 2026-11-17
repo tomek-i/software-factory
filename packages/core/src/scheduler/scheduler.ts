@@ -10,6 +10,7 @@ import { driveIssue, trustedConfig, type DriveDeps, type Driven, type DriveOptio
 import type { Project, Run } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 import { readStopRequest, type StopRequest } from "./stop.js";
+import { registerWorker } from "./workers.js";
 
 /**
  * Works through the queues of every project in the project list: continues runs nobody is working
@@ -187,6 +188,8 @@ export class Scheduler {
 
   /** Tick until stopped. Resolves `drained` once the runs it had are finished, or `interrupted` after `stopNow`. */
   run(signal?: AbortSignal): Promise<"drained" | "interrupted"> {
+    // Until it resolves, `factory upgrade` sees this worker running, even while it drives no runs.
+    const unregister = registerWorker();
     return new Promise((resolve) => {
       let timer: NodeJS.Timeout | undefined;
       let done = false;
@@ -197,6 +200,7 @@ export class Scheduler {
         if (this.stopping === "now" || (this.stopping === "drain" && this.inFlight.size === 0)) {
           done = true;
           this.wake = undefined;
+          unregister();
           return resolve(this.stopping === "now" ? "interrupted" : "drained");
         }
         timer = setTimeout(loop, this.options.tickMs ?? TICK_MS);
