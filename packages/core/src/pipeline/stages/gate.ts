@@ -2,7 +2,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { REVIEW_LENSES } from "@factory/shared";
 import { runQualityGate } from "../../gate/gate.js";
-import { gitEvidence } from "../../git/worktrees.js";
+import { gitEvidence, snapshot } from "../../git/worktrees.js";
 import type { Run } from "../../store/store.js";
 import { gateFingerprint } from "../fingerprint.js";
 import { reviewPath, runEvidence } from "../shared.js";
@@ -28,15 +28,17 @@ export async function gate(ctx: StageContext, run: Run): Promise<StepResult> {
     events: ctx.deps.events,
     signal: ctx.signal,
   });
-  const git = gitEvidence(worktree, ctx.defaultBranch, ctx.exec);
+  // The checks are done: nothing changes the worktree between here and the move, so the stage's
+  // own checks and the guard's read each fact once. HEAD is the gate's own last read, which it
+  // checked against the HEAD the checks started on.
+  const git = snapshot(gitEvidence(worktree, ctx.defaultBranch, ctx.exec), result.head);
   const fingerprint = gateFingerprint(result, worktree.path);
   const evidence: Evidence = { ...runEvidence(dir, round, git), gateFingerprint: () => fingerprint };
 
   if (result.passed) {
-    // The same facts the gate->review guard needs: the pass is for HEAD, nothing changed since,
-    // and it is pushed. Checks that leave the tree dirty or a commit made meanwhile show up here.
+    // The same facts the gate->review guard needs: nothing changed since, and it is pushed. Checks
+    // that leave the tree dirty show up here; a commit made while they ran fails the gate itself.
     const problems: string[] = [];
-    if (git.head() !== result.head) problems.push("HEAD changed after the gate ran");
     if (!git.isClean()) problems.push("the checks left uncommitted changes in the worktree");
     if (!git.isPushed()) problems.push("the checked commit is not pushed");
     if (problems.length) return ctx.escalate(run, `quality gate passed but ${problems.join("; ")}`);

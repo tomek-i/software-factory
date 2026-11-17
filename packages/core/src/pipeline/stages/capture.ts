@@ -7,7 +7,7 @@ import { renderCaptureReport, screenshotsSection, type CaptureOutcome } from "..
 import { gitEvidence, type Worktree } from "../../git/worktrees.js";
 import { MEDIA_MARKER, mediaTag } from "../../github/media.js";
 import { PORT_BLOCK_SIZE, type Run } from "../../store/store.js";
-import { changeReport, freshBase } from "../hard-rules.js";
+import { changeReport } from "../hard-rules.js";
 import { verdictPath } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
 
@@ -101,7 +101,7 @@ async function capturePlan(ctx: StageContext, run: Run, worktree: Worktree, roun
   let head: string;
   try {
     head = gitEvidence(worktree, ctx.defaultBranch, ctx.exec).head();
-    base = freshBase(worktree.path, ctx.defaultBranch, head, ctx.exec);
+    base = ctx.freshBase(worktree, head);
     // The reviewers' copy, unless the run got here some other way (e.g. a human's resume).
     if (!existsSync(changeFile)) writeFileSync(changeFile, changeReport(worktree.path, base, head, ctx.exec));
   } catch (err) {

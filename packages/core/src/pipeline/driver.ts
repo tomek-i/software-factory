@@ -157,6 +157,7 @@ export class PipelineDriver {
 
   private async step(run: Run): Promise<StepResult> {
     const { ctx } = this;
+    ctx.startStep();
     switch (run.state) {
       case "intake":
         return intake(ctx, run);

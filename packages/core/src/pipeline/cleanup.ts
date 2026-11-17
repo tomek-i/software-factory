@@ -115,12 +115,22 @@ function isWorktree(run: CommandRunner, path: string): boolean {
  *   for a done run within what GitHub merged, so a commit made after the merge stays; for any other
  *   run on the remote, or nothing beyond the default branch.
  */
-function unsafeToRemove(root: string, worktree: Worktree, target: Run, options: CleanupOptions, run: CommandRunner, checkChanges: boolean): string | undefined {
+/** What `unsafeToRemove` found, so the removal right after it need not ask git again. */
+interface Judged {
+  /** Why removing would lose work; undefined when it would not. */
+  why?: string;
+  /** The local branch's commit, undefined when there is no such branch. */
+  local?: string;
+  /** The remote branch's commit ("" when there is none), when it had to be asked. */
+  remote?: string;
+}
+
+function unsafeToRemove(root: string, worktree: Worktree, target: Run, options: CleanupOptions, run: CommandRunner, checkChanges: boolean): Judged {
   let head: string | undefined;
   if (checkChanges) {
     const status = git(run, worktree.path, ["status", "--porcelain"]);
     if (!status.ok) throw new Error(`git status failed: ${status.err}`);
-    if (status.out !== "") return "the worktree has uncommitted changes";
+    if (status.out !== "") return { why: "the worktree has uncommitted changes" };
     head = git(run, worktree.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).out || undefined;
   }
   const local = git(run, root, ["rev-parse", "--verify", "--quiet", `refs/heads/${worktree.branch}^{commit}`]).out || undefined;
@@ -133,9 +143,9 @@ function unsafeToRemove(root: string, worktree: Worktree, target: Run, options: 
     return !within(run, root, commit, remote);
   };
   for (const commit of new Set([local, head].filter((c): c is string => c !== undefined))) {
-    if (lost(commit)) return target.state === "done" ? "the branch has commits that were not merged" : "the branch has commits that are not on the remote";
+    if (lost(commit)) return { why: target.state === "done" ? "the branch has commits that were not merged" : "the branch has commits that are not on the remote", local, remote };
   }
-  return undefined;
+  return { local, remote };
 }
 
 /**
@@ -190,19 +200,20 @@ export function cleanupRun(target: Run, options: CleanupOptions): CleanupResult 
     const registered = present && isWorktree(run, worktree.path);
     // A folder git no longer knows as a worktree is what a removal that stopped half way leaves;
     // its files can't be checked, so it is finished only when this cleanup started that removal.
-    const why =
+    const judged: Judged =
       present && !registered && !existsSync(pending)
-        ? "the worktree folder is no longer a git worktree"
+        ? { why: "the worktree folder is no longer a git worktree" }
         : unsafeToRemove(root, worktree, target, options, run, registered);
-    if (why) {
-      result.kept = `${why}, so the worktree and branch ${worktree.branch} are kept`;
+    if (judged.why) {
+      result.kept = `${judged.why}, so the worktree and branch ${worktree.branch} are kept`;
       if (!options.dryRun) writeMarker(runDir, result, run, root, worktree.branch);
       return result;
     }
-    const localBranch = git(run, root, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`]).ok;
+    // Read just now by unsafeToRemove; nothing has changed the repository since.
+    const localBranch = judged.local !== undefined;
     let deleteRemote = false;
     if (target.state === "done") {
-      const remote = remoteHead(run, root, worktree.branch);
+      const remote = judged.remote ?? remoteHead(run, root, worktree.branch);
       if (remote && options.mergedHead && remote === options.mergedHead) deleteRemote = true;
       else if (remote) result.kept = `the remote branch ${worktree.branch} is not what was merged, so it is kept`;
     }
