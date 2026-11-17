@@ -90,11 +90,17 @@ Stopping:
 
 ## Merging or closing on GitHub
 
-- You can also merge or close the PR yourself on GitHub at any point.
+- You can also merge or close the PR, or close the issue, yourself on GitHub at any point.
 - The next `factory status`, `factory run` or `factory sync` sees it.
 - A merged PR marks the run `done`, with a `merge` decision holding the merge commit.
 - A PR closed without merging marks it `cancelled`. You don't need `factory cancel`.
-- Runs without a PR, or with an open one, are left alone.
+- An issue closed on GitHub (done in another PR, a duplicate, not planned) marks a run without an open PR `cancelled`.
+  - The decision says how and by which PRs it was closed, e.g. `issue #173 was closed on GitHub (completed, by #221)`.
+- A run whose issue was closed while its PR is still open is left for you, since closing a PR is your call.
+  - `factory show` and the web app say so.
+  - `factory cancel` (or Cancel run in the web app) then also closes the PR, with a comment, and deletes its branch.
+  - If GitHub refuses, the run is cancelled anyway and the output says the PR is still open.
+- Runs whose PR and issue are both open are left alone.
 - If GitHub can't be reached, the command prints a warning and carries on.
 
 ## Cleaning up finished runs
@@ -114,7 +120,7 @@ Stopping:
 - **Who does it:**
   - the worker that finished the run, once it has stopped;
   - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
-  - `factory status` and `factory run`, right away, for runs they themselves finish because their PR was merged or closed on GitHub;
+  - `factory status` and `factory run`, right away, for runs they themselves finish because their PR was merged or closed, or their issue was closed, on GitHub;
   - `factory status` and `factory run`, for finished runs the cleanup has not handled yet, 2 minutes after they finished and only once no worker holds them.
     - So a worker that is still stopping is never disturbed.
 - **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach):
