@@ -90,6 +90,7 @@ A builder then works in its own worktree, and the quality gate runs your checks 
 Reviewers look at the change through several lenses at once, and a verifier checks the findings they raise.
 One lens checks the issue's acceptance criteria one by one; the met ones are ticked on the issue once the PR is merged.
 Capture shows a UI change in the PR, re-sync merges the default branch in, the PR's required checks must pass, and then the merge gate decides.
+Unresolved review threads and failed checks that are not required stop the merge too, unless `merge.open_feedback` says otherwise.
 After the merge, a learner proposes lessons.
 Each stage is described in [docs/pipeline.md](docs/pipeline.md).
 
@@ -107,7 +108,8 @@ Dotted lines show where it can wait for you: a gate in `human` mode, a hard-rule
   - critic REVISE → refine, up to `loops.max_critic_rounds` (default 2);
   - failed checks → build, up to `loops.max_build_iterations` (default 5);
   - confirmed review findings → build, up to `loops.max_review_rounds` (default 3);
-  - re-sync conflict or failed re-check → build, up to `loops.max_resyncs` (default 3), counted apart from review rounds.
+  - re-sync conflict or failed re-check → build, up to `loops.max_resyncs` (default 3), counted apart from review rounds;
+  - open review threads or failed optional checks with `merge.open_feedback: fix` → build, counted in the same re-sync rounds.
 - **Stalls**: a loop that fails the same way twice in a row escalates early, so a stuck builder does not use up the cap.
 - **Hard rules** (protected paths, new dependencies, secret/env changes) always escalate to you, whatever the gate mode.
   - Only a per-run `--unsafe` flag lifts them.
@@ -308,8 +310,8 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `app` | How to start the app for screenshots and videos: `start` (a shell command run in the worktree; unset means no capture), `url` (must contain `{port}`, which is filled in; default `http://localhost:{port}`), `port_env` (the variable that carries the port, default `PORT`), `ready_timeout_sec` (how long `url` may take to answer, default 180), `narrate` (`auto`, `off` or a path to narrate.mjs, see [Narrated walkthrough](docs/pipeline.md#narrated-walkthrough)) and `env` (names of variables to pass from your environment to the app, which otherwise gets only a minimal one; tokens are never passed) |
 | `gates` | `always` / `auto` / `human` per gate (see [Pipeline](#pipeline) for the defaults) |
 | `hard_rules` | Paths and triggers that always escalate to a human (see [Hard rules](docs/pipeline.md#hard-rules)) |
-| `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
-| `loops` | Caps for build iterations (`max_build_iterations`), review rounds (`max_review_rounds`), spec critic rounds (`max_critic_rounds`) and merge-stage re-syncs that went back to the builder (`max_resyncs`, default 3) |
+| `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30); `open_feedback`: what to do about unresolved review threads and failed checks branch protection does not require, `ask` (default: wait for you), `fix` (send them to the builder) or `ignore`; `comment_bots`: apps whose threads `fix` may act on alone (default `["github-advanced-security[bot]"]`). See [Open review threads and failed checks](docs/pipeline.md#open-review-threads-and-failed-checks) |
+| `loops` | Caps for build iterations (`max_build_iterations`), review rounds (`max_review_rounds`), spec critic rounds (`max_critic_rounds`) and times the merge stage sent the run back to the builder (`max_resyncs`, default 3) |
 | `reviews` | Which review lenses run always and which only for UI changes; the `acceptance` lens always runs |
 | `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). Whatever the file sets wins over every recommendation: `default` and `effort` reach every agent it does not name, and the recommendations only fill in the rest |
 | `concurrency` | `max_runs`: how many runs `factory run` drives at once, and how many the worker drives per project (default 2) |

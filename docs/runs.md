@@ -162,6 +162,14 @@ Stopping:
 - **Any other failed required check** can't be accepted from the factory: branch protection would refuse the merge anyway.
   - Only the builder path is offered for it.
 
+## When review threads or checks are open on the PR
+
+- With `merge.open_feedback: ask` (the default), the merge gate waits for you while the PR has unresolved review threads or failed checks that branch protection does not require.
+- `factory show <run>` lists them with their links, and so does the web Inbox.
+- `factory approve <run>` merges anyway, for that commit and those threads only.
+- `factory resume <run> --to build -m "fix the open review threads"` sends them to the builder.
+- Details: [Open review threads and failed checks](pipeline.md#open-review-threads-and-failed-checks).
+
 ## What steers the agents
 
 - `factory run` reads `.factory/config.yaml`, `.factory/prompts/<role>.md`, `.factory/lessons.md` and the repo's root `CLAUDE.md` from `origin/<default branch>`.

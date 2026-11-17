@@ -185,7 +185,7 @@ export const factoryConfigSchema = z.object({
       max_review_rounds: z.number().int().min(1).default(3),
       max_critic_rounds: z.number().int().min(1).default(2),
       // Times the merge stage may go back to the builder because the default branch conflicted or
-      // broke the quality gate; counted apart from review rounds.
+      // broke the quality gate, or (merge.open_feedback: fix) for open feedback; counted apart from review rounds.
       max_resyncs: z.number().int().min(1).default(3),
     })
     .prefault({}),

@@ -76,7 +76,7 @@ loops:
   max_build_iterations: 5
   max_review_rounds: 3
   max_critic_rounds: 2
-  max_resyncs: 3        # merge attempts that conflicted with the default branch or failed its checks
+  max_resyncs: 3        # merge attempts sent back to the builder: conflicts, failed re-checks, open feedback
 
 # Right before merging, the factory reads the PR's unresolved review threads (not its own, not
 # outdated) and failed checks that branch protection does not require. open_feedback:
