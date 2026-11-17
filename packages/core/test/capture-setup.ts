@@ -4,7 +4,7 @@ import type { CapturePort, CaptureRequest, CaptureResult } from "../src/capture/
 import { buildStep, review, TRIAGE } from "./driver-setup.js";
 import type { FakeStep } from "./helpers.js";
 
-// Shared by the driver.capture*.test.ts files, which are split so their tests run in parallel.
+// Shared by the driver.capture*.int.test.ts files, which are split so their tests run in parallel.
 
 /** One review lens, the merge gate waits for a human, and an app to start unless `app` says otherwise. */
 export const captureConfig = (app = 'app:\n  start: "node app.js"\n') =>

@@ -6,7 +6,7 @@ import { RunMachine } from "../src/pipeline/transitions.js";
 import type { Store } from "../src/store/store.js";
 import { git, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
-// Shared by the driver.merge*.test.ts files. The merge tests are split across files because each
+// Shared by the driver.merge*.int.test.ts files. The merge tests are split across files because each
 // drives real git repos: in one file they ran one after another and held up the whole suite.
 
 /** One review lens, so a round is quick; `gates` sets the PR and merge gates. */

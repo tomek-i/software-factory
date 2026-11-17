@@ -1,5 +1,5 @@
 /**
- * Shared setup for the PipelineDriver tests. They are split over several `driver*.test.ts` files so
+ * Shared setup for the PipelineDriver tests. They are split over several `driver*.int.test.ts` files so
  * Vitest runs them in parallel: each test drives real git and fake `claude` processes for seconds.
  */
 import { Store } from "../src/store/store.js";

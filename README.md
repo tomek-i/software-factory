@@ -366,7 +366,7 @@ Narrate tests:
 - They use narrate's silent mock voice, so they cost nothing:
 
   ```sh
-  FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.test.ts
+  FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.int.test.ts
   ```
 
 - The quality gate runs `pnpm test` with your environment, so leave the flag unset in the shell that runs the factory.
