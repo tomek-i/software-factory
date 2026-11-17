@@ -35,6 +35,7 @@ Back to the [README](../README.md#moving-between-machines) for the commands.
 - It runs in one transaction, so a failed import changes nothing.
 - Importing the same file twice changes nothing the second time.
 - `--dry-run` shows what would be added or changed.
+- Text from the file it prints (the machine name, the repo it names) shows control characters as `[U+001B]`, so the file cannot send escapes to your terminal.
 - Runs:
   - one the database lacks is added with everything attached;
   - one it has is left as it is.

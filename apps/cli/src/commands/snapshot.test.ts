@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isUnprintable } from "@factory/shared";
 import { describe, expect, it, vi } from "vitest";
 import { GIT_TEST_TIMEOUT, tempDir } from "../../../../packages/core/test/helpers.js";
 import { setup } from "../../test/runs-setup.js";
@@ -120,6 +121,24 @@ describe("factory import", () => {
     expect(store.getIssue(b.projectId, 12)?.queued_at).toBeNull();
     expect(store.listRuns({ project_id: b.projectId })).toEqual([]);
     store.close();
+  });
+
+  it("prints no control characters from the file, in the preview, the import or a refusal", () => {
+    const { b, file } = carried();
+    const snapshot = JSON.parse(readFileSync(file, "utf8")) as { header: { host: string; github_repo: string } };
+    // A terminal escape that would clear the screen, and a right-to-left override.
+    snapshot.header.host = "lap\u001b[2Jtop\u202e";
+    writeFileSync(file, JSON.stringify(snapshot));
+    const dry = runImport(b.dir, file, { dryRun: true });
+    expect(dry.split("\n")[0]).toBe(`Would add or change from the snapshot from lap[U+001B][2Jtop[U+202E], exported ${NOW.toISOString()}:`);
+    const real = runImport(b.dir, file);
+    for (const out of [dry, real]) expect(Array.from(out).some((ch) => ch !== "\n" && isUnprintable(ch.codePointAt(0)!))).toBe(false);
+
+    snapshot.header.github_repo = "someone/\u001b[31melse";
+    writeFileSync(file, JSON.stringify(snapshot));
+    expect(() => runImport(b.dir, file)).toThrow(
+      new CliError("The snapshot is of someone/[U+001B][31melse, but this repository is o/r. Import it in a clone of someone/[U+001B][31melse."),
+    );
   });
 
   it("refuses a snapshot from a newer factory", () => {

@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { exportSnapshot, importChangeCount, importSnapshot, type CommandRunner, type ImportReport } from "@factory/core";
+import { exportSnapshot, importChangeCount, importSnapshot, ServiceError, type CommandRunner, type ImportReport } from "@factory/core";
 import { CliError, withProject } from "../context.js";
+import { printable } from "./lessons.js";
 
 export interface SnapshotDeps {
   /** Where warnings go; the result goes to stdout. */
@@ -72,7 +73,15 @@ export function runImport(cwd: string, file: string, options: { dryRun?: boolean
       } catch {
         throw new CliError(`${file} is not a factory snapshot: it is not JSON.`);
       }
-      return describeImport(importSnapshot(store, project, data, { dryRun: options.dryRun }));
+      let report: ImportReport;
+      try {
+        report = importSnapshot(store, project, data, { dryRun: options.dryRun });
+      } catch (err) {
+        // A refusal can quote the file (the repo it names), which could hold a terminal escape.
+        if (err instanceof ServiceError) throw new CliError(printable(err.message));
+        throw err;
+      }
+      return describeImport(report);
     },
     deps.run,
   );
@@ -83,8 +92,9 @@ function inside(root: string, target: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Text from the file (the host name) is printed with `printable`: the file may not be your own. */
 function describeImport(report: ImportReport): string {
-  const from = `the snapshot from ${report.header.host || "an unnamed machine"}, exported ${report.header.exported_at}`;
+  const from = `the snapshot from ${printable(report.header.host) || "an unnamed machine"}, exported ${report.header.exported_at}`;
   if (importChangeCount(report) === 0) {
     return [`Nothing to import: this database already has everything in ${from}.`, ...notes(report)].join("\n");
   }
