@@ -277,7 +277,7 @@ describe("approve, resume, reject and cancel", () => {
     const failing = { ...port, closePullRequest: () => { throw new Error("gh pr close failed: no access\nmore"); } };
     const kept = parked();
     expect(() => cancelRun(ctx, kept, "again", { github: failing })).toThrow(
-      new ServiceError(`Run ${kept} was not cancelled: closing PR #7 failed: gh pr close failed: no access\nClose the PR on GitHub, and the next sync cancels the run.`),
+      new ServiceError(`Run ${kept} was not cancelled: closing PR #7 failed (gh pr close failed: no access). Close the PR on GitHub, and the next sync cancels the run.`),
     );
     expect(store.getRun(kept)!.state).toBe("needs_human");
 

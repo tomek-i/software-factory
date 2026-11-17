@@ -337,7 +337,7 @@ function closeStalePullRequest(ctx: ServiceContext, target: Run, deps: ServiceDe
   } catch (err) {
     // Cancelling anyway would hide the open PR: nothing points at it any more.
     throw new ServiceError(
-      `Run ${target.id} was not cancelled: closing PR #${number} failed: ${(err as Error).message.split("\n")[0]}\nClose the PR on GitHub, and the next sync cancels the run.`,
+      `Run ${target.id} was not cancelled: closing PR #${number} failed (${(err as Error).message.split("\n")[0]}). Close the PR on GitHub, and the next sync cancels the run.`,
     );
   }
 }
