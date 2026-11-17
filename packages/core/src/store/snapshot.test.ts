@@ -88,10 +88,14 @@ const carry = (snapshot: Snapshot): unknown => JSON.parse(JSON.stringify(snapsho
 describe("exportSnapshot", () => {
   it("writes a header and the finished runs, leaving out active runs and machine-local columns", () => {
     const { store, project, done, active, agent } = laptop();
-    const { snapshot, skipped } = exportSnapshot(store, project, { now: NOW, host: "laptop" });
+    const { snapshot, skipped, unqueued } = exportSnapshot(store, project, { now: NOW, host: "laptop" });
 
     expect(snapshot.header).toEqual({ format_version: 1, schema_version: MIGRATIONS.length, exported_at: NOW.toISOString(), host: "laptop", github_repo: "o/r" });
     expect(skipped).toEqual([active.id]);
+    // Queued, but its run is still active here: queued there, it would be started a second time.
+    expect(unqueued).toEqual([2]);
+    expect(snapshot.issues.find((i) => i.number === 2)).toMatchObject({ queued_at: null, queue_seq: null });
+    expect(snapshot.issues.find((i) => i.number === 3)?.queued_at).not.toBeNull();
     expect(snapshot.runs.map((r) => r.id)).toEqual([done.id]);
     expect(snapshot.runs[0]).toMatchObject({ state: "done", branch: "factory/1-fix-it", pr_number: 9, unsafe: false });
     expect(snapshot.run_events.every((e) => e.run_id === done.id)).toBe(true);
@@ -124,12 +128,17 @@ describe("importSnapshot", () => {
 
     const report = importSnapshot(b.store, b.project, carry(snapshot));
     expect(report.runs).toEqual({ added: [a.done.id], present: 0 });
-    expect(report.issues).toEqual({ added: [2, 3, 4], queued: [], created_by_factory: [] });
+    // #2 is not added: its run is still active on the laptop, so it was exported as not queued.
+    expect(report.issues).toEqual({ added: [3, 4], queued: [], created_by_factory: [] });
     expect(report).toMatchObject({ run_events: 2, decisions: 1, agent_runs: 1, lessons: { added: 3, decided: 0, missing_run: 0 }, draft_issues: 1, drafts_done: 1 });
 
-    // The queue keeps its order; the factory's marker comes as a claim the next fetch settles.
+    // The queue keeps its order, less #2, which the laptop is still working on; the factory's marker
+    // comes as a claim the next fetch settles.
     expect(b.store.listIssues({ project_id: b.project.id, queued: true }).map((i) => [i.number, i.queued_at])).toEqual(
-      a.store.listIssues({ project_id: a.project.id, queued: true }).map((i) => [i.number, i.queued_at]),
+      a.store
+        .listIssues({ project_id: a.project.id, queued: true })
+        .filter((i) => i.number !== 2)
+        .map((i) => [i.number, i.queued_at]),
     );
     expect(b.store.getIssue(b.project.id, 4)?.created_by_factory).toBe(false);
     expect(b.store.pendingFactoryClaims(b.project.id, [2, 3, 4])).toEqual([4]);

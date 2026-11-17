@@ -44,7 +44,9 @@ The commands are in [Using the factory](usage.md#move-to-another-machine).
   - when only one side did, the queued side wins, so an import never drops work;
   - a closed issue is never queued;
   - an imported issue keeps the time it was queued on the other machine, so the worker takes it in turn by that time, not at the end;
-  - issues new to this database are added with only their number, state and queue time;
+  - an issue new to this database is added only when it is queued or the factory opened it, with only its number, state and queue time;
+  - an added issue the factory opened but that isn't queued stays unqueued;
+  - an issue a run is still working on at export is exported as not queued, so the other machine doesn't start a second run of it; the export says which;
   - their title, body, author, labels and link come from GitHub, never from the file, and show empty until `factory sync` fills them in;
   - `factory run <n>` and the worker fetch such an issue from GitHub before starting a run on it;
   - to unqueue on both machines, unqueue on each.

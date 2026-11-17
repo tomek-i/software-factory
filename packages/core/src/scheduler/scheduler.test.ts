@@ -3,6 +3,7 @@ import { factoryConfigSchema, isTerminal, type FactoryConfigInput, type RunState
 import type { DriveOutcome } from "../pipeline/driver.js";
 import type { ProjectContext } from "../service/project.js";
 import type { DriveOptions } from "../service/runs.js";
+import { exportSnapshot, importSnapshot } from "../store/snapshot.js";
 import { Store, type Run } from "../store/store.js";
 import { Scheduler, type DriveFn, type SchedulerEvent, type SchedulerOptions } from "./scheduler.js";
 import type { StopRequest } from "./stop.js";
@@ -192,6 +193,22 @@ describe("Scheduler: starting queued issues", () => {
     shop.store.db.prepare("UPDATE issues SET queued_at = ? WHERE number = 1").run(new Date(Date.now() + 1000).toISOString());
     t.s.tick();
     expect(t.issues()).toEqual([1, 1]);
+  });
+
+  it("after an import, starts only what the other machine queued and has not run or is not running", () => {
+    const laptop = project("shop");
+    laptop.queue(1, 2, 3);
+    const done = laptop.store.createRun({ project_id: laptop.row.id, title: "Issue 1", issue_number: 1 });
+    laptop.store.writeState(done.id, "done");
+    laptop.store.createRun({ project_id: laptop.row.id, title: "Issue 2", issue_number: 2 }); // still in intake there
+    const desktop = project("shop");
+    importSnapshot(desktop.store, desktop.row, JSON.parse(JSON.stringify(exportSnapshot(laptop.store, laptop.row).snapshot)));
+    const t = scheduler([desktop]);
+
+    t.s.tick();
+
+    // #1 finished on the laptop, #2 is still going there: only #3 is left to do.
+    expect(t.issues()).toEqual([3]);
   });
 
   it("skips an issue it can't fetch, says why, and leaves it for a while", () => {

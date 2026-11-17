@@ -32,6 +32,11 @@ export interface ExportResult {
   snapshot: Snapshot;
   /** Runs that were left out because they are not finished. */
   skipped: string[];
+  /**
+   * Queued issues exported without their queue time because a run left out is still working on
+   * them here: queued there, the other machine would start a second run of the same issue.
+   */
+  unqueued: number[];
 }
 
 /** Read the project's state in one transaction, so a run moving meanwhile cannot tear the snapshot. */
@@ -49,7 +54,10 @@ export function exportSnapshot(store: Store, project: Project, options: { now?: 
       )
       .all(project.id) as (Omit<Snapshot["runs"][number], "unsafe" | "state"> & { state: RunState; unsafe: number })[];
     const finished = runs.filter((r) => isTerminal(r.state));
-    const skipped = runs.filter((r) => !isTerminal(r.state)).map((r) => r.id);
+    const active = runs.filter((r) => !isTerminal(r.state));
+    const skipped = active.map((r) => r.id);
+    const busy = new Set(active.map((r) => r.issue_number));
+    const unqueued: number[] = [];
     const exported = new Set(finished.map((r) => r.id));
     const ofExported = <T extends { run_id: string }>(rows: unknown[]) => (rows as T[]).filter((r) => exported.has(r.run_id));
     const byRun = (columns: string, table: string, order: string) =>
@@ -72,7 +80,12 @@ export function exportSnapshot(store: Store, project: Project, options: { now?: 
              FROM issues WHERE project_id = ? ORDER BY number`,
           )
           .all(project.id) as (Omit<SnapshotIssue, "labels" | "created_by_factory"> & { labels: string; created_by_factory: number })[]
-      ).map((i) => ({ ...i, labels: JSON.parse(i.labels) as string[], created_by_factory: i.created_by_factory === 1 })),
+      ).map((i) => {
+        const issue = { ...i, labels: JSON.parse(i.labels) as string[], created_by_factory: i.created_by_factory === 1 };
+        if (issue.queued_at === null || !busy.has(issue.number)) return issue;
+        unqueued.push(issue.number);
+        return { ...issue, queued_at: null, queue_seq: null };
+      }),
       runs: finished.map((r) => ({ ...r, state: r.state as Snapshot["runs"][number]["state"], unsafe: r.unsafe === 1 })),
       run_events: ofExported(byRun("t.run_id, t.from_state, t.to_state, t.reason, t.data, t.created_at", "run_events", "t.id")),
       decisions: ofExported(byRun("t.run_id, t.gate, t.mode, t.outcome, t.actor, t.comment, t.commit_sha, t.created_at", "decisions", "t.id")),
@@ -99,7 +112,7 @@ export function exportSnapshot(store: Store, project: Project, options: { now?: 
       ).map((d) => ({ ...d, linked: d.linked === 1 })),
       drafts_done: db.prepare("SELECT draft_id, done_at FROM drafts_done WHERE project_id = ? ORDER BY draft_id").all(project.id) as Snapshot["drafts_done"],
     };
-    return { snapshot, skipped };
+    return { snapshot, skipped, unqueued };
   });
 }
 
@@ -123,7 +136,7 @@ export interface ImportReport {
   };
   lessons: {
     added: number;
-    /** Proposed here, decided in the snapshot (or decided later there). */
+    /** Proposed here and decided in the snapshot, or decided on both with the snapshot's decision the later one. */
     decided: number;
     /** Their run is not in this store (it was still active where they were exported). */
     missing_run: number;
