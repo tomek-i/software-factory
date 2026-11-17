@@ -75,7 +75,7 @@ describe("resetConfigText", () => {
     const { text, removed } = resetConfigText(CONFIG, { all: true });
     expect(removed).toEqual(["gates", "models"]);
     const config = parseConfig(text);
-    expect(config.checks).toEqual([{ name: "test", run: "pnpm test", timeout_sec: 900 }]);
+    expect(config.checks).toEqual([{ name: "test", run: "pnpm test", timeout_sec: 900, retries: 1 }]);
     expect(config.trust.authors).toEqual(["alice"]);
     expect(config.gates).toEqual(defaults.gates);
     expect(text.startsWith("# Software factory configuration. Commit this file.\nversion: 1\n")).toBe(true);

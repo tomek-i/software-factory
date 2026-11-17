@@ -15,6 +15,7 @@ function check(overrides: Partial<CheckResult> = {}): CheckResult {
     exitCode: 1,
     durationMs: 1200,
     tail: "FAIL src/a.test.ts > adds\nexpected 2 to be 3",
+    attempts: 1,
     ...overrides,
   };
 }
