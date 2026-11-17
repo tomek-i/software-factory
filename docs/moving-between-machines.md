@@ -44,8 +44,17 @@ Back to the [README](../README.md#moving-between-machines) for the commands.
   - a closed issue is never queued;
   - an imported issue keeps the time it was queued on the other machine;
     - so the worker takes it in turn by that time among the issues queued here, not at the end;
-  - issues new to this database are added for the queue, and `factory sync` fills them in;
+  - issues new to this database are added for the queue with only their number, state and queue time;
+    - their title, body, author, labels and link come from GitHub, never from the file;
+    - until `factory sync` fills them in, they show empty;
+    - `factory run <n>` and the worker fetch such an issue from GitHub before starting a run on it;
   - to unqueue on both machines, unqueue on each.
+- Issues the factory opened:
+  - the file's word alone trusts nothing: an imported mark is only a claim;
+  - the next fetch from GitHub (`factory sync`, `factory run <n>` or the worker) settles it;
+  - it is kept only if GitHub says the factory's own gh login opened the issue, and dropped otherwise;
+  - until then the issue counts as untrusted;
+  - so a mark for an issue number that does not exist yet cannot make it trusted when someone opens it.
 - Lessons:
   - an approved or rejected lesson wins over a proposed copy;
   - between two decisions, the later one wins.
@@ -53,7 +62,7 @@ Back to the [README](../README.md#moving-between-machines) for the commands.
 ## Keep the snapshot private
 
 - **The snapshot is as trusted as your own database.**
-- Importing it queues issues and marks issues as opened by the factory, which [trusted authors](trust.md#trusted-authors) rely on.
+- Importing it queues issues and claims issues as opened by the factory, which [trusted authors](trust.md#trusted-authors) rely on once GitHub confirms them.
 - Keep it outside the repo, in your home or a cloud-sync folder.
 - `factory export` warns when the file is inside the working tree.
 - Never commit it to a shared repo.

@@ -72,7 +72,7 @@ export function runImport(cwd: string, file: string, options: { dryRun?: boolean
       } catch {
         throw new CliError(`${file} is not a factory snapshot: it is not JSON.`);
       }
-      return describeImport(importSnapshot(store, project, data, { dryRun: options.dryRun, now: deps.now }));
+      return describeImport(importSnapshot(store, project, data, { dryRun: options.dryRun }));
     },
     deps.run,
   );
@@ -102,14 +102,16 @@ function describeImport(report: ImportReport): string {
   row("issues", [
     report.issues.added.length > 0 && `${report.issues.added.length} added (${numbers(report.issues.added)})`,
     report.issues.queued.length > 0 && `${report.issues.queued.length} queued (${numbers(report.issues.queued)})`,
-    report.issues.created_by_factory.length > 0 && `${report.issues.created_by_factory.length} marked as opened by the factory (${numbers(report.issues.created_by_factory)})`,
+    report.issues.created_by_factory.length > 0 && `${report.issues.created_by_factory.length} claimed as opened by the factory, for GitHub to confirm (${numbers(report.issues.created_by_factory)})`,
   ]);
   row("lessons", [report.lessons.added > 0 && `${report.lessons.added} added`, report.lessons.decided > 0 && `${report.lessons.decided} decided`]);
   row("draft issues", [report.draft_issues > 0 && `${report.draft_issues} added`]);
   row("finished drafts", [report.drafts_done > 0 && `${report.drafts_done} added`]);
   lines.push(...notes(report));
   if (report.dryRun) lines.push("", "Nothing was written (--dry-run).");
-  else if (report.issues.added.length > 0 || report.issues.queued.length > 0) lines.push("", "Run `factory sync` to refresh the issues from GitHub.");
+  else if (report.issues.added.length > 0 || report.issues.queued.length > 0 || report.issues.created_by_factory.length > 0) {
+    lines.push("", "Run `factory sync` to refresh the issues from GitHub.");
+  }
   return lines.join("\n");
 }
 

@@ -83,7 +83,7 @@ describe("factory import", () => {
         `Would add or change from the snapshot from laptop, exported ${NOW.toISOString()}:`,
         "  runs: 1 added",
         "  run events: 1 added",
-        "  issues: 1 queued (#12), 1 marked as opened by the factory (#13)",
+        "  issues: 1 queued (#12), 1 claimed as opened by the factory, for GitHub to confirm (#13)",
         "  lessons: 1 added",
         "",
         "Nothing was written (--dry-run).",
@@ -99,7 +99,9 @@ describe("factory import", () => {
     expect(store.getRun(a.doneId)).toMatchObject({ state: "rejected", project_id: b.projectId });
     expect(store.getRun(a.activeId)).toBeUndefined();
     expect(store.getIssue(b.projectId, 12)?.queued_at).not.toBeNull();
-    expect(store.getIssue(b.projectId, 13)?.created_by_factory).toBe(true);
+    // Not trusted on the file's word: the next fetch from GitHub settles it.
+    expect(store.getIssue(b.projectId, 13)?.created_by_factory).toBe(false);
+    expect(store.pendingFactoryClaims(b.projectId, [13])).toEqual([13]);
     expect(store.listLessons({ project_id: b.projectId })).toEqual([expect.objectContaining({ status: "approved", pull_request: 8 })]);
     store.close();
 
