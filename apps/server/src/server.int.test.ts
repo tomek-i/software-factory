@@ -532,7 +532,7 @@ describe("runs", () => {
     });
 
     it("serves one run file as redacted text, and only from inside the run folder", async () => {
-      const { ctx, app, base } = detailed();
+      const { ctx, run, app, base } = detailed();
 
       const notes = await call(app, "GET", `${base}/files/notes.md`);
       expect(notes.statusCode).toBe(200);
@@ -554,6 +554,17 @@ describe("runs", () => {
       expect(missing.statusCode).toBe(400);
       expect(missing.body).not.toContain(ctx.root.replace(/\\/g, "\\\\"));
       expect((await call(app, "GET", `${base}/files/shot.png`)).json()).toEqual({ error: '"shot.png" is not a text file.' });
+      // Not UTF-8, though without a NUL byte.
+      writeFileSync(join(runDirOf(ctx.root, run.id), "latin1.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9]));
+      expect((await call(app, "GET", `${base}/files/latin1.txt`)).json()).toEqual({ error: '"latin1.txt" is not a text file.' });
+      expect((await call(app, "GET", base)).json().binaryFiles).toEqual(["latin1.txt", "shot.png"]);
+      writeFileSync(join(runDirOf(ctx.root, run.id), "big.log"), "x".repeat(1024 * 1024 + 1));
+      const big = await call(app, "GET", `${base}/files/big.log`);
+      expect(big.statusCode).toBe(400);
+      expect(big.json().error).toMatch(/^"big\.log" is 1\.0 MB, too big to show here/);
+      const empty = await call(app, "GET", `${base}/files/`);
+      expect(empty.statusCode).toBe(400);
+      expect(empty.json()).toEqual({ error: "Name a file of the run folder." });
     });
 
     it("answers 404 for an unknown run or one of another project, and goes through the token and Host checks", async () => {

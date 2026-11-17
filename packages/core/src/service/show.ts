@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { isBlocking, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
 import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
@@ -241,8 +241,49 @@ export function latestReviews(store: Store, project: Project, ref: string): Revi
   });
 }
 
-/** One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk. */
-export function runFile(store: Store, project: Project, ref: string, file: string): { run: Run; path: string; text: string } {
+/** How much of a file `isBinaryFile` looks at: enough for any image or video header. */
+const SNIFF_BYTES = 8192;
+
+/**
+ * A NUL byte or bytes that are not UTF-8: a screenshot, a video, anything with no text to show.
+ * `head`: only the start of the file, which may end part way through a character.
+ */
+export function isBinary(bytes: Uint8Array, head = false): boolean {
+  if (bytes.includes(0)) return true;
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream: head });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether a file has no text to show, from its first few kilobytes. */
+export function isBinaryFile(path: string): boolean {
+  const fd = openSync(path, "r");
+  try {
+    const head = Buffer.alloc(SNIFF_BYTES);
+    const read = readSync(fd, head, 0, SNIFF_BYTES, 0);
+    // Fewer bytes than asked for: that is the whole file, so a cut-off last character is not excused.
+    return isBinary(head.subarray(0, read), read === SNIFF_BYTES);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const megabytes = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+/**
+ * One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk.
+ * `maxBytes` refuses a bigger file rather than read it; `binary` says it has no text to show.
+ */
+export function runFile(
+  store: Store,
+  project: Project,
+  ref: string,
+  file: string,
+  options: { maxBytes?: number } = {},
+): { run: Run; path: string; text: string; binary: boolean } {
   const run = findRun(store, project, ref);
   const runDir = runDirOf(project.repo_path, run.id);
   const files = listRunFiles(runDir);
@@ -255,5 +296,10 @@ export function runFile(store: Store, project: Project, ref: string, file: strin
   if (!existsSync(full) || !statSync(full).isFile()) {
     throw new ServiceError(`No file "${path}" in the run folder of ${run.id}. Files there:\n${plainFileList(files)}`);
   }
-  return { run, path, text: readFileSync(full, "utf8") };
+  const size = statSync(full).size;
+  if (options.maxBytes !== undefined && size > options.maxBytes) {
+    throw new ServiceError(`"${path}" is ${megabytes(size)}, too big to show here (the limit is ${megabytes(options.maxBytes)}). Open it from the run folder.`);
+  }
+  const bytes = readFileSync(full);
+  return { run, path, text: bytes.toString("utf8"), binary: isBinary(bytes) };
 }

@@ -18,6 +18,7 @@ import {
   resumeRun,
   resumeTargets,
   runCost,
+  isBinaryFile,
   runFile,
   runChecks,
   runOverview,
@@ -123,6 +124,8 @@ export interface RunDetail {
   hasRunDir: boolean;
   /** Every file in the run folder, sorted, `/`-separated. */
   files: string[];
+  /** The files with no text to show (screenshots, videos): listed, but not opened. */
+  binaryFiles: string[];
   sections: OverviewSection[];
 }
 
@@ -131,6 +134,8 @@ const WAITING: Run["state"][] = ["needs_human", "needs_info"];
 // Decided on the route Fastify matched, never on the raw URL, which can spell a path many ways.
 const PUBLIC_ROUTES = new Set(["/", "/*"]);
 const ALL_LIMIT = 200;
+// A run file shown in the page is read whole and sent as JSON; logs and reports stay far below this.
+const MAX_FILE_BYTES = 1024 * 1024;
 
 function issueNumber(value: string): number {
   const n = Number(value);
@@ -390,6 +395,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
       issue: run.issue_number === null ? null : { number: run.issue_number, title: synced?.title ?? run.title, url: synced?.url ?? null },
       hasRunDir: overview.hasRunDir,
       files: overview.files,
+      binaryFiles: overview.files.filter((f) => isBinaryFile(join(overview.runDir, f))),
       sections: overview.sections.map((s) => redactSection(s, redact)),
     };
   });
@@ -415,9 +421,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
   app.get<{ Params: { key: string; id: string; "*": string } }>("/api/projects/:key/runs/:id/files/*", async (req) => {
     const ctx = projects.byKey(req.params.key);
     const run = runOf(ctx, req.params.id);
-    const file = runFile(ctx.store, ctx.project, run.id, req.params["*"]);
+    if (req.params["*"] === "") throw new BadRequest("Name a file of the run folder.");
+    // The page shows the whole file at once; a bigger one is opened from the run folder.
+    const file = runFile(ctx.store, ctx.project, run.id, req.params["*"], { maxBytes: MAX_FILE_BYTES });
     // A screenshot or other binary file has no text to show.
-    if (file.text.includes(String.fromCharCode(0))) throw new BadRequest(`"${file.path}" is not a text file.`);
+    if (file.binary) throw new BadRequest(`"${file.path}" is not a text file.`);
     return { path: file.path, text: redactorOf(ctx, run)(file.text) };
   });
 

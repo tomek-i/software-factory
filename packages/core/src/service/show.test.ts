@@ -5,7 +5,7 @@ import { tempDir } from "../../test/helpers.js";
 import { runDirOf } from "../pipeline/driver.js";
 import { Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
-import { latestChecks, latestReviews, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
+import { isBinary, latestChecks, latestReviews, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n";
@@ -122,9 +122,23 @@ describe("latestReviews", () => {
 describe("runFile and resolveInRunDir", () => {
   it("returns a file as it is on disk, by short name or path", () => {
     const { store, project, run } = setup({ "triage.md": TRIAGE, "round-2/checks.md": checks("PASS", "two"), "round-10/checks.md": checks("PASS", "ten") });
-    expect(runFile(store, project, run.id, "triage")).toEqual({ run: expect.objectContaining({ id: run.id }), path: "triage.md", text: TRIAGE });
+    expect(runFile(store, project, run.id, "triage")).toEqual({ run: expect.objectContaining({ id: run.id }), path: "triage.md", text: TRIAGE, binary: false });
     expect(runFile(store, project, run.id, "checks").path).toBe("round-10/checks.md");
     expect(runFile(store, project, run.id, "round-2\\checks.md").text).toBe(checks("PASS", "two"));
+  });
+
+  it("tells text from binary, and refuses a file over the size given", () => {
+    expect(isBinary(Buffer.from("plain text\n"))).toBe(false);
+    expect(isBinary(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]))).toBe(true); // NUL
+    expect(isBinary(Buffer.from([0x41, 0xff, 0xfe, 0x41]))).toBe(true); // not UTF-8, no NUL
+    // Cut in the middle of "é": still text as the head of a file, not as a whole file.
+    const cut = Buffer.from("café", "utf8").subarray(0, 4);
+    expect(isBinary(cut, true)).toBe(false);
+    expect(isBinary(cut)).toBe(true);
+
+    const { store, project, run } = setup({ "triage.md": TRIAGE });
+    expect(() => runFile(store, project, run.id, "triage", { maxBytes: 10 })).toThrow(/^"triage\.md" is 0\.0 MB, too big to show here \(the limit is 0\.0 MB\)\. Open it from the run folder\.$/);
+    expect(runFile(store, project, run.id, "triage", { maxBytes: TRIAGE.length }).text).toBe(TRIAGE);
   });
 
   it("refuses paths outside the run folder and names the files when one is missing", () => {
