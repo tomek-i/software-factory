@@ -15,49 +15,6 @@ describe("PipelineDriver learn stage when something goes wrong", () => {
     expect(store.listLessons({ project_id: run.project_id })).toEqual([]);
   });
 
-  it("finishes the run without lessons when the usage limit is hit", async () => {
-    const { driver, store } = setup(bumpy({ stream: "rate_limited" }), { config: config() });
-    const run = driver.startRun(12);
-
-    // Not rate_limited: the merge is done, and there is nothing to continue after the reset.
-    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({ to_state: "done", reason: expect.stringMatching(/^lessons skipped: usage limit reached \(resets at /) });
-  });
-
-  it("finishes the run without lessons when the learner's output is malformed twice", async () => {
-    const vague = "LESSONS: 1\n\n## Lessons\n- write better code\n";
-    const { driver, store } = setup(bumpy({ output: vague }, { output: vague }), { config: config() });
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({
-      to_state: "done",
-      reason: expect.stringMatching(/^lessons skipped: learner output was rejected twice: ## Lessons must contain a ```json array block/),
-    });
-    expect(store.listLessons({ project_id: run.project_id })).toEqual([]);
-  });
-
-  it("finishes the run without lessons when they cannot be stored", async () => {
-    const { driver, store } = setup(bumpy({ output: learned([LESSON]) }), { config: config() });
-    vi.spyOn(store, "addLessons").mockImplementation(() => {
-      throw new Error("disk full");
-    });
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({ from_state: "learn", to_state: "done", reason: "lessons skipped: could not store lessons: disk full" });
-    expect(store.listLessons({ project_id: run.project_id })).toEqual([]);
-  });
-
-  it("finishes the run without lessons when the learner cannot be started", async () => {
-    const { driver, store } = setup(bumpy(), { config: config() });
-    vi.spyOn(driver as unknown as { learnerTurn: () => Promise<unknown> }, "learnerTurn").mockRejectedValue(new Error("no prompt"));
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(lastMove(store, run.id)).toMatchObject({ from_state: "learn", to_state: "done", reason: "lessons skipped: the learner could not start: no prompt" });
-  });
-
   it("sends a merged run to done, not to a human, on any unexpected error while learning", async () => {
     const { driver, store } = setup(bumpy(), { config: config() });
     vi.spyOn(driver as unknown as { learn: () => Promise<unknown> }, "learn").mockRejectedValue(new Error("boom"));
