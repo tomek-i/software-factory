@@ -50,6 +50,30 @@ export function tempDir(prefix = "factory-test-"): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+/** `count` strings of up to `maxLength` pieces from `alphabet`, the same every run (a seeded generator). */
+export function randomStrings(alphabet: string[], count: number, maxLength: number, seed = 1): string[] {
+  let state = seed >>> 0;
+  const next = () => {
+    // mulberry32
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return Array.from({ length: count }, () => {
+    const length = Math.floor(next() * (maxLength + 1));
+    return Array.from({ length }, () => alphabet[Math.floor(next() * alphabet.length)]!).join("");
+  });
+}
+
+/** How long fn takes, in milliseconds. */
+export function elapsed(fn: () => unknown): number {
+  const start = performance.now();
+  fn();
+  return performance.now() - start;
+}
+
 /** A scripted fake `claude`: env to pass to the runner, plus a way to read what it was called with. */
 export function fakeClaude(steps: FakeStep[]) {
   const dir = tempDir("fake-claude-");

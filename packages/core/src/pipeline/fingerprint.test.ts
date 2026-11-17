@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Finding } from "@factory/shared";
 import type { CheckResult, SecretScan } from "../gate/gate.js";
+import { elapsed } from "../../test/helpers.js";
 import { findingsFingerprint, gateFingerprint, normaliseOutput } from "./fingerprint.js";
 
 const WORKTREE = "C:\\Users\\dev\\repo\\.worktrees\\run-1";
@@ -44,6 +45,14 @@ describe("normaliseOutput", () => {
 
   it("replaces JSON-escaped worktree paths too", () => {
     expect(normaliseOutput(`"file": "C:\\\\Users\\\\dev\\\\repo\\\\.worktrees\\\\run-1\\\\x.ts"`, [WORKTREE])).toBe(`"file": "<path>\\\\x.ts"`);
+  });
+
+  it("ignores trailing separators on a path, quickly however many there are", () => {
+    expect(normaliseOutput("at /repo/wt/x.ts", ["/repo/wt/\\/"])).toBe("at <path>/x.ts");
+    expect(normaliseOutput("at /repo/wt", ["//\\"])).toBe("at /repo/wt");
+    const long = `/repo/wt${"/".repeat(50_000)}x`;
+    expect(elapsed(() => normaliseOutput("at /repo/wt", [long]))).toBeLessThan(500);
+    expect(elapsed(() => expect(normaliseOutput("at /repo/wt/x", [`/repo/wt${"\\/".repeat(25_000)}`])).toBe("at <path>/x"))).toBeLessThan(500);
   });
 });
 

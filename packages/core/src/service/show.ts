@@ -185,7 +185,12 @@ export function runFile(store: Store, project: Project, ref: string, file: strin
   const runDir = runDirOf(project.repo_path, run.id);
   const files = listRunFiles(runDir);
   const path = resolveInRunDir(runDir, file, files);
-  const full = join(runDir, path);
+  // resolveInRunDir refuses paths outside the run folder already; this checks the resolved path itself.
+  const root = resolve(runDir);
+  const full = resolve(root, path);
+  if (!full.startsWith(root + sep)) {
+    throw new ServiceError(`"${file}" is outside the run folder; give a path inside it, e.g. triage.md or round-1/checks.md.`);
+  }
   if (!existsSync(full) || !statSync(full).isFile()) {
     throw new ServiceError(`No file "${path}" in the run folder of ${run.id}. Files there:\n${plainFileList(files)}`);
   }

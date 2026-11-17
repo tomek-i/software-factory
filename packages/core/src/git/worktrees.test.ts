@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { git, GIT_TEST_TIMEOUT, repoWithRemote, tempDir } from "../../test/helpers.js";
+import { elapsed, git, GIT_TEST_TIMEOUT, randomStrings, repoWithRemote, tempDir } from "../../test/helpers.js";
 import { branchName, createWorktree, gitEvidence, GitError, removeWorktree, slugify } from "./worktrees.js";
 
 // Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
@@ -17,6 +17,24 @@ describe("slugify / branchName", () => {
     expect(slugify("word ".repeat(20))).not.toMatch(/-$/);
     expect(branchName(12, "Fix the login page")).toBe("factory/12-fix-the-login-page");
     expect(branchName(null, "idea")).toBe("factory/new-idea");
+  });
+
+  it("gives the same slugs as the regexes it replaced, quickly on long input", () => {
+    const regexSlugify = (text: string, max = 40) =>
+      text
+        .normalize("NFKD")
+        .replace(/[̀-ͯ]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, max)
+        .replace(/-+$/, "") || "work";
+    for (const text of randomStrings(["a", "B", "1", "-", " ", "é", ".", "日"], 5000, 20, 176)) {
+      for (const max of [40, 5, 1]) expect(slugify(text, max), JSON.stringify(text)).toBe(regexSlugify(text, max));
+    }
+    for (const text of [" ".repeat(50_000) + "a", "-".repeat(50_000) + "a" + "!".repeat(50_000)]) {
+      expect(elapsed(() => expect(slugify(text)).toBe("a"))).toBeLessThan(500);
+    }
   });
 
   it("only yields names git accepts", () => {

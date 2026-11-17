@@ -2,8 +2,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
-import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "../../test/helpers.js";
-import { declaredDependencies, diffHardRuleHits, globToRegExp } from "./hard-rules.js";
+import { elapsed, git, GIT_TEST_TIMEOUT, randomStrings, repoWithRemote } from "../../test/helpers.js";
+import { declaredDependencies, diffHardRuleHits, globToRegExp, goDirective, tomlHeader } from "./hard-rules.js";
 
 // Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -166,5 +166,41 @@ describe("globToRegExp", () => {
 describe("declaredDependencies", () => {
   it("ignores files that are not manifests", () => {
     expect(declaredDependencies("src/index.ts", "import x from 'y'")).toBeUndefined();
+  });
+});
+
+describe("manifest line parsers", () => {
+  const regexHeader = (line: string) => /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(line)?.[1];
+  const regexDirective = (line: string) => {
+    const m = /^(require|replace)\s+(.+)$/.exec(line);
+    return m ? { kind: m[1], entry: m[2] } : undefined;
+  };
+
+  it("reads TOML table headers as the regex did", () => {
+    expect(tomlHeader("[tool.poetry.dependencies]")).toBe("tool.poetry.dependencies");
+    expect(tomlHeader("[[ tool.uv.index ]]")).toBe("tool.uv.index");
+    expect(tomlHeader("[  ]")).toBe(" ");
+    expect(tomlHeader("[]")).toBeUndefined();
+    expect(tomlHeader("[a] = 1")).toBeUndefined();
+    for (const line of randomStrings(["[", "]", " ", "\t", "a", ".", '"'], 10_000, 10, 176)) {
+      expect(tomlHeader(line), JSON.stringify(line)).toBe(regexHeader(line));
+    }
+  });
+
+  it("reads one-line go.mod directives as the regex did", () => {
+    expect(goDirective("require golang.org/x/net v0.1.0")).toEqual({ kind: "require", entry: "golang.org/x/net v0.1.0" });
+    expect(goDirective("replace a => b v1")).toEqual({ kind: "replace", entry: "a => b v1" });
+    expect(goDirective("requirex y")).toBeUndefined();
+    expect(goDirective("require")).toBeUndefined();
+    for (const line of randomStrings(["require", "replace", " ", "\t", "\r", "a", "("], 10_000, 6, 176)) {
+      expect(goDirective(line), JSON.stringify(line)).toEqual(regexDirective(line));
+    }
+  });
+
+  it("finishes quickly on long lines that made the regexes backtrack", () => {
+    expect(elapsed(() => tomlHeader(`[${" ".repeat(50_000)}a${" ".repeat(50_000)}`))).toBeLessThan(500);
+    expect(elapsed(() => tomlHeader(`[[${"a ".repeat(25_000)}]]x`))).toBeLessThan(500);
+    expect(elapsed(() => expect(goDirective(`require${" ".repeat(50_000)}\r`)).toBeUndefined())).toBeLessThan(500);
+    expect(elapsed(() => declaredDependencies("pyproject.toml", `[${" ".repeat(50_000)}a${" ".repeat(50_000)}\nx = 1\n`))).toBeLessThan(500);
   });
 });

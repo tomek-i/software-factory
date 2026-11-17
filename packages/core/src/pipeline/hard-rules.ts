@@ -204,9 +204,9 @@ function tomlDependencies(text: string): Map<string, string> {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim();
     if (!line || line.startsWith("#")) continue;
-    const header = /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(line);
-    if (header) {
-      table = header[1]!.toLowerCase().replace(/["']/g, "");
+    const header = tomlHeader(line);
+    if (header !== undefined) {
+      table = header.toLowerCase().replace(/["']/g, "");
       continue;
     }
     const assign = /^["']?([A-Za-z0-9_.-]+)["']?\s*=\s*/.exec(line);
@@ -226,6 +226,36 @@ function tomlDependencies(text: string): Map<string, string> {
     if (depTable && key !== "python") deps.set(key.replace(/[_.]/g, "-"), value);
   }
   return deps;
+}
+
+/**
+ * The name in a `[table]` or `[[array]]` header line (trimmed), or undefined when the line is not
+ * one. String handling rather than a regex, so a long line cannot make it backtrack.
+ */
+export function tomlHeader(line: string): string | undefined {
+  if (line[0] !== "[") return undefined;
+  for (const start of line[1] === "[" ? [2, 1] : [1]) {
+    const close = line.indexOf("]", start);
+    const tail = close === -1 ? "" : line.slice(close);
+    if (close <= start || (tail !== "]" && tail !== "]]")) continue;
+    const inner = line.slice(start, close);
+    // All whitespace: its last character, as the regex this replaces gave.
+    return inner.trim() || inner.slice(-1);
+  }
+  return undefined;
+}
+
+/** A one-line `require x v` or `replace a => b` (a trimmed go.mod line), or undefined. */
+export function goDirective(line: string): { kind: "require" | "replace"; entry: string } | undefined {
+  const kind = line.startsWith("require") ? "require" : line.startsWith("replace") ? "replace" : undefined;
+  if (!kind) return undefined;
+  let start = kind.length;
+  while (start < line.length && /\s/.test(line[start]!)) start++;
+  if (start === kind.length) return undefined;
+  // As the regex this replaces: only whitespace after the keyword leaves its last character as the
+  // entry, and a line terminator in the entry (which `.` does not match) is no match.
+  const entry = start < line.length ? line.slice(start) : start - kind.length >= 2 ? line.slice(-1) : "";
+  return entry && /^.*$/.test(entry) ? { kind, entry } : undefined;
 }
 
 function goDependencies(text: string): Map<string, string> {
@@ -248,8 +278,8 @@ function goDependencies(text: string): Map<string, string> {
     else if (block && line === ")") block = null;
     else if (block && line) add(block, line);
     else {
-      const single = /^(require|replace)\s+(.+)$/.exec(line);
-      if (single) add(single[1] as "require" | "replace", single[2]!);
+      const single = goDirective(line);
+      if (single) add(single.kind, single.entry);
     }
   }
   return deps;

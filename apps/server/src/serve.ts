@@ -68,14 +68,28 @@ export function defaultWebRoot(): string {
   return join(dirname(require.resolve("@factory/web/package.json")), "dist");
 }
 
-export function openInBrowser(url: string): void {
+/** The only URL `serve` opens: its own address with the token, which is hex. */
+const SERVE_URL = /^http:\/\/127\.0\.0\.1:\d{1,5}\/#token=[0-9a-f]{1,128}$/;
+
+/** Whether url has the exact shape `serve` builds, so nothing in it means anything to a shell. */
+export function isServeUrl(url: string): boolean {
+  return SERVE_URL.test(url);
+}
+
+/**
+ * Open the app in the browser. On Windows `cmd` parses the URL, so anything but the URL `serve`
+ * builds is refused without starting anything (the link is printed anyway). Returns whether it tried.
+ */
+export function openInBrowser(url: string, spawnFn: typeof spawn = spawn): boolean {
+  if (!isServeUrl(url)) return false;
   // `start` takes its first quoted argument as a window title, hence the empty one.
   const [command, args] =
     process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
-  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+  const child = spawnFn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
   // No browser to open is not a reason to stop serving: the link is printed.
   child.on("error", () => {});
   child.unref();
+  return true;
 }
 
 /**

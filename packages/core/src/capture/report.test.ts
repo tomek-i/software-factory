@@ -89,6 +89,20 @@ describe("screenshotsSection", () => {
     expect(text).toContain("- no before shot of invoices (/invoices): it is a new screen");
   });
 
+  it("keeps a backslash before a pipe from ending the table cell", () => {
+    const odd: CaptureResult = { ...result, pages: [{ name: "odd", path: "/a\\|b\\", screen: "existing", after: [{ width: 390, signals: [], error: "bad a\\|b and |c\\" }] }] };
+    const text = screenshotsSection({ result: odd, urls }, "r1");
+    const row = text.split("\n").find((line) => line.startsWith("| **odd**"))!;
+    expect(row).toBe("| **odd** `/a\\\\\\|b\\\\` 390px | _not captured_ | failed: `bad a\\\\\\|b and \\|c\\\\` |");
+    // Three cells: reading backslash escapes left to right, every pipe inside the text is escaped.
+    let pipes = 0;
+    for (let i = 0; i < row.length; i++) {
+      if (row[i] === "\\") i++;
+      else if (row[i] === "|") pipes++;
+    }
+    expect(pipes - 1).toBe(3);
+  });
+
   it("links the narrated video instead of the silent one, and says why there is no narration", () => {
     const narrated = { ...result, walkthrough: { ...result.walkthrough!, narrated: "/run/round-1/capture/walkthrough-narrated.mp4" } };
     const url = "https://github.com/o/r/releases/download/factory-media-r1/walkthrough-narrated.mp4";

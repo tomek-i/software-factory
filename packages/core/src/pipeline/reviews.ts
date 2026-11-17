@@ -34,15 +34,56 @@ export function refutedFindings(body: string, known: string[] = []): { id: strin
   const text = section(body, "refuted") ?? "";
   const ids = [...known].sort((a, b) => b.length - a.length);
   return text.split(/\r?\n/).flatMap((line) => {
-    const item = /^[-*]\s+(.+)$/.exec(line)?.[1];
+    const item = bulletItem(line);
     if (!item) return [];
     for (const id of ids) {
       const match = new RegExp(`^\`?${escapeRegExp(id)}\`?\\s*:\\s*(.+)$`).exec(item);
       if (match) return [{ id, reason: match[1]!.trim() }];
     }
-    const match = /^`?(.+?)`?\s*:\s+(.+)$/.exec(item);
-    return match ? [{ id: match[1]!, reason: match[2]!.trim() }] : [];
+    const refuted = splitRefuted(item);
+    return refuted ? [refuted] : [];
   });
+}
+
+const isSpace = (ch: string | undefined) => ch !== undefined && /\s/.test(ch);
+/** Text with no line terminator in it (what `.` matches). */
+const ONE_LINE = /^.*$/;
+
+/**
+ * The text of a top-level bullet (`- text` or `* text`), or undefined. String handling rather than a
+ * regex, so a long line cannot make it backtrack.
+ */
+function bulletItem(line: string): string | undefined {
+  if (line[0] !== "-" && line[0] !== "*") return undefined;
+  let start = 1;
+  while (isSpace(line[start])) start++;
+  if (start === 1) return undefined;
+  const item = line.slice(start);
+  return item && ONE_LINE.test(item) ? item : undefined;
+}
+
+/**
+ * `id: why` with an id that is not a known one: the id is the shortest text before a `:` that is
+ * followed by whitespace and a reason, without backticks around it. Linear time: `next[i]` is the
+ * first non-whitespace position at or after i.
+ */
+function splitRefuted(item: string): { id: string; reason: string } | undefined {
+  const n = item.length;
+  const next = new Array<number>(n + 1);
+  next[n] = n;
+  for (let i = n - 1; i >= 0; i--) next[i] = isSpace(item[i]) ? next[i + 1]! : i;
+  const from = (start: number) => {
+    for (let end = start + 1; end < n; end++) {
+      const colon = next[item[end] === "`" ? end + 1 : end]!;
+      if (item[colon] !== ":") continue;
+      // At least one whitespace character after the colon, then a reason (which may be whitespace).
+      const reasonAt = next[colon + 1]!;
+      const spaces = reasonAt - colon - 1;
+      if (spaces >= 1 && (reasonAt < n || spaces >= 2)) return { id: item.slice(start, end), reason: item.slice(colon + 1).trim() };
+    }
+    return undefined;
+  };
+  return (item[0] === "`" ? from(1) : undefined) ?? from(0);
 }
 
 /**

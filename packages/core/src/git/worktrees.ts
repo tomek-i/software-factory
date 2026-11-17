@@ -12,16 +12,23 @@ function git(run: CommandRunner, cwd: string, args: string[]): string {
   return result.stdout;
 }
 
+/** The text without leading and trailing dashes (a loop: an end-anchored regex backtracks on long runs). */
+function trimDashes(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text[start] === "-") start++;
+  while (end > start && text[end - 1] === "-") end--;
+  return text.slice(start, end);
+}
+
 /** A branch-safe slug: ascii letters, digits and single dashes, at most `max` characters. */
 export function slugify(text: string, max = 40): string {
-  const slug = text
+  const dashed = text
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, max)
-    .replace(/-+$/, "");
+    .replace(/[^a-z0-9]+/g, "-");
+  const slug = trimDashes(trimDashes(dashed).slice(0, max));
   return slug || "work";
 }
 
