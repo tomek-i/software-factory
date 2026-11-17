@@ -1,16 +1,19 @@
-import { fetchIssue, reconcileRuns, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
+import { fetchIssue, reconcileAndSweep, reportLines, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
 import { isTrustedIssue, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 import { plain, type Style } from "../style.js";
 
-/** `factory sync`: pull issues from GitHub, and finish runs whose PR was merged or closed there. */
+/**
+ * `factory sync`: pull issues from GitHub, finish runs whose PR was merged or closed there, and clean
+ * up the runs it finished, as `factory status` does.
+ */
 export function runSync(cwd: string, run?: CommandRunner, github?: GithubPort, style: Style = plain): string {
   return withProject(
     cwd,
     ({ store, project, config }) => {
       const result = syncIssues(store, project, run);
       const queued = store.listIssues({ project_id: project.id, queued: true }).length;
-      const reconciled = reconcileRuns(store, project, config, { run, github });
+      const reconciled = reportLines(reconcileAndSweep(store, project, config, { run, github }));
       const count = (n: number) => style.detail(String(n));
       return `${reconciled.map((l) => `${l}\n`).join("")}Synced ${project.github_repo}: ${count(result.open)} open, ${count(result.closed)} closed since last sync, ${count(queued)} queued.`;
     },
