@@ -175,7 +175,7 @@ What you can do about them: [Open review threads and failed checks](pipeline.md#
 - **Who does it:**
   - the worker that finished the run, once it has stopped;
   - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
-  - `factory status` and `factory run`, right away, for runs they finish themselves because their PR or issue was closed or merged on GitHub;
+  - `factory status`, `factory sync` and `factory run`, right away, for runs they finish themselves because their PR or issue was closed or merged on GitHub;
   - `factory status` and `factory run`, for finished runs not cleaned up yet, 2 minutes after they finished and only once no worker holds them.
     So a worker that is still stopping is never disturbed.
 - **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach):
@@ -185,7 +185,10 @@ What you can do about them: [Open review threads and failed checks](pipeline.md#
   - the next `factory status` or `factory run` tries again, and finishes a removal that stopped half way.
 - **`factory cleanup`** removes what older runs left behind.
   - `factory cleanup --dry-run` lists it first.
-  - Like the automatic cleanup, it waits 2 minutes after a run finished.
+  - Like the automatic cleanup, it waits 2 minutes after a run finished, and leaves a run a worker still holds to that worker.
+    It lists the runs it left alone, with why.
+  - `factory cleanup --now` skips the 2 minutes; a run a worker still holds is still left to it.
   - It also looks again at runs that were kept, so after you push their work, `factory cleanup` removes them.
+  - The web app does the same: "Clean up finished runs" on the Runs screen, and "Clean up" on a finished run's details ([Web mode](web-mode.md)).
 
 [All docs](README.md)

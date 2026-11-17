@@ -70,7 +70,10 @@ Then:
 The runs going on across projects, live.
 
 - Each shows its state, round, cost, whether a worker drives it and the agent's latest activity.
-- "All" shows finished runs too.
+- "All" shows finished runs too, and "Clean up finished runs", which does what `factory cleanup` does:
+  - it lists what it removed and what it kept, with why;
+  - and the runs it left alone: one a worker still holds, or one that finished in the last 2 minutes;
+  - "Also clean up the runs that just finished" does what `factory cleanup --now` does.
 - Click a run to open its details.
 
 ### Run details
@@ -84,6 +87,8 @@ What `factory show <run>` prints, in the browser.
   They hold agent output that read untrusted issue text, so the page never renders it as HTML.
 - Local paths in it are shortened: relative to the repo or worktree, and the home folder as `~`.
 - A run waiting for you has the same actions as in the Inbox.
+- A finished run whose worktree and branch are still there shows them, with why cleanup kept them, if it did.
+  "Clean up" removes them now, with the same protections as the automatic cleanup.
 
 ### Backlog
 
