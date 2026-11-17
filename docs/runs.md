@@ -154,7 +154,7 @@ Stopping:
   - It is your decision, recorded on the run; agents never dismiss alerts.
   - GitHub then updates the check in place, without a new CI run.
   - When no required check fails any more, the run goes back to merge, which checks everything again on the same commit.
-  - The merge approval you gave still holds, since the commit did not change.
+  - A merge approval you already gave still holds, since the commit did not change; without one, the merge gate decides as usual.
   - While a check still fails (other alerts are open, or GitHub has not updated it yet), the run keeps waiting.
   - Dismissing needs a `gh` login whose token may write code scanning alerts (the `security_events` scope, or Code scanning alerts: write).
 - **Any other failed required check** can't be accepted from the factory: branch protection would refuse the merge anyway.

@@ -20,6 +20,19 @@ Related docs:
 - After the author answers, `factory run` triages the issue again.
 - Run `factory sync` first so it sees an edited issue.
 
+### Triage again after a restart
+
+- A run sent back to intake or triage (for example `factory resume --to intake`) triages the issue again.
+- When the triage gate would wait for you again, your earlier approval at that gate carries over if all of these hold:
+  - the author is trusted, then and now;
+  - the issue's title and body are exactly the ones you approved (a fingerprint recorded when triage waited);
+  - triage said `APPROVE` then and now;
+  - the risk now is no higher than the risk you approved (LOW < MEDIUM < HIGH);
+  - your latest answer at the triage gate was an approval, not a send-back.
+- The carry-over is recorded as a triage decision by `system`, naming when you approved.
+- In any other case triage asks you again: an edited issue, a higher risk, an untrusted author, or no earlier approval.
+- Anything that changes the issue's body after triage, such as a later edit on GitHub, makes the fingerprint differ, so you are asked again.
+
 ## Refine
 
 - Runs only for an INCOMPLETE issue: a refine agent writes what the issue leaves open.
@@ -258,16 +271,28 @@ Related docs:
 
 ## Re-sync and merge gate
 
+The merge stage runs in this order: re-sync, quality gate on the merge commit, push, required checks, merge gate, required checks again, merge.
+
 - The engine merges the latest `origin/<default branch>` into the branch.
 - A conflict is undone and goes back to the builder with the conflicting files (`round-N/resync/conflicts.md`).
 - If the merge brought anything in, the quality gate runs again on the merge commit (`round-N/resync/checks.md`).
 - A failure goes back to the builder with the report.
-- Both a conflict and a failed re-check cost a review round.
+- A conflict or a failed re-check is a re-sync round, counted in `resync_rounds`, not in the review rounds or build iterations.
+  - Up to `loops.max_resyncs` (default 3), then the run waits for you.
+  - The same conflict (the same files) or the same re-check failure twice in a row stalls the run early.
+  - `factory status`, `factory show` and the web show the count once there is one (e.g. `b1 r2, 2 re-syncs`).
+  - `factory resume --reset-loops` resets it with the other counters.
+- Then the engine waits for the PR's required checks on that commit (see [Merge](#merge)), before anyone is asked.
+  - A failed check never reaches the merge gate: the run waits for you with the check's name and link.
+  - So does a check still running after `merge.checks_timeout_min`.
+  - When they pass, the gate's reasons (or its proceed decision) name them: `required checks passed on <sha>: ...`.
 - Then the `merge` gate decides.
 - The default is `human`: it always waits for you.
 - `factory approve` approves the commit that was waiting.
 - The approval holds while only re-syncs of the default branch land on top of it.
+  - A clean re-sync that passes the quality gate on the new commit merges without asking you again.
 - Any new commit from the builder needs a fresh approval.
+  - When a re-sync after your approval conflicted or failed its re-check, the new wait says so: `approved at <sha>, then main conflicted in README.md; the builder resolved it`.
 - In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`.
 - `approval.md` says `DECISION: PROCEED`, or `ESCALATE` with its reasons.
   - Reasons are product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, or low confidence.
@@ -280,7 +305,8 @@ Related docs:
   - `squash` titles the commit after the PR;
   - `rebase` rebases.
 - It always merges with `--match-head-commit <sha>`, so GitHub only merges the commit that passed the gate.
-- If branch protection requires status checks, it first waits for them (`gh pr checks --required`), looking every 30 seconds.
+- If branch protection requires status checks, the stage waits for them before the merge gate (`gh pr checks --required`), looking every 30 seconds.
+- It reads them again right before the merge, on the same commit, so a check re-run or a commit pushed while the gate was decided is still caught.
 - A failed check, or one still running after `merge.checks_timeout_min` (default 30), stops for you with the check's name and link.
 - What to do about a failed check: [When a required check fails](runs.md#when-a-required-check-fails).
 - Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required.

@@ -46,7 +46,6 @@ describe("waitingOn", () => {
 
   it("gives the failed required checks of the merge stage", () => {
     const { store, project, run } = parkedRun("merge", "required check failed on PR #7: CodeQL (https://ci/1)", {
-      pr: 7,
       failedChecks: [{ name: "CodeQL", link: "https://ci/1" }, { name: "test" }],
     });
     expect(waitingOn(store, project, run).failure).toEqual({ kind: "checks", items: [{ name: "CodeQL", link: "https://ci/1" }, { name: "test" }] });

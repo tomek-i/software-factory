@@ -44,7 +44,7 @@ export function exportSnapshot(store: Store, project: Project, options: { now?: 
     const runs = db
       .prepare(
         `SELECT id, issue_number, title, state, unsafe, branch, pr_number, build_iterations, review_rounds, critic_rounds,
-                round, waiting_gate, parked_from, created_at, updated_at
+                resync_rounds, round, waiting_gate, parked_from, created_at, updated_at
          FROM runs WHERE project_id = ? ORDER BY created_at, id`,
       )
       .all(project.id) as (Omit<Snapshot["runs"][number], "unsafe" | "state"> & { state: RunState; unsafe: number })[];
@@ -227,9 +227,9 @@ function mergeRuns(store: Store, project: Project, snapshot: Snapshot, report: I
   const exists = db.prepare("SELECT 1 FROM runs WHERE id = ?");
   const insertRun = db.prepare(
     `INSERT INTO runs (id, project_id, issue_number, title, state, unsafe, branch, pr_number, build_iterations, review_rounds,
-                       critic_rounds, round, waiting_gate, parked_from, created_at, updated_at)
+                       critic_rounds, resync_rounds, round, waiting_gate, parked_from, created_at, updated_at)
      VALUES (@id, @project_id, @issue_number, @title, @state, @unsafe, @branch, @pr_number, @build_iterations, @review_rounds,
-             @critic_rounds, @round, @waiting_gate, @parked_from, @created_at, @updated_at)`,
+             @critic_rounds, @resync_rounds, @round, @waiting_gate, @parked_from, @created_at, @updated_at)`,
   );
   const added = new Set<string>();
   for (const run of snapshot.runs) {

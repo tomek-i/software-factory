@@ -21,6 +21,10 @@ describe("PipelineDriver merge stage: bringing in the latest default branch", ()
 
     approve(store, run.id);
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    // The approval covered the re-synced commit: nobody was asked again.
+    expect(store.listDecisions(run.id).filter((d) => d.gate === "merge").map((d) => d.outcome)).toEqual(["escalate", "approve"]);
+    expect(store.listEvents(run.id).filter((e) => e.to_state === "needs_human")).toHaveLength(1);
+    expect(store.getRun(run.id)).toMatchObject({ resync_rounds: 0, review_rounds: 0 });
 
     // The finished run's worktree and branches are gone (see cleanup); its commits stay in the history.
     const worktree = store.getRun(run.id)!.worktree_path!;
@@ -46,14 +50,20 @@ describe("PipelineDriver merge stage: bringing in the latest default branch", ()
     });
     const run = driver.startRun(12);
     await driver.drive(run.id);
+    const approved = waitingCommit(store.listEvents(run.id))!;
     landOnMain(root, { "feature.txt": "something else\n" });
     approve(store, run.id);
 
-    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
+    // The builder's resolution is the branch's own commit, so the human is asked again, and told why.
+    expect(await driver.drive(run.id)).toMatchObject({
+      kind: "parked",
+      reason: `waiting at merge gate: gate is set to human; approved at ${approved.slice(0, 7)}, then main conflicted in feature.txt; the builder resolved it`,
+    });
     expect(merges).toEqual([]);
     const back = store.listEvents(run.id).find((e) => e.from_state === "merge" && e.to_state === "build")!;
     expect(back).toMatchObject({ reason: "merging main into the branch conflicts in feature.txt", data: { round: 1, conflicts: ["feature.txt"] } });
-    expect(store.getRun(run.id)).toMatchObject({ round: 2, review_rounds: 1 });
+    // A re-sync round, not a review round.
+    expect(store.getRun(run.id)).toMatchObject({ round: 2, resync_rounds: 1, review_rounds: 0, build_iterations: 0 });
     const rebuilt = fake.calls().filter((c) => c.role === "builder")[1]!;
     expect(rebuilt.stdin).toContain("Merging origin/main conflicts in:\n\n- feature.txt");
     expect(rebuilt.stdin).toContain("Merge origin/main into your branch with git merge");
@@ -61,9 +71,9 @@ describe("PipelineDriver merge stage: bringing in the latest default branch", ()
     expect(git(store.getRun(run.id)!.worktree_path!, "status", "--porcelain")).toBe("");
   });
 
-  it("stops at the review round cap when main still conflicts", async () => {
+  it("stops at the re-sync cap when main still conflicts", async () => {
     const { driver, store, root, pr } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], {
-      config: mergeConfig("pr: human\nmerge: always", "loops:\n  max_review_rounds: 1\n"),
+      config: mergeConfig("pr: human\nmerge: always", "loops:\n  max_resyncs: 1\n"),
     });
     const run = driver.startRun(12);
     expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at pr gate: gate is set to human" });
@@ -72,7 +82,7 @@ describe("PipelineDriver merge stage: bringing in the latest default branch", ()
 
     expect(await driver.drive(run.id)).toMatchObject({
       kind: "parked",
-      reason: "still cannot merge after round 1: review round cap reached (1)",
+      reason: "still cannot merge after round 1: re-sync round cap reached (1)",
     });
     expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "merge", waiting_gate: null });
     // Approving the PR gate skips the PR stage, so the merge stage takes the PR out of draft.
@@ -91,7 +101,8 @@ describe("PipelineDriver merge stage: bringing in the latest default branch", ()
       output: READY,
     };
     const { driver, store, fake, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, addExtra, CODE_PASS], {
-      config: mergeConfig("pr: human\nmerge: always"),
+      // Neither cap is touched by a failed re-sync.
+      config: mergeConfig("pr: human\nmerge: always", "loops:\n  max_review_rounds: 1\n  max_build_iterations: 1\n"),
     });
     const run = driver.startRun(12);
     await driver.drive(run.id);
@@ -102,7 +113,9 @@ describe("PipelineDriver merge stage: bringing in the latest default branch", ()
     const rebuilt = fake.calls().filter((c) => c.role === "builder")[1]!;
     expect(rebuilt.stdin).toContain("After origin/main was merged into your branch, the quality gate failed in round 1. Its report:");
     expect(rebuilt.stdin).toContain("extra.txt is missing");
-    expect(store.getRun(run.id)).toMatchObject({ round: 2, review_rounds: 1 });
+    expect(store.getRun(run.id)).toMatchObject({ round: 2, resync_rounds: 1, review_rounds: 0, build_iterations: 0 });
+    const back = store.listEvents(run.id).find((e) => e.from_state === "merge" && e.to_state === "build")!;
+    expect(back.data).toMatchObject({ round: 1, resync: true, fingerprint: expect.stringMatching(/^gate:/) });
   });
 
   it("pushes a re-synced commit whose push failed before, and an approval survives the escalation in between", async () => {

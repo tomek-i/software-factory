@@ -27,6 +27,8 @@ export interface Run {
   build_iterations: number;
   review_rounds: number;
   critic_rounds: number;
+  /** Times the merge stage went back to the builder after a re-sync with the default branch failed. */
+  resync_rounds: number;
   /** Times the run has entered the quality gate; names the current `round-N` folder. Never reset. */
   round: number;
   waiting_gate: Gate | null;
@@ -72,7 +74,7 @@ export type RunPatch = Partial<Pick<Run, "branch" | "worktree_path" | "pr_number
 /** Everything the state machine itself may write. */
 export type StatePatch = RunPatch &
   Partial<
-    Pick<Run, "build_iterations" | "review_rounds" | "critic_rounds" | "round" | "parked_from" | "lease_owner" | "lease_expires_at">
+    Pick<Run, "build_iterations" | "review_rounds" | "critic_rounds" | "resync_rounds" | "round" | "parked_from" | "lease_owner" | "lease_expires_at">
   >;
 
 export type AgentRunStatus = "running" | "ok" | "error" | "rate_limited" | "cancelled";

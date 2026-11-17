@@ -51,7 +51,7 @@ describe("PipelineDriver merge stage: required checks and GitHub's answer", () =
 
     expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "required check failed on PR #7: test (windows-latest) (https://ci/9)" });
     expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "merge" });
-    expect(store.listEvents(run.id).at(-1)?.data).toEqual({ pr: 7, failedChecks: [{ name: "test (windows-latest)", link: "https://ci/9" }] });
+    expect(store.listEvents(run.id).at(-1)?.data).toEqual({ failedChecks: [{ name: "test (windows-latest)", link: "https://ci/9" }] });
     expect(merges).toEqual([]);
   });
 

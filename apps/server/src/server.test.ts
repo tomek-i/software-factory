@@ -316,6 +316,7 @@ describe("runs", () => {
       waitingGate: null,
       build: 1,
       review: 1,
+      resyncs: 0,
       cost: 0,
       held: false,
       updatedAt: expect.any(String),
@@ -439,7 +440,7 @@ describe("runs", () => {
     it(
       "lists a run's failed checks with their alerts, and dismisses one, going back to merge once the check passes",
       async () => {
-        const { s, run, app, base } = waiting({ parked_from: "merge", pr_number: 7 }, "required check failed on PR #7: CodeQL", { pr: 7, failedChecks: [{ name: "CodeQL" }] });
+        const { s, run, app, base } = waiting({ parked_from: "merge", pr_number: 7 }, "required check failed on PR #7: CodeQL", { failedChecks: [{ name: "CodeQL" }] });
         const alert = (number: number) => ({ number, rule: "js/missing-rate-limiting", description: "Missing rate limiting", severity: "high", tool: "CodeQL", url: `https://gh/a/${number}` });
         s.pr.alerts = [alert(26), alert(27)];
         s.pr.checks = [[{ name: "CodeQL", bucket: "fail" }]];

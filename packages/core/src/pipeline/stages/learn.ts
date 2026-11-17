@@ -102,7 +102,9 @@ function learnReasons(ctx: StageContext, run: Run): string[] {
         const why = Array.isArray(waited) ? waited.filter((r): r is string => typeof r === "string") : [];
         for (const hit of why.filter((r) => r.startsWith("hard rule: "))) reasons.push(`stopped by a ${clip(hit)}`);
         if (event.from_state === "merge" && ctx.deps.config.gates.merge === "auto") {
-          const approver = why.filter((r) => !r.startsWith("hard rule") && r !== "gate is set to human");
+          // The merge stage adds notes of its own (passed checks, an earlier approval); they are not the approver's.
+          const notes = ["hard rule", "required checks passed on ", "approved at "];
+          const approver = why.filter((r) => !notes.some((n) => r.startsWith(n)) && r !== "gate is set to human");
           if (approver.length) reasons.push(`the approver escalated: ${clip(approver.join("; "))}`);
         }
       }

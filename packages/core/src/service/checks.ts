@@ -131,7 +131,8 @@ export function dismissAlert(
   // GitHub updates the check in place once the alert is dismissed: no re-run is needed.
   const failing = failedOf(github, pr).map((c) => c.name);
   if (failing.length) return { run: store.getRun(target.id)!, alert, check: check.name, failing, continued: false };
-  // No commit: the earlier merge approval still covers this head, and the merge stage checks everything again.
+  // No commit: a merge approval given earlier still covers this head (without one the gate decides),
+  // and the merge stage checks everything again.
   new RunMachine(store, trusted).resume(target.id, "merge", {
     comment: `${check.name} passes after dismissing alert #${alert.number}`,
     data: { dismissed: { alert: alert.number, rule: alert.rule, tool: alert.tool, reason, comment } },

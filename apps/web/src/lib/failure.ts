@@ -12,7 +12,7 @@ export const TARGET_HELP: Partial<Record<RunState, string>> = {
   review: "the reviews run again on the same commit",
   capture: "the screenshots are taken again",
   pr: "the pull request is opened or updated again",
-  merge: "the merge stage checks everything again on the same commit, then merges",
+  merge: "the merge stage checks everything again on the same commit, then merges or asks you",
   learn: "the learner looks at the run again",
   rejected: "ends the run as rejected",
   cancelled: "ends the run as cancelled",
