@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { chromiumInstalled } from "../capture/browser.js";
-import { AttachmentError, attachmentProblem, githubProfileDir, launchProblem, newAttachmentLink, NotSignedInError, uploadAttachments } from "./attachments.js";
+import { AttachmentError, attachmentProblem, factoryDataDir, githubProfileDir, launchProblem, newAttachmentLink, NotSignedInError, uploadAttachments } from "./attachments.js";
 
 describe("githubProfileDir", () => {
   it("is in the user's local app data on Windows and their config dir elsewhere, never in a repo", () => {
@@ -15,6 +15,13 @@ describe("githubProfileDir", () => {
     expect(githubProfileDir({ XDG_CONFIG_HOME: "/cfg" }, "darwin", "/Users/a")).toBe(join("/cfg", "software-factory", "github-browser"));
     // Moved with the rest of the factory's data folder, as tests do.
     expect(githubProfileDir({ FACTORY_DATA_DIR: "/data", LOCALAPPDATA: "C:\\L" }, "win32", "C:\\U")).toBe(join("/data", "github-browser"));
+  });
+});
+
+describe("factoryDataDir", () => {
+  it("refuses the user's real folder under Vitest, so a test run without the setup file cannot touch it", () => {
+    expect(() => factoryDataDir({ VITEST: "true", LOCALAPPDATA: "C:\\L" }, "win32", "C:\\U")).toThrow(/FACTORY_DATA_DIR is not set under Vitest/);
+    expect(factoryDataDir({ VITEST: "true", FACTORY_DATA_DIR: "/data" }, "win32", "C:\\U")).toBe("/data");
   });
 });
 

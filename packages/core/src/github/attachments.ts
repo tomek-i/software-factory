@@ -44,6 +44,9 @@ export function githubProfileDir(env: NodeJS.ProcessEnv = process.env, platform:
  */
 export function factoryDataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home = homedir()): string {
   if (env.FACTORY_DATA_DIR) return env.FACTORY_DATA_DIR;
+  // Only the root vitest config's setup file sets FACTORY_DATA_DIR. Vitest started without it (from a
+  // package folder, say) would otherwise write temp test repos into the user's real project list.
+  if (env.VITEST) throw new Error("FACTORY_DATA_DIR is not set under Vitest: run the tests from the repo root, so the root vitest.config.ts sets it");
   const base = platform === "win32" ? (env.LOCALAPPDATA ?? join(home, "AppData", "Local")) : (env.XDG_CONFIG_HOME ?? join(home, ".config"));
   return join(base, "software-factory");
 }
