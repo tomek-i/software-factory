@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict, type RunState } from "@factory/shared";
 import { Store, type StatePatch } from "../store/store.js";
-import { allowedTargets, resumeTargets, RunMachine, TransitionError, type Evidence } from "./transitions.js";
+import { allowedTargets, resumeTargets, RunMachine, sendBackTargets, TransitionError, type Evidence } from "./transitions.js";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -588,10 +588,43 @@ describe("RunMachine.resume", () => {
     expect(() => other.machine.resume(other.run.id, "triage", { comment: "x" })).toThrow(/not waiting for a human/);
   });
 
+  it("lets a human send a run waiting at a gate back to an earlier working stage, resetting the loops", () => {
+    const { machine, store, run, at } = setup();
+    at("review");
+    store.writeState(run.id, "review", { review_rounds: 2, build_iterations: 3, critic_rounds: 1 });
+    machine.transition(run.id, "needs_human", { reason: "review round cap reached (3)", patch: { waiting_gate: "review" } });
+
+    const resumed = machine.resume(run.id, "build", { comment: "fix the race in feature.txt", resetLoops: true });
+
+    expect(resumed).toMatchObject({ state: "build", waiting_gate: null, parked_from: null, review_rounds: 0, build_iterations: 0, critic_rounds: 0 });
+    expect(store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "review", outcome: "approve", actor: "human", comment: "fix the race in feature.txt" });
+    expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "needs_human", to_state: "build", data: { gate: "review", resetLoops: true } });
+  });
+
+  it("carries extra facts about the decision on the resume event", () => {
+    const { machine, store, run } = parked(null);
+    machine.resume(run.id, "build", { comment: "go", data: { dismissed: { alert: 26 } } });
+    expect(store.listEvents(run.id).at(-1)!.data).toEqual({ dismissed: { alert: 26 }, gate: "escalation", resetLoops: false });
+  });
+
   it("records rejections as escalation decisions when no gate was waiting", () => {
     const { machine, store, run } = parked(null);
     expect(machine.resume(run.id, "rejected", { comment: "not worth it" }).state).toBe("rejected");
     expect(store.listDecisions(run.id)).toMatchObject([{ gate: "escalation", outcome: "reject" }]);
+  });
+});
+
+describe("sendBackTargets", () => {
+  it("lists the working stages before the gate, never the gate's own stage or where approving leads", () => {
+    expect(sendBackTargets({ parked_from: "triage" })).toEqual([]);
+    expect(sendBackTargets({ parked_from: "critic" })).toEqual(["refine"]);
+    expect(sendBackTargets({ parked_from: "review" })).toEqual(["refine", "build"]);
+    expect(sendBackTargets({ parked_from: "pr" })).toEqual(["refine", "build", "review"]);
+    expect(sendBackTargets({ parked_from: "merge" })).toEqual(["refine", "build", "review"]);
+    expect(sendBackTargets({ parked_from: null })).toEqual([]);
+    for (const parked of ["critic", "review", "pr", "merge"] as const) {
+      for (const to of sendBackTargets({ parked_from: parked })) expect(resumeTargets({ parked_from: parked })).toContain(to);
+    }
   });
 });
 

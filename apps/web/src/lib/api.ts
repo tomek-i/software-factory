@@ -52,7 +52,56 @@ export interface RunRow {
   held: boolean;
   updatedAt: string;
   reason?: string;
+  /** At a gate only the working stages before it; approve, reject and cancel are their own actions. */
   resumeTargets: RunState[];
+  /** The loop cap that stopped it, e.g. "review round cap reached (3)". */
+  capReached?: string;
+  /** What it waits on that the builder could fix. */
+  failure?: WaitingFailure;
+}
+
+/** One thing that failed. Written from agent output or GitHub: show it as text only. */
+export interface FailureItem {
+  name: string;
+  summary?: string;
+  link?: string;
+  file?: string;
+  line?: number;
+}
+
+export interface WaitingFailure {
+  kind: "checks" | "quality_gate" | "findings";
+  items: FailureItem[];
+  /** The run file it comes from. */
+  source?: string;
+}
+
+export interface CodeScanningAlert {
+  number: number;
+  rule: string;
+  description: string;
+  severity: string;
+  tool: string;
+  file?: string;
+  line?: number;
+  url: string;
+}
+
+/** The required checks that failed on a run's PR; a check with alerts is code scanning. */
+export interface RunChecks {
+  pr: number;
+  failed: { name: string; link?: string; alerts: CodeScanningAlert[] }[];
+  otherAlerts: CodeScanningAlert[];
+}
+
+/** GitHub's reasons for dismissing a code scanning alert. */
+export const DISMISS_REASONS = ["false positive", "won't fix", "used in tests"] as const;
+export type DismissReason = (typeof DISMISS_REASONS)[number];
+
+export interface Dismissed {
+  check: string;
+  failing: string[];
+  continued: boolean;
 }
 
 /** A finding a review or the verifier said blocks the run. */
@@ -221,7 +270,11 @@ export const api = {
   queue: (project: string, issue: number, queued: boolean) => request<object>("POST", `/api/projects/${project}/issues/${issue}/${queued ? "queue" : "unqueue"}`),
   approve: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "approve"), { ...shown(run), message }),
   reject: (run: RunRow, message: string) => request<object>("POST", runPath(run, "reject"), { ...shown(run), message }),
-  resume: (run: RunRow, to: RunState, message: string) => request<object>("POST", runPath(run, "resume"), { ...shown(run), to, message }),
+  resume: (run: RunRow, to: RunState, message: string, resetLoops: boolean) =>
+    request<object>("POST", runPath(run, "resume"), { ...shown(run), to, message, resetLoops }),
+  checks: (run: Pick<RunRow, "project" | "id">) => request<RunChecks>("GET", runPath(run, "checks")),
+  dismiss: (run: RunRow, alert: number, reason: DismissReason, comment: string) =>
+    request<Dismissed>("POST", runPath(run, "dismiss"), { ...shown(run), alert, reason, comment }),
   cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
   drafts: (project?: string) => request<DraftView[]>("GET", `/api/drafts${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   draft: (project: string, id: string) => request<DraftDetail>("GET", draftPath(project, id)),

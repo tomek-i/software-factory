@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { DEFAULT_PORT } from "@factory/server";
+import { runChecksList, runDismiss } from "./commands/checks.js";
 import { runCleanup } from "./commands/cleanup.js";
 import { runConfigReset } from "./commands/config.js";
 import { runInit } from "./commands/init.js";
@@ -235,6 +236,25 @@ export function buildProgram(): Command {
     .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
       if (options.run) refuseRunningOnItself(process.cwd());
       console.log(await runResume(process.cwd(), ref, options, { style: styleFor(process.stdout) }));
+    });
+
+  program
+    .command("checks")
+    .description("list the required checks that failed on a run's PR, with their open code scanning alerts")
+    .argument("<run>", "run id, id prefix, or issue number")
+    .action((ref: string) => {
+      console.log(runChecksList(process.cwd(), ref));
+    });
+
+  program
+    .command("dismiss")
+    .description("dismiss a code scanning alert that fails a run's required check (e.g. a false positive); the run goes back to merge once the check passes")
+    .argument("<run>", "run id, id prefix, or issue number")
+    .argument("<alert>", "alert number, as `factory checks` lists it")
+    .requiredOption("--reason <reason>", "false-positive, wont-fix or used-in-tests")
+    .requiredOption("-m, --message <text>", "why (required, sent to GitHub and stored with the decision)")
+    .action((ref: string, alert: string, options: { reason: string; message: string }) => {
+      console.log(runDismiss(process.cwd(), ref, alert, options));
     });
 
   const lessons = program

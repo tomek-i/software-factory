@@ -16,7 +16,21 @@ Back to the [README](../README.md#web-mode) for the commands.
 
 - **Inbox**: runs waiting for you.
   - A run at a gate can be approved (with an optional note) or rejected (with a reason).
+  - "Send back to…" sends a run at a gate back to an earlier working stage (refine, build or review, whichever come before the gate), with a message.
+    - It is hidden at a gate with none before it (triage).
   - A run parked for you outside a gate, such as a failed agent, can be resumed to a stage you pick, with a reason.
+  - Each target says what happens and what runs again.
+    - Picking intake or triage warns that triage, the spec critic and the build all run again, at a cost.
+  - "Reset loop counters" gives the build, review and spec loops a fresh budget, as `--reset-loops` does.
+    - It starts ticked, saying which cap, when a loop cap stopped the run: without it the run stops again at once.
+  - "Send to builder with this failure" is offered when the run waits on something concrete: failed required checks, a failed quality gate, or findings the verifier confirmed.
+    - It opens the form with target build, the counters reset, and the failure as the message: check name, summary, link, file and line where known.
+    - For a failed code scanning check the message lists its open alerts, e.g. `CodeQL: Missing rate limiting (js/missing-rate-limiting) at apps/server/src/drafts.ts:296 (link)`.
+    - Everything in it can be edited before sending.
+  - "Failed checks…" lists the required checks that failed on the run's PR (see [When a required check fails](runs.md#when-a-required-check-fails)).
+    - A code scanning check lists its open alerts, each with "Dismiss…": one of GitHub's reasons and a required comment.
+    - Once no required check fails, the run goes back to merge; otherwise it keeps waiting.
+    - Any other failed required check can only go to the builder.
   - Any of them can be cancelled.
   - Runs waiting for the issue's author are listed below.
   - An approved or resumed run is continued by the worker within a few seconds, as long as its issue is queued.
@@ -31,7 +45,7 @@ Back to the [README](../README.md#web-mode) for the commands.
   - The gate the run waits at, and the full reason.
   - The verdicts of its run folder: triage, spec, build, checks, reviews with their blocking findings, approval, learn.
   - Its files, each opened as plain text.
-  - A run waiting for you can be approved, rejected, resumed or cancelled there, with the Inbox's rules.
+  - A run waiting for you can be approved, rejected, sent back, resumed or cancelled there, with the Inbox's rules, including "Send to builder with this failure" and "Failed checks…".
   - Run files hold agent output that read untrusted issue text, so the page never renders it as HTML.
   - Local paths in it are shortened: relative to the repo or worktree, and the home folder as `~`.
 - **Backlog**: each project's open issues.
@@ -51,7 +65,7 @@ Back to the [README](../README.md#web-mode) for the commands.
   - Drafts are named by their exact id here, not a prefix.
   - One issue writer runs per project at a time; starting another is refused until it ends or is stopped.
 - The project picker in the header narrows every screen to one project.
-- The actions are the CLI's (`factory approve`, `reject`, `resume`, `cancel`, `queue`, `unqueue`, `sync`, `new`), with the same rules.
+- The actions are the CLI's (`factory approve`, `reject`, `resume`, `checks`, `dismiss`, `cancel`, `queue`, `unqueue`, `sync`, `new`), with the same rules.
 - The run details are `factory show <run>`'s.
 - Live updates cover the runs `factory serve` itself drives.
 - A `factory run` in another terminal shows on the next refresh.
@@ -75,5 +89,6 @@ The session token:
 Other limits:
 
 - A decision is refused when the run has moved on since the page showed it.
+  - That covers sending back, resetting loops and dismissing an alert too.
 - Settings, `--unsafe` and config can't be changed through it.
 - The draft routes that read or write draft files take at most 60 requests per 10 seconds each, then answer 429 with `Retry-After`.

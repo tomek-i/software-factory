@@ -34,6 +34,8 @@ export * from "./drafts/draft.js";
 export * from "./drafts/writer.js";
 export * from "./service/errors.js";
 export * from "./service/runs.js";
+export * from "./service/waiting.js";
+export * from "./service/checks.js";
 export * from "./service/reconcile.js";
 export * from "./service/show.js";
 export * from "./service/lessons.js";
