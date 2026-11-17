@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isUnprintable } from "@factory/shared";
 import { describe, expect, it } from "vitest";
@@ -69,6 +69,15 @@ describe("factory export", () => {
     // Gitignored folders are still the working tree.
     const nested = exportTo(a.dir, join(a.root, ".factory", "snapshot.json"));
     expect(nested.warnings).toContainEqual(expect.stringMatching(/is inside the repository/));
+  });
+
+  it("warns when the repository is reached under another name for the same folder", () => {
+    const a = laptop();
+    // A link stands in for a Windows short name (C:\Users\RUNNER~1): the same folder, spelled differently from git's.
+    const link = join(tempDir("factory-snapshot-"), "repo-link");
+    symlinkSync(a.root, link, process.platform === "win32" ? "junction" : "dir");
+    const { warnings } = exportTo(a.dir, join(link, "snapshot.json"));
+    expect(warnings).toContainEqual(expect.stringMatching(/is inside the repository/));
   });
 });
 
