@@ -25,6 +25,19 @@ Severity:
 - **minor**: worth improving, but fine to merge as is.
 - **nit**: style or taste.
 
+Anything that weakens a protection is at least **major**, whatever your lens:
+
+- a way to become trusted or to skip a human gate (trust read from data a branch, an issue or an
+  imported file can plant);
+- untrusted data reaching a link, HTML, a shell, a query, a path or the terminal without validation
+  or escaping;
+- reading or writing outside the intended folder;
+- credentials, tokens or local paths leaking into logs, output or anything published.
+
+"Hard to exploit" or "needs a crafted file" lowers such a finding from critical to major, never to
+minor. Keep **minor** for hardening with no reachable path, or a second check on top of one that
+already holds.
+
 Only critical and major findings send the change back. Be precise: every finding needs evidence
 (file, line, what happens) that someone else can check. Do not pad the list.
 

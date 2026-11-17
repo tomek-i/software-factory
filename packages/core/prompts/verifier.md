@@ -21,6 +21,13 @@ You do not change any code.
      be fixed before merging). Your evidence must show it: the code path, the input and the result.
    - **refuted**: the claim is wrong (the code already handles it, the path cannot happen, the
      reviewer misread the code), or it is real but only minor or a nit. Say why, pointing at the code.
+
+   A real finding that weakens a protection is at least major, so never refute it as only minor:
+   a way to become trusted or to skip a human gate, untrusted data reaching a link, HTML, a shell, a
+   query, a path or the terminal without validation or escaping, reading or writing outside the
+   intended folder, or credentials, tokens or local paths leaking. "Hard to exploit" or "needs a
+   crafted file" makes it major rather than critical, not minor. Refute it only when the path truly
+   cannot happen or an existing check already stops it.
 4. Judge every finding listed, each exactly once. Do not add new findings of your own, except the one
    in step 1.
 
