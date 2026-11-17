@@ -117,6 +117,7 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 - Driver tests live next to the source as `packages/core/src/pipeline/driver.<area>.int.test.ts`. Put new ones in their own file so they run in parallel.
 - While working, run `pnpm test:unit` (seconds) and the targeted integration files (`pnpm vitest run <file>`); run the full suite (`pnpm test`) once at the end, with `pnpm lint` and `pnpm typecheck`.
 - Every test file gets its own temp `FACTORY_DATA_DIR` (`packages/core/test/setup-data-dir.ts`), so `factory init` in a test never adds to the user's project list.
+  Run Vitest from the repo root: without that setup file, `factoryDataDir` throws under Vitest rather than use the real folder.
 - `FACTORY_REQUIRE_BROWSER=1` makes the real-browser tests fail rather than skip without Chromium; `FACTORY_TEST_NARRATE=1` runs the real narrate plugin tests. See [Development](README.md#development).
 - `packages/core/test/claude-md.test.ts` checks that every path, symbol and link in this file exists.
 
