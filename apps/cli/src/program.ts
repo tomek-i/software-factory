@@ -1,4 +1,4 @@
-import { Command, Option } from "commander";
+import { Command, Option, type HelpConfiguration } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { DEFAULT_PORT } from "@factory/server";
 import { runChecksList, runDismiss } from "./commands/checks.js";
@@ -17,13 +17,41 @@ import { runExport, runImport } from "./commands/snapshot.js";
 import { runListLeases, runUpgrade } from "./commands/upgrade.js";
 import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork } from "./commands/work.js";
 import { refuseRunningOnItself } from "./self.js";
-import { styleFor } from "./style.js";
+import { colourEnabled, createStyle, styleFor, type Style } from "./style.js";
+
+/** How help looks: titles, command names and option flags styled, descriptions plain. */
+export function helpStyle(style: Style): HelpConfiguration {
+  return {
+    styleTitle: (text) => style.title(text),
+    styleCommandText: (text) => style.command(text),
+    styleSubcommandText: (text) => style.command(text),
+    styleOptionText: (text) => style.option(text),
+    styleArgumentText: (text) => style.option(text),
+  };
+}
+
+/** An error message with its leading `error:` label styled, as `main.ts` prints the factory's own errors. */
+export function styleError(message: string, style: Style): string {
+  return message.replace(/^error:/, (label) => style.error(label));
+}
 
 export function buildProgram(): Command {
   const program = new Command()
     .name("factory")
     .description("AI software factory: turns GitHub issues into reviewed, tested pull requests")
     .version("0.6.0"); // x-release-please-version (release-please bumps it on each release)
+
+  // Set before any subcommand is added: commander copies these settings to each subcommand it creates.
+  program
+    .configureOutput({
+      // Commander's own test ignores NODE_DISABLE_COLORS and TERM=dumb; ask the one the commands use.
+      getOutHasColors: () => colourEnabled(process.stdout),
+      getErrHasColors: () => colourEnabled(process.stderr),
+      outputError: (message, write) => write(styleError(message, styleFor(process.stderr))),
+    })
+    // Help is always painted: commander strips the codes when its stream gets no colour, so plain help is unchanged.
+    .configureHelp(helpStyle(createStyle(true)))
+    .showSuggestionAfterError();
 
   program
     .command("init")
