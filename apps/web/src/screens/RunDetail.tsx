@@ -217,8 +217,8 @@ function RunPage({ project, id }: { project: string; id: string }) {
                 <ul className="flex flex-wrap gap-1" aria-label="Run files">
                   {data.files.map((f) =>
                     binary.has(f) ? (
-                      <li key={f} className="min-w-0 max-w-full px-3 py-1.5 text-sm">
-                        <span className="break-all font-mono text-muted-foreground">{f}</span> <span className="text-xs text-muted-foreground">(not text, open it from the run folder)</span>
+                      <li key={f} className="min-w-0 max-w-full px-3 py-2 text-xs">
+                        <span className="break-all font-mono text-muted-foreground">{f}</span> <span className="text-muted-foreground">(not text, open it from the run folder)</span>
                       </li>
                     ) : (
                       <li key={f} className="min-w-0 max-w-full">
