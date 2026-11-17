@@ -143,7 +143,7 @@ export function approveDraft(ctx: ServiceContext, ref: string, deps: DraftDeps =
     if (err instanceof DraftError) throw new ServiceError(err.message);
     // What was created is recorded in the store, so approving again only does the rest.
     // Queuing comes with each approval, so a retry without it would leave the issues unqueued.
-    throw new ServiceError(`${(err as Error).message}\nApprove it again${deps.queue ? " with --queue" : ""} to finish; issues recorded as created are not created again.`);
+    throw new ServiceError(`${(err as Error).message}\nApprove it again to finish${deps.queue ? ", and ask to queue again (`--queue`)" : ""}; issues recorded as created are not created again.`);
   }
 }
 

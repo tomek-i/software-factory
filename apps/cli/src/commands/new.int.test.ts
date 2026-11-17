@@ -109,7 +109,11 @@ describe("factory new", () => {
       if (created.length === 2) throw new Error("GitHub is down");
       return createIssue(issue);
     };
-    await expect(runNew(dir, [], { approve: id, queue: true }, deps)).rejects.toThrow(/GitHub is down\nApprove it again with --queue to finish/);
+    // Without --queue the retry hint says nothing about queuing.
+    await expect(runNew(dir, [], { approve: id }, deps)).rejects.toThrow("GitHub is down\nApprove it again to finish; issues recorded as created are not created again.");
+    await expect(runNew(dir, [], { approve: id, queue: true }, deps)).rejects.toThrow(
+      "GitHub is down\nApprove it again to finish, and ask to queue again (`--queue`); issues recorded as created are not created again.",
+    );
     expect(issues()).toEqual([]);
 
     deps.github.createIssue = createIssue;
