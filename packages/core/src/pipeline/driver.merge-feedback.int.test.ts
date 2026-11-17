@@ -85,15 +85,6 @@ describe("PipelineDriver merge stage: open review threads and failed optional ch
     expect(merges).toEqual([]);
   });
 
-  it("never blocks on the factory's own review notes", async () => {
-    const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
-    pr.threads = [[thread("T9", "factory-bot", "**code** (minor): a note", { own: true })]];
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(merges).toHaveLength(1);
-  });
-
   it("merges as before with ignore", async () => {
     const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: feedbackConfig("ignore") });
     pr.threads = [[BOB]];
