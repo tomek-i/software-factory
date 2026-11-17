@@ -24,7 +24,7 @@ describe("cleanupRunNow", () => {
     const { ctx, store, run } = setup();
     store.writeState(run.id, "cancelled");
     store.acquireLease(run.id, "worker", 60_000);
-    expect(() => cleanupRunNow(ctx, run.id)).toThrow(new ServiceError(`A worker still holds run ${run.id}; it cleans up once it has stopped.`));
+    expect(() => cleanupRunNow(ctx, run.id)).toThrow(new ServiceError(`A worker still holds run ${run.id}; it is cleaned up once the worker stops, or its lease runs out.`));
   });
 
   it("says so when a finished run has nothing left to clean up", () => {

@@ -30,7 +30,7 @@ export function Runs() {
           ))}
         </div>
       </div>
-      {view === "all" && <CleanupRuns project={project} />}
+      {view === "all" && <CleanupRuns key={project ?? "all"} project={project} />}
       {runs.error && <p className="text-sm text-destructive">{runs.error.message}</p>}
       {runs.data?.length === 0 && (
         <p className="text-sm text-muted-foreground">{view === "active" ? "No runs going on. Queue issues in the Backlog." : "No runs yet."}</p>

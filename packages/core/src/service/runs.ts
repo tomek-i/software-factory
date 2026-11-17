@@ -328,7 +328,7 @@ export function cleanupRunNow(ctx: ServiceContext, ref: string, run?: CommandRun
   const target = findRun(store, project, ref);
   if (!isTerminal(target.state)) throw new ServiceError(`Run ${target.id} has not finished (it is ${target.state}); cancel it first.`);
   if (target.lease_expires_at !== null && target.lease_expires_at > new Date().toISOString()) {
-    throw new ServiceError(`A worker still holds run ${target.id}; it cleans up once it has stopped.`);
+    throw new ServiceError(`A worker still holds run ${target.id}; it is cleaned up once the worker stops, or its lease runs out.`);
   }
   const lines = cleanUpNow(store, project, config, target.id, run);
   return lines.length ? lines : [`${target.id}: nothing left to clean up`];

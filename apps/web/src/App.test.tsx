@@ -47,6 +47,8 @@ class FakeServer {
   drafts: DraftView[] = [];
   draftDetails: Record<string, DraftDetail> = {};
   projectsStatus = 200;
+  /** The project list. */
+  projects: ProjectInfo[] = [PROJECT];
   /** Merge-gate details by run id; others get a 404. */
   mergeGate: Record<string, MergeGateDetails> = {};
   /** Run files by path, served for every run. */
@@ -102,7 +104,7 @@ data: ${JSON.stringify(event)}
       for (const [suffix, answer] of this.answers) if (url.pathname.endsWith(suffix)) return json(200, answer);
       return json(200, {});
     }
-    if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, [PROJECT]) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
+    if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, this.projects) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
     if (url.pathname === "/api/scheduler") return json(200, { running: [] });
     if (url.pathname === "/api/runs") {
       const view = url.searchParams.get("view");
@@ -927,6 +929,40 @@ describe("runs", () => {
         { path: "/api/projects/p1/cleanup", body: { now: true } },
       ]),
     );
+  });
+
+  it("reports each project's cleanup on its own, keeping what the others did when one fails", async () => {
+    server.projects = [PROJECT, { key: "p2", name: "blog", path: "/repos/blog", status: "ok" }];
+    server.answers.set("/p1/cleanup", { lines: ["run-0: removed worktree"], skipped: [] });
+    server.failures.set("/p2/cleanup", { status: 500, error: "git is locked" });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: /Clean up finished runs/ }));
+
+    const status = screen.getByRole("status");
+    expect(await within(status).findByText("run-0: removed worktree")).toBeTruthy();
+    expect(within(status).getByRole("heading", { name: "shop" })).toBeTruthy();
+    expect(within(status).getByRole("heading", { name: "blog" })).toBeTruthy();
+    expect(within(status).getByRole("alert").textContent).toBe("git is locked");
+  });
+
+  it("forgets a cleanup's outcome when another project is picked", async () => {
+    server.projects = [PROJECT, { key: "p2", name: "blog", path: "/repos/blog", status: "ok" }];
+    server.answers.set("/p1/cleanup", { lines: [], skipped: [{ runId: "run-1", why: "finished 4s ago", recent: true }] });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await screen.findByRole("option", { name: "blog" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p1");
+    await user.click(await screen.findByRole("button", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: /Clean up finished runs/ }));
+    expect(await screen.findByRole("button", { name: "Also clean up the runs that just finished" })).toBeTruthy();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p2");
+    expect(screen.queryByText(/finished 4s ago/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Also clean up the runs that just finished" })).toBeNull();
   });
 });
 

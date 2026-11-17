@@ -71,7 +71,8 @@ The runs going on across projects, live.
 
 - Each shows its state, round, cost, whether a worker drives it and the agent's latest activity.
 - "All" shows finished runs too, and "Clean up finished runs", which does what `factory cleanup` does:
-  - it lists what it removed and what it kept, with why;
+  - it lists what it removed and what it kept, with why, per project when all projects are shown;
+  - a project that fails shows its error, and the others still report what they did;
   - and the runs it left alone: one a worker still holds, or one that finished in the last 2 minutes;
   - "Also clean up the runs that just finished" does what `factory cleanup --now` does.
 - Click a run to open its details.

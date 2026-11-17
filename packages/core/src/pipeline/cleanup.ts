@@ -275,14 +275,16 @@ export function describeCleanup(runId: string, result: CleanupResult, dryRun = f
 
 /**
  * Store a cleanup's warnings and kept reason with the run, so `factory logs` shows them. The same
- * note twice in a row is stored once: a sweep retries a failing cleanup on every status. A removal
- * is stored only after an earlier cleanup note, so the run's reason no longer says it was kept; a
- * run cleaned up the first time keeps its own reason, such as its PR being merged.
+ * note twice in a row is stored once: a sweep retries a failing cleanup on every status. A cleanup
+ * that went through is stored only after an earlier cleanup note, so the run's reason no longer says
+ * it was kept or failed; a run cleaned up the first time keeps its own reason, such as its PR being
+ * merged.
  */
 export function recordCleanup(store: Store, target: Run, result: CleanupResult): void {
   const afterNote = store.listEvents(target.id).at(-1)?.reason?.startsWith("cleanup: ") === true;
-  const removed = afterNote && result.removed.length ? [`removed ${result.removed.join(", ")}`] : [];
-  for (const note of [...removed, ...(result.kept ? [`kept: ${result.kept}`] : []), ...result.warnings]) {
+  const done = afterNote && !result.kept && result.warnings.length === 0;
+  const removed = result.removed.length ? `removed ${result.removed.join(", ")}` : "nothing left to remove";
+  for (const note of [...(done ? [removed] : []), ...(result.kept ? [`kept: ${result.kept}`] : []), ...result.warnings]) {
     const reason = `cleanup: ${note}`;
     if (store.listEvents(target.id).at(-1)?.reason === reason) continue;
     store.appendEvent(target.id, target.state, target.state, reason);
@@ -337,7 +339,7 @@ export function cleanupFinishedRuns(store: Store, project: Project, options: Swe
     if (existsSync(join(runDir, CLEANUP_MARKER)) && !(options.recheckKept && keptOnPurpose(runDir))) continue;
     // A worker still holding the run (e.g. stuck in a git call after a cancel) cleans it up itself.
     if (target.lease_expires_at !== null && target.lease_expires_at > now.toISOString()) {
-      options.onSkipped?.(target.id, "a worker still holds it, and cleans it up once it has stopped", false);
+      options.onSkipped?.(target.id, "a worker still holds it; cleaned up once the worker stops, or its lease runs out", false);
       continue;
     }
     if (target.updated_at > cutoff) {

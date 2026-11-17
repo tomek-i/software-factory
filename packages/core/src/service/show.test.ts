@@ -101,6 +101,9 @@ describe("runOverview", () => {
     expect(leftoverOf(done, runDir)).toEqual({ worktree: "/repo/.worktrees/r", branch: "factory/16-show", kept: "the branch has commits that are not on the remote" });
     marker(null);
     expect(leftoverOf(done, runDir)).toBeUndefined();
+    // Worktree and local branch removed, only the remote branch kept: nothing left here.
+    writeFileSync(join(runDir, "cleanup.json"), JSON.stringify({ removed: ["worktree", "local branch factory/16-show"], kept: "the remote branch factory/16-show is not what was merged, so it is kept" }));
+    expect(leftoverOf(done, runDir)).toBeUndefined();
   });
 });
 

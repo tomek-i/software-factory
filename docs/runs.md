@@ -172,12 +172,14 @@ What you can do about them: [Open review threads and failed checks](pipeline.md#
   - Uncommitted changes keep both the worktree and the branch.
   - So do commits on the branch or the worktree's HEAD that are not on the remote (or, for a merged run, not in what was merged).
   - The reason is noted in the run's events.
+    Once a later cleanup removes them, that is noted too, so the run no longer says it was kept.
 - **Who does it:**
   - the worker that finished the run, once it has stopped;
   - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
   - `factory status`, `factory sync` and `factory run`, right away, for runs they finish themselves because their PR or issue was closed or merged on GitHub;
-  - `factory status` and `factory run`, for finished runs not cleaned up yet, 2 minutes after they finished and only once no worker holds them.
+  - `factory status`, `factory sync` and `factory run`, for finished runs not cleaned up yet, 2 minutes after they finished and only once no worker holds them.
     So a worker that is still stopping is never disturbed.
+    A worker that died holds its run until its lease runs out.
 - **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach):
   - it's a warning in the output and the run's events, never a failure of the run;
   - a worktree that can't be removed is tried again a few times over a few seconds first;
@@ -189,6 +191,7 @@ What you can do about them: [Open review threads and failed checks](pipeline.md#
     It lists the runs it left alone, with why.
   - `factory cleanup --now` skips the 2 minutes; a run a worker still holds is still left to it.
   - It also looks again at runs that were kept, so after you push their work, `factory cleanup` removes them.
+  - A merged run whose remote branch was kept (someone pushed to it after the merge) has nothing left on your machine: its worktree and local branch are removed.
   - The web app does the same: "Clean up finished runs" on the Runs screen, and "Clean up" on a finished run's details ([Web mode](web-mode.md)).
 
 [All docs](README.md)

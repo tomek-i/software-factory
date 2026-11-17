@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   approveRun,
@@ -226,6 +226,14 @@ function redactorOf(ctx: ProjectContext, run: Run): (text: string) => string {
   return (text) => redactPaths(text, { home: homedir(), roots });
 }
 
+/**
+ * Paths relative to the repository only, the home folder as `~`: for what cleanup says about a
+ * worktree, which relative to the worktree itself would read as ".".
+ */
+function projectRedactor(ctx: ProjectContext): (text: string) => string {
+  return (text) => redactPaths(text, { home: homedir(), roots: [ctx.project.repo_path] });
+}
+
 function redactSection(section: OverviewSection, redact: (text: string) => string): OverviewSection {
   if (section.kind === "unparsed") return { ...section, problem: redact(section.problem) };
   if (section.kind === "capture") return { ...section, summary: section.summary.map(redact) };
@@ -398,9 +406,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
       ...(overview.leftover
         ? {
             leftover: {
-              worktree: relative(ctx.project.repo_path, overview.leftover.worktree).split("\\").join("/"),
+              worktree: projectRedactor(ctx)(overview.leftover.worktree).split("\\").join("/"),
               branch: overview.leftover.branch,
-              ...(overview.leftover.kept ? { kept: redact(overview.leftover.kept) } : {}),
+              ...(overview.leftover.kept ? { kept: projectRedactor(ctx)(overview.leftover.kept) } : {}),
             },
           }
         : {}),
@@ -479,7 +487,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   // The same protections as the automatic cleanup: work that would be lost is kept, with the reason.
-  runAction("cleanup", (ctx, run) => ({ lines: cleanupRunNow(ctx, run.id, options.run).map(redactorOf(ctx, run)) }));
+  runAction("cleanup", (ctx, run) => ({ lines: cleanupRunNow(ctx, run.id, options.run).map(projectRedactor(ctx)) }));
 
   // `factory cleanup` for one project: what it removed and kept, and the runs it left alone.
   app.post<{ Params: { key: string }; Body: unknown }>("/api/projects/:key/cleanup", async (req) => {
@@ -487,7 +495,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const { store, project, config } = ctx;
     const report = cleanupRuns(store, project, config, { run: options.run, now: flag(req.body, "now") });
     changed(req.params.key);
-    const redact = (text: string) => redactPaths(text, { home: homedir(), roots: [project.repo_path] });
+    const redact = projectRedactor(ctx);
     return { lines: report.lines.map(redact), skipped: report.skipped.map((s) => ({ ...s, why: redact(s.why) })) };
   });
 

@@ -109,6 +109,22 @@ describe("cleanupRun", () => {
     expect(remoteHas()).toBe(true);
   });
 
+  it("stops saying it kept a merged run's remote branch once that branch is deleted by hand", () => {
+    const { root, remote, store, project, run, runDir } = finishedRun("done", { commit: true, push: true });
+    const elsewhere = join(root, "..", "elsewhere");
+    git(join(root, ".."), "clone", "--quiet", "--branch", BRANCH, remote, elsewhere);
+    commit(elsewhere, "late.txt", "late\n");
+    git(elsewhere, "push", "--quiet", "origin", BRANCH);
+    const sweep = () => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: () => runDir, graceMs: 0, recheckKept: true });
+
+    sweep();
+    expect(store.listEvents(run.id).at(-1)?.reason).toBe(`cleanup: kept: the remote branch ${BRANCH} is not what was merged, so it is kept`);
+    git(elsewhere, "push", "--quiet", "origin", "--delete", BRANCH);
+
+    expect(sweep()).toEqual([]);
+    expect(store.listEvents(run.id).at(-1)?.reason).toBe("cleanup: nothing left to remove");
+  });
+
   for (const state of ["cancelled", "rejected", "failed"] as const) {
     it(`removes a ${state} run's worktree and local branch when its work is pushed, and keeps the remote branch`, () => {
       const { run, worktree, options, remoteHas, localHas } = finishedRun(state, { commit: true, push: true });
@@ -356,7 +372,7 @@ describe("cleanupFinishedRuns", () => {
       cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now: at, graceMs: 0, onSkipped: (_id, why) => skipped.push(why) });
     expect(sweep()).toEqual([]);
     expect(existsSync(worktree.path)).toBe(true);
-    expect(skipped).toEqual(["a worker still holds it, and cleans it up once it has stopped"]);
+    expect(skipped).toEqual(["a worker still holds it; cleaned up once the worker stops, or its lease runs out"]);
     store.releaseLease(run.id, "worker");
     expect(sweep()).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}`]);
     // Cleaned up the first time: the run keeps its own reason.
