@@ -7,7 +7,7 @@ import { ConfigError, loadConfig, parseConfig } from "./load.js";
 describe("parseConfig", () => {
   it("parses yaml and applies defaults", () => {
     const config = parseConfig("version: 1\nchecks:\n  - name: test\n    run: pnpm test\n");
-    expect(config.checks).toEqual([{ name: "test", run: "pnpm test", timeout_sec: 900 }]);
+    expect(config.checks).toEqual([{ name: "test", run: "pnpm test", timeout_sec: 900, retries: 1 }]);
     expect(config.gates.triage).toBe("auto");
   });
 

@@ -17,6 +17,11 @@ Back to the [README](../README.md#writing-issues-from-an-idea) for the commands.
 - Each sub-issue has the same structure.
 - **Dependencies**: a sub-issue that needs another first says so with `DEPENDS_ON`.
 - That ends up as `Depends on: #n` in its body.
+- **Labels**: each issue may have a `LABELS: ui, bug` line, picked from the repo's labels.
+- `factory new` reads the labels from GitHub with each draft, so a label you just added is offered.
+- The factory's own status labels (`github.label_prefix` and `<prefix>:*`) are never offered.
+- A label the repo lacks gets the draft its retry.
+- If the labels can't be read, the draft has none, and a line says why.
 - **Checks**: the draft is checked strictly.
 - A malformed draft gets one retry, then it is kept for you to fix or discard.
 - `<draft>` in the commands is a draft id or a unique prefix of one.
@@ -40,7 +45,9 @@ With `auto` or `always`, nobody reads the draft before it becomes an issue:
 ## Creating a draft
 
 - It always prints the full draft first.
-- It opens the issues on GitHub (no labels).
+- It opens the issues on GitHub, with their labels.
+- If any issue has labels, they are read and checked again first, as you may have edited them.
+- A label the repo lacks, or a status label, refuses the draft before anything is created.
 - It links each sub-issue to the parent as a real GitHub sub-issue.
 - It syncs them into `.factory/factory.db`.
 - With `--queue` only, it queues the buildable ones: the single issue, or the sub-issues (never their parent).

@@ -1,14 +1,22 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema, VerdictParseError } from "@factory/shared";
 import { fakeClaude, git, tempDir, type FakeStep } from "../../test/helpers.js";
 import { createAgentRunner } from "../agents/runner.js";
-import type { IssueWriterPort } from "../github/port.js";
+import type { IssueWriterPort, RepoLabel } from "../github/port.js";
 import { Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
+import { offeredLabels } from "./labels.js";
 import { discardDraft, DraftError, DRAFTS_DIR, findDraft, listDrafts, publishDraft, writeDraft, type DraftContext } from "./writer.js";
 
+/** The fake GitHub's labels, with a status label the issue writer must never be offered. */
+const REPO_LABELS = [
+  { name: "ui", description: "Visible changes" },
+  { name: "bug", description: "" },
+  { name: "factory", description: "Queued in the software factory" },
+];
 const SECTIONS = "## Why\nBecause.\n\n## What\nDo it.\n\n## Acceptance criteria\n- [ ] it works\n\n## Scope\nThis.\n\n## Out of scope\nThat.\n";
 const block = (title: string, header = "UI: NO\nRISK: LOW", sub = false) =>
   `${sub ? "=== SUB-ISSUE ===" : "=== ISSUE ==="}\nTITLE: ${title}\n${header}\n\n${SECTIONS}`;
@@ -36,14 +44,15 @@ function draftFolder(root: string, id: string, text: string | undefined, idea = 
  * created; git runs for real. `state` is mutable, so a test can break GitHub and let it recover.
  */
 function fakeGithub(state: { failCreateAt?: number; failLink?: boolean; failView?: boolean } = {}) {
-  const created: { number: number; title: string; body: string }[] = [];
+  const created: { number: number; title: string; body: string; labels?: string[] }[] = [];
   const links: [number, number][] = [];
   const github: IssueWriterPort = {
-    createIssue: ({ title, body }) => {
+    createIssue: ({ title, body, labels }) => {
       if (created.length + 1 === state.failCreateAt) throw new Error("GitHub is down");
-      created.push({ number: 20 + created.length, title, body });
+      created.push({ number: 20 + created.length, title, body, labels });
       return created.at(-1)!.number;
     },
+    listLabels: () => REPO_LABELS,
     addSubIssue: (parent, child) => {
       if (state.failLink) throw new Error("linking failed");
       links.push([parent, child]);
@@ -67,11 +76,31 @@ function contextFor(root: string, run?: CommandRunner): DraftContext {
 
 describe("writeDraft", () => {
   const config = factoryConfigSchema.parse({ version: 1, models: { roles: { issue_writer: "sonnet" } } });
-  const write = (steps: FakeStep[], root = repo()) => {
+  const write = (steps: FakeStep[], root = repo(), labels?: RepoLabel[]) => {
     const fake = fakeClaude(steps);
     const read = (path: string) => (path === ".factory/lessons.md" ? "Keep issues small.\n" : undefined);
-    return { fake, root, result: writeDraft({ root, config, read, runAgent: createAgentRunner({ env: fake.env }), idea: "  Export orders as CSV  " }) };
+    return { fake, root, result: writeDraft({ root, config, read, runAgent: createAgentRunner({ env: fake.env }), idea: "  Export orders as CSV  ", labels }) };
   };
+
+  it("offers the repository's labels as data, without status labels, and retries a draft that uses another", async () => {
+    const withLabel = (labels: string) => SINGLE.replace("RISK: LOW", `RISK: LOW\nLABELS: ${labels}`);
+    const { fake, root, result } = write([{ output: withLabel("ui, nope") }, { output: withLabel("UI") }], repo(), offeredLabels(REPO_LABELS, "factory"));
+    const draft = await result;
+
+    expect(draft.turn.status).toBe("ok");
+    const [first, retry] = fake.calls();
+    expect(first!.stdin).toContain("## Labels in this repository");
+    expect(first!.stdin).toContain('"name": "ui"');
+    expect(first!.stdin).not.toContain('"name": "factory"');
+    expect(retry!.stdin).toContain('issue: label "nope" is not one of the repository\'s labels');
+    expect(findDraft(contextFor(root), draft.id).draft!.issue.labels).toEqual(["UI"]);
+  });
+
+  it("says to leave labels out when the repository's labels could not be read", async () => {
+    const { fake, result } = write([{ output: SINGLE }]);
+    await result;
+    expect(fake.calls()[0]!.stdin).toContain("The repository's labels could not be read. Leave LABELS out.");
+  });
 
   it("runs the issue writer on the idea in a new draft folder, with no shell and only its draft to write", async () => {
     const root = repo();
@@ -179,6 +208,53 @@ describe("drafts", () => {
     expect(findDraft(ctx, "draft-aaaa1111").created).toEqual([]);
     expect(publishDraft({ ...ctx, github, ref: "draft-aaaa1111" }).issue.number).toBe(20);
     expect(ctx.store.getIssue(ctx.project.id, 42)).toBeUndefined();
+  });
+});
+
+describe("publishDraft labels", () => {
+  const labelled = (labels: string) => SINGLE.replace("RISK: LOW", `RISK: LOW\nLABELS: ${labels}`);
+
+  it("opens the issue with its labels, spelled as the repository spells them", () => {
+    const root = repo();
+    draftFolder(root, "draft-11112222", labelled("UI, Bug"));
+    const { github, run, created } = fakeGithub();
+    publishDraft({ ...contextFor(root, run), github, ref: "draft-11112222" });
+    expect(created[0]!.labels).toEqual(["ui", "bug"]);
+  });
+
+  it("refuses a hand-edited label the repository lacks, or a status label, before creating anything", () => {
+    for (const labels of ["ui, typo", "factory", "Factory:in-progress"]) {
+      const root = repo();
+      draftFolder(root, "draft-11112222", labelled(labels));
+      const { github, run, created } = fakeGithub();
+      expect(() => publishDraft({ ...contextFor(root, run), github, ref: "draft-11112222" })).toThrow(/uses labels it may not: issue: label ".*" is not one of the repository's labels/);
+      expect(created).toEqual([]);
+    }
+  });
+
+  it("does not ask GitHub for labels when the draft has none", () => {
+    const root = repo();
+    draftFolder(root, "draft-11112222", SINGLE);
+    const { github, run, created } = fakeGithub();
+    github.listLabels = () => {
+      throw new Error("should not be called");
+    };
+    publishDraft({ ...contextFor(root, run), github, ref: "draft-11112222" });
+    expect(created[0]!.labels).toEqual([]);
+  });
+
+  it("still finishes an approval recorded before labels existed", () => {
+    const root = repo();
+    draftFolder(root, "draft-11112222", SINGLE);
+    const { github, run, created } = fakeGithub();
+    const ctx = contextFor(root, run);
+    // The fingerprint as it was computed before drafts had labels.
+    const old = createHash("sha256").update(JSON.stringify(["Add CSV export", SECTIONS.trim(), false, "LOW", []])).digest("hex");
+    created.push({ number: 20, title: "Add CSV export", body: "" });
+    ctx.store.recordDraftIssue(ctx.project.id, "draft-11112222", { position: 0, number: 20, fingerprint: old });
+
+    expect(publishDraft({ ...ctx, github, ref: "draft-11112222" }).issue.number).toBe(20);
+    expect(created).toHaveLength(1);
   });
 });
 

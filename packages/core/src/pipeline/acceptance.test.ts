@@ -15,7 +15,7 @@ import {
   writeAcceptanceRecord,
   type CriterionResult,
 } from "./acceptance.js";
-import { REFINE_MARKER } from "./shared.js";
+import { REFINE_END_MARKER, REFINE_MARKER } from "./shared.js";
 import { parseVerdict } from "@factory/shared";
 
 describe("extractCriteria", () => {
@@ -55,6 +55,19 @@ describe("extractCriteria", () => {
       { id: "AC-3", source: "spec", text: "ask `@bob`" },
     ]);
     expect(extractCriteria("no criteria here")).toEqual([]);
+  });
+
+  it("does not count the spec section in the issue body as the issue's own criteria", () => {
+    const body = `## Acceptance criteria\n- [ ] issue one\n\n${REFINE_MARKER}\n## Spec\n### Acceptance criteria\n- [ ] spec one\n${REFINE_END_MARKER}\n`;
+    expect(extractCriteria(body, "## Acceptance criteria\n- [ ] spec one\n")).toEqual([
+      { id: "AC-1", source: "issue", text: "issue one" },
+      { id: "AC-2", source: "spec", text: "spec one" },
+    ]);
+    // Triage ran again after refine, so there is no current spec: the section is now part of the issue.
+    expect(extractCriteria(body).map((c) => [c.source, c.text])).toEqual([
+      ["issue", "issue one"],
+      ["issue", "spec one"],
+    ]);
   });
 });
 
@@ -155,6 +168,39 @@ describe("tickMetCriteria", () => {
     expect(notes[0]).toMatch(/not ticking the body of issue #12/);
     expect(state.issueEdits).toBe(0);
     expect(state.commentEdits).toBe(1);
+  });
+
+  it("ticks spec criteria in the spec section of the factory's own issue when there is no refine comment", () => {
+    const { state, github } = fake(true);
+    // The author's text has a line with the same text as a spec criterion: only the section's is ticked.
+    state.issue = `${ISSUE}- [ ] spec met \`@bob\`\n\n${COMMENT}${REFINE_END_MARKER}\nAfter\n`;
+    const before = state.issue;
+    const noComment = { ...github, findComment: () => undefined } as GithubPort;
+
+    expect(tickMetCriteria(noComment, runDir({ 1: results }), 12)).toEqual([
+      "ticked 1 acceptance criterion in the body of issue #12",
+      "ticked 1 acceptance criterion in the spec section of issue #12",
+    ]);
+    const sectionStart = before.indexOf(REFINE_MARKER);
+    const expected = before.slice(0, sectionStart).replace("- [ ] issue met", "- [x] issue met") + before.slice(sectionStart).replace("- [ ] spec met", "- [x] spec met");
+    expect(state.issue).toBe(expected);
+    expect(state.commentEdits).toBe(0);
+  });
+
+  it("ticks the spec section in the body, not a refine comment left from before the spec moved there", () => {
+    const { state, github } = fake(true);
+    state.issue = `${ISSUE}\n${COMMENT}${REFINE_END_MARKER}\n`;
+    expect(tickMetCriteria(github, runDir({ 1: results }), 12)).toContain("ticked 1 acceptance criterion in the spec section of issue #12");
+    expect(state.issue).toContain("- [x] spec met");
+    expect(state.commentEdits).toBe(0);
+  });
+
+  it("warns when the spec is in neither a refine comment nor the issue body", () => {
+    const { github } = fake(false);
+    const noComment = { ...github, findComment: () => undefined } as GithubPort;
+    expect(tickMetCriteria(noComment, runDir({ 1: results }), 12)).toContain(
+      "warning: no refine comment or spec section was found on issue #12; its spec criteria stay unticked",
+    );
   });
 
   it("does nothing without MET criteria, and warns instead of throwing when GitHub fails", () => {

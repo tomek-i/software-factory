@@ -7,6 +7,8 @@ export const checkSchema = z.object({
   name: z.string().min(1),
   run: z.string().min(1),
   timeout_sec: z.number().int().positive().default(900),
+  // A busy machine makes tests time out; a failure that does not repeat is not the builder's to fix.
+  retries: z.number().int().min(0).max(5).default(1),
 });
 
 export const HARD_RULE_TRIGGERS = ["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"] as const;

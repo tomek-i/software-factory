@@ -198,6 +198,28 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("created").run).createIssue({ title: "t", body: "b" })).toThrow(/unexpected output: created. The issue "t" may have been created anyway; check GitHub/);
   });
 
+  it("opens an issue with one --label per label", () => {
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      return { code: 0, stdout: "https://github.com/o/r/issues/32", stderr: "" };
+    };
+    ghPort(project, run).createIssue({ title: "T", body: "b", labels: ["ui", "good first issue"] });
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "create", "-R", "o/r", "--title", "T", "--label", "ui", "--label", "good first issue", "--body-file"]);
+  });
+
+  it("lists the repository's labels with their descriptions", () => {
+    const list = fakeGh(JSON.stringify([{ name: "ui", description: "Visible changes" }, { name: "bug", description: "" }]));
+    expect(ghPort(project, list.run).listLabels()).toEqual([
+      { name: "ui", description: "Visible changes" },
+      { name: "bug", description: "" },
+    ]);
+    expect(list.calls[0]).toEqual(["label", "list", "-R", "o/r", "--limit", "200", "--json", "name,description"]);
+    expect(() => ghPort(project, fakeGh("{}").run).listLabels()).toThrow(/gh label list returned unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ description: "x" }])).run).listLabels()).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("", 1).run).listLabels()).toThrow(/gh label list failed: boom/);
+  });
+
   it("links a sub-issue by the node ids of both issues", () => {
     const calls: string[][] = [];
     const run: CommandRunner = (_cmd, args) => {

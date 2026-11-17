@@ -40,8 +40,11 @@ Related docs:
 - It writes acceptance criteria, scope, out of scope and open questions (with the assumption it made for each) in `spec-N/refine.md`.
 - Its header is `STATUS: REFINED`.
 - `BLOCKED` with a reason stops the run for you.
-- The engine posts the spec on the issue as one comment marked `<!-- factory:refine -->`.
-- The engine edits that comment in place on later rounds, so the issue shows the current spec rather than every version.
+- On an issue the factory's GitHub account wrote (such as one from `factory new`), the engine puts the spec in a section at the end of the issue body.
+  - The section is marked `<!-- factory:refine -->` … `<!-- /factory:refine -->`; the text above it is never changed.
+  - Edit the section to correct the spec: after `factory sync`, the next triage reads it as part of the issue.
+- On anyone else's issue, the engine posts the spec as one comment marked `<!-- factory:refine -->` and leaves the issue as they wrote it.
+- Later rounds replace the section or edit the comment in place, so the issue shows the current spec rather than every version.
 
 ## Spec critic
 
@@ -88,6 +91,12 @@ Related docs:
 
 - The engine runs your `checks` on the pushed commit, plus the secret scan again.
 - Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment.
+- A failed check runs again, up to its `retries` (default 1), before the gate fails.
+  - A busy machine makes tests time out, and a failure that does not repeat is not the builder's to fix.
+  - A check that passes on a retry passes the gate; `checks.md` says which attempt passed, so a flaky check stays visible.
+- The checks of different runs in one `factory work` or `factory serve` take turns, so two test suites do not slow each other into timeouts. Agents still run at the same time.
+- If the only failures are checks that ran past their `timeout_sec` on every attempt, the run waits for you instead of going back to the builder.
+  - Resume it to `gate` to run the checks again, or to `build` if the code hangs.
 - On failure the builder gets the report and tries again, up to `loops.max_build_iterations`.
 - Then the run waits for you.
 - If two rounds in a row fail the same way, the run stops before the cap and waits for you.
@@ -349,7 +358,8 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
   - Nothing is ticked before the merge, or when the PR is closed without merging.
 - It changes only those checkboxes, on exactly the lines it read; no other text changes.
 - The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
-- The refine spec's criteria are ticked in the factory's refine comment.
+- The refine spec's criteria are ticked where the spec is: the factory's refine comment, or the spec section of the factory's own issue.
+- The spec section in the body never counts as the issue's own criteria, so each criterion is checked once.
 - `CANNOT_CHECK`, not-checked and `NOT_MET` criteria stay unticked.
 - A line that was edited since is left alone and noted; a GitHub failure is a warning and never reopens the run.
 

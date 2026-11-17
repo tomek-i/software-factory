@@ -120,6 +120,11 @@ export interface RequiredCheck {
   link?: string;
 }
 
+export interface RepoLabel {
+  name: string;
+  description: string;
+}
+
 const CHECK_BUCKETS: readonly RequiredCheck["bucket"][] = ["pass", "fail", "pending", "skipping", "cancel"];
 
 /**
@@ -128,7 +133,9 @@ const CHECK_BUCKETS: readonly RequiredCheck["bucket"][] = ["pass", "fail", "pend
  */
 export interface IssueWriterPort {
   /** Open an issue and return its number. */
-  createIssue(issue: { title: string; body: string }): number;
+  createIssue(issue: { title: string; body: string; labels?: string[] }): number;
+  /** The repository's labels, so the issue writer can pick from them. */
+  listLabels(): RepoLabel[];
   /** Link `child` as a GitHub sub-issue of `parent`. */
   addSubIssue(parent: number, child: number): void;
 }
@@ -175,9 +182,10 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     return issue.id;
   };
   return {
-    createIssue({ title, body }) {
+    createIssue({ title, body, labels = [] }) {
+      const labelArgs = labels.flatMap((label) => ["--label", label]);
       // gh prints the new issue's URL.
-      const out = withBodyFile(body, (file) => gh(["issue", "create", "-R", repo, "--title", title, "--body-file", file]));
+      const out = withBodyFile(body, (file) => gh(["issue", "create", "-R", repo, "--title", title, ...labelArgs, "--body-file", file]));
       const match = /\/issues\/(\d+)/.exec(out);
       if (!match) {
         // gh succeeded, so the issue probably exists; only its number is unknown.
@@ -189,6 +197,21 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     },
     addSubIssue(parent, child) {
       gh(["api", "graphql", "-f", `query=${ADD_SUB_ISSUE}`, "-f", `p=${nodeId(parent)}`, "-f", `c=${nodeId(child)}`]);
+    },
+    listLabels() {
+      const out = gh(["label", "list", "-R", repo, "--limit", "200", "--json", "name,description"]);
+      let labels: unknown;
+      try {
+        labels = JSON.parse(out);
+      } catch {
+        labels = undefined;
+      }
+      const valid = (l: unknown): l is RepoLabel =>
+        typeof l === "object" && l !== null && typeof (l as RepoLabel).name === "string" && typeof ((l as RepoLabel).description ?? "") === "string";
+      if (!Array.isArray(labels) || !labels.every(valid)) {
+        throw new GithubError(`gh label list returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      return labels.map((l) => ({ name: l.name, description: l.description ?? "" }));
     },
     commentOnIssue(issueNumber, body) {
       gh(["issue", "comment", String(issueNumber), "-R", repo, "--body", body]);

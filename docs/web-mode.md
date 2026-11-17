@@ -57,7 +57,7 @@ Back to the [README](../README.md#web-mode) for the commands.
   - Its progress shows live, and it can be stopped.
   - The `issue_writer` gate then decides, as in the CLI: the issues are created on GitHub right away, or the draft waits for you.
   - Issues are queued only if you ticked the box, as with `--queue`.
-  - A waiting draft shows its title, UI flag, risk and body as fields, and for a big idea each sub-issue's, with what it depends on.
+  - A waiting draft shows its title, UI flag, risk, labels and body as fields, and for a big idea each sub-issue's, with what it depends on.
   - Saving checks the draft as `factory new --approve` does, and refuses a broken edit with the same reasons, leaving the file as it was.
   - Then create it on GitHub (optionally queued), or discard it.
   - A draft git tracks is refused, as in the CLI.

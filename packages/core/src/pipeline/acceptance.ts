@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isBlocking, type CriterionAnswer, type CriterionStatus, type Finding } from "@factory/shared";
 import type { GithubPort } from "../github/port.js";
-import { quietMentions, REFINE_MARKER } from "./shared.js";
+import { quietMentions, REFINE_MARKER, specSectionRange, withoutSpecSection } from "./shared.js";
 
 /**
  * The acceptance lens: the engine (not the agent) reads the checkbox criteria of the issue and of the
@@ -70,7 +70,9 @@ export function criterionLines(text: string): { index: number; checked: boolean;
  * criterion's text is the one the factory posted (mentions quoted), so ticking finds it in the comment.
  */
 export function extractCriteria(issueBody: string, specBody?: string): Criterion[] {
-  const issue = criterionLines(issueBody).map((c) => ({ source: "issue" as const, text: c.text }));
+  // On the factory's own issues refine keeps the spec in the body too; while that spec is current it
+  // counts once, as the spec. After a later triage there is no current spec: the section is the issue's.
+  const issue = criterionLines(specBody ? withoutSpecSection(issueBody) : issueBody).map((c) => ({ source: "issue" as const, text: c.text }));
   const spec = specBody ? criterionLines(specBody).map((c) => ({ source: "spec" as const, text: quietMentions(c.text) })) : [];
   return [...issue, ...spec].map((c, i) => ({ id: `AC-${i + 1}`, ...c }));
 }
@@ -254,16 +256,36 @@ export function tickMetCriteria(github: GithubPort, runDir: string, issueNumber:
     (text) => github.editIssueBody(issueNumber, text),
     `not ticking the body of issue #${issueNumber}: the factory's account did not write it`,
   );
-  let comment: number | undefined;
-  tick(
-    "the refine comment",
-    "spec",
-    () => {
-      comment = github.findComment(issueNumber, REFINE_MARKER);
-      return comment === undefined ? undefined : github.commentBody(comment);
-    },
-    (text) => github.editComment(comment!, text),
-    `warning: the refine comment on issue #${issueNumber} was not found; its criteria stay unticked`,
-  );
+  if (!met.some((c) => c.source === "spec")) return notes;
+  // The spec is in a section of the factory's own issue, or in the refine comment. The section wins:
+  // an issue refined before the spec moved into the body may still have an old comment.
+  let place: { body: string; range: { start: number; end: number } } | { comment: number } | undefined;
+  try {
+    const body = github.ownIssueBody(issueNumber);
+    const range = body === undefined ? undefined : specSectionRange(body);
+    if (body !== undefined && range) place = { body, range };
+    else {
+      const comment = github.findComment(issueNumber, REFINE_MARKER);
+      if (comment !== undefined) place = { comment };
+    }
+  } catch (err) {
+    notes.push(`warning: could not find the refine spec on issue #${issueNumber}: ${(err as Error).message}`);
+    return notes;
+  }
+  if (!place) {
+    notes.push(`warning: no refine comment or spec section was found on issue #${issueNumber}; its spec criteria stay unticked`);
+  } else if ("comment" in place) {
+    const { comment } = place;
+    tick("the refine comment", "spec", () => github.commentBody(comment), (text) => github.editComment(comment, text), "");
+  } else {
+    const { body, range } = place;
+    tick(
+      `the spec section of issue #${issueNumber}`,
+      "spec",
+      () => body.slice(range.start, range.end),
+      (text) => github.editIssueBody(issueNumber, body.slice(0, range.start) + text + body.slice(range.end)),
+      "",
+    );
+  }
   return notes;
 }

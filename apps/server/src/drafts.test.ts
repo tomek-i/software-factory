@@ -11,6 +11,12 @@ import { createServer, type ServerOptions } from "./server.js";
 // Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
+/** The fake GitHub's labels, with a status label the issue writer must never be offered. */
+const REPO_LABELS = [
+  { name: "ui", description: "Visible changes" },
+  { name: "bug", description: "" },
+  { name: "factory", description: "Queued in the software factory" },
+];
 const TOKEN = "a".repeat(64);
 const HOST = "127.0.0.1:4180";
 const HEADERS = { host: HOST, "x-factory-token": TOKEN };
@@ -35,13 +41,14 @@ function setup(steps: FakeStep[], gate = "human", options: Partial<ServerOptions
   const project = store.upsertProject({ name: "demo", repo_path: root, github_repo: "o/r" });
   const ctx: ProjectContext = { root, store, project, config: loadConfig(root) };
 
-  const created: { number: number; title: string; body: string }[] = [];
+  const created: { number: number; title: string; body: string; labels?: string[] }[] = [];
   const links: [number, number][] = [];
   const github: IssueWriterPort = {
-    createIssue: ({ title, body }) => {
-      created.push({ number: 20 + created.length, title, body });
+    createIssue: ({ title, body, labels }) => {
+      created.push({ number: 20 + created.length, title, body, labels });
       return created.at(-1)!.number;
     },
+    listLabels: () => REPO_LABELS,
     addSubIssue: (parent, child) => links.push([parent, child]),
   };
   const run: CommandRunner = (cmd, args, options) => {
@@ -87,7 +94,7 @@ function setup(steps: FakeStep[], gate = "human", options: Partial<ServerOptions
   return { root, key, base, app, hub, events, created, links, fake, get, post, start, done, issues, ctx };
 }
 
-const editOf = (title: string, subIssues: { title: string; dependsOn?: number[] }[] = []) => ({
+const editOf = (title: string, subIssues: { title: string; dependsOn?: number[]; labels?: string[] }[] = []) => ({
   issue: { title, ui: false, risk: "LOW", body: SECTIONS },
   subIssues: subIssues.map((s) => ({ ui: true, risk: "MEDIUM", body: SECTIONS, ...s })),
 });
@@ -137,9 +144,11 @@ describe("drafts from the web", () => {
     expect(single.status).toBe(400);
     expect(single.body.error).toContain("- a parent issue needs at least two sub-issues; write a single issue instead");
     expect((await post(`${base}/${id}/save`, { issue: { title: 5 }, subIssues: [] })).body).toEqual({ error: "issue.title must be text." });
+    const badLabels = editOf("Exports");
+    expect((await post(`${base}/${id}/save`, { ...badLabels, issue: { ...badLabels.issue, labels: "ui" } })).body).toEqual({ error: "issue.labels must be a list of text." });
     expect(readFileSync(file, "utf8")).toBe(SINGLE);
 
-    const saved = await post(`${base}/${id}/save`, editOf("Exports", [{ title: "CSV export" }, { title: "Excel export", dependsOn: [1] }]));
+    const saved = await post(`${base}/${id}/save`, editOf("Exports", [{ title: "CSV export", labels: ["UI"] }, { title: "Excel export", dependsOn: [1] }]));
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     expect(saved.body.draft.subIssues.map((s: { title: string; dependsOn: number[] }) => [s.title, s.dependsOn])).toEqual([
       ["CSV export", []],
@@ -161,6 +170,7 @@ describe("drafts from the web", () => {
       },
     });
     expect(created[2]!.body).toContain("**Depends on:** #21");
+    expect(created.map((c) => c.labels)).toEqual([[], ["ui"], []]);
     expect(links).toEqual([
       [20, 21],
       [20, 22],
