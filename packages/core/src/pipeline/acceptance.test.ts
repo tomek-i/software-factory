@@ -63,6 +63,11 @@ describe("extractCriteria", () => {
       { id: "AC-1", source: "issue", text: "issue one" },
       { id: "AC-2", source: "spec", text: "spec one" },
     ]);
+    // Triage ran again after refine, so there is no current spec: the section is now part of the issue.
+    expect(extractCriteria(body).map((c) => [c.source, c.text])).toEqual([
+      ["issue", "issue one"],
+      ["issue", "spec one"],
+    ]);
   });
 });
 
@@ -179,6 +184,14 @@ describe("tickMetCriteria", () => {
     const sectionStart = before.indexOf(REFINE_MARKER);
     const expected = before.slice(0, sectionStart).replace("- [ ] issue met", "- [x] issue met") + before.slice(sectionStart).replace("- [ ] spec met", "- [x] spec met");
     expect(state.issue).toBe(expected);
+    expect(state.commentEdits).toBe(0);
+  });
+
+  it("ticks the spec section in the body, not a refine comment left from before the spec moved there", () => {
+    const { state, github } = fake(true);
+    state.issue = `${ISSUE}\n${COMMENT}${REFINE_END_MARKER}\n`;
+    expect(tickMetCriteria(github, runDir({ 1: results }), 12)).toContain("ticked 1 acceptance criterion in the spec section of issue #12");
+    expect(state.issue).toContain("- [x] spec met");
     expect(state.commentEdits).toBe(0);
   });
 

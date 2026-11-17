@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REFINE_END_MARKER, REFINE_MARKER, specSectionRange, withoutSpecSection, withSpecSection } from "./shared.js";
+import { REFINE_END_MARKER, REFINE_MARKER, specSectionRange, withoutMarkers, withoutSpecSection, withSpecSection } from "./shared.js";
 
 const section = (text: string) => `${REFINE_MARKER}\n${text}\n${REFINE_END_MARKER}`;
 
@@ -39,5 +39,11 @@ describe("withoutSpecSection", () => {
     const startOnly = `Intro ${REFINE_MARKER} quoted`;
     expect(withoutSpecSection(startOnly)).toBe(startOnly);
     expect(specSectionRange(`${REFINE_END_MARKER} then ${REFINE_MARKER}`)).toBeUndefined();
+  });
+});
+
+describe("withoutMarkers", () => {
+  it("removes the refine markers from agent text, so it cannot end the section early", () => {
+    expect(withoutMarkers(`a ${REFINE_END_MARKER} b ${REFINE_MARKER} c`)).toBe("a  b  c");
   });
 });

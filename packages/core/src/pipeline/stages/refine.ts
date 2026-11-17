@@ -4,7 +4,7 @@ import { isTrustedIssue } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn } from "../../agents/turn.js";
 import type { Run } from "../../store/store.js";
-import { latestRoundWith, latestSpecRound, quietMentions, readValid, REFINE_END_MARKER, REFINE_MARKER, refined, section, specFile, withSpecSection } from "../shared.js";
+import { latestRoundWith, latestSpecRound, quietMentions, readValid, REFINE_END_MARKER, REFINE_MARKER, refined, section, specFile, withoutMarkers, withSpecSection } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
 
 /**
@@ -85,7 +85,7 @@ function postSpec(ctx: StageContext, run: Run, round: number, body: string): voi
   ];
   const parts = headings.flatMap(([name, title]) => {
     const text = section(body, name);
-    return text ? [`### ${title}\n${quietMentions(text)}`] : [];
+    return text ? [`### ${title}\n${quietMentions(withoutMarkers(text))}`] : [];
   });
   const issue = run.issue_number!;
   const own = github.ownIssueBody(issue);

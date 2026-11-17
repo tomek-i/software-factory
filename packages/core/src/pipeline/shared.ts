@@ -73,6 +73,11 @@ export function specSectionRange(body: string): { start: number; end: number } |
   return end === -1 ? undefined : { start, end: end + REFINE_END_MARKER.length };
 }
 
+/** Agent text without the refine markers, so a spec quoting them cannot end its own section early. */
+export function withoutMarkers(text: string): string {
+  return text.replaceAll(REFINE_END_MARKER, "").replaceAll(REFINE_MARKER, "");
+}
+
 /** The issue body as its author wrote it: without the factory's spec section. */
 export function withoutSpecSection(body: string): string {
   const range = specSectionRange(body);
