@@ -11,7 +11,7 @@ import type { Worktree } from "../../git/worktrees.js";
 import { factoryComment, type GithubPort } from "../../github/port.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../../store/store.js";
 import { runCommand, type CommandRunner } from "../../util/exec.js";
-import { diffHardRuleHits } from "../hard-rules.js";
+import { diffHardRuleHits, freshBase } from "../hard-rules.js";
 import { acceptanceChecklist, readAcceptanceRecord } from "../acceptance.js";
 import { latestSpecRound, prBody, readValid, refined, runDirOf, specFile } from "../shared.js";
 import { RunMachine, TransitionError, type Evidence } from "../transitions.js";
@@ -64,15 +64,42 @@ export class StageContext {
   /** Runs git and the checks. */
   readonly exec: CommandRunner;
   readonly capturer: CapturePort;
+  /** The driver's ports, with `read` answering each file once per step (see `startStep`). */
+  readonly deps: DriverDeps;
+  /** What `once` has worked out during the current step. */
+  private readonly stepMemo = new Map<string, unknown>();
 
   /** `signal` reads the driver's abort signal when it is used: it changes with every drive(). */
   constructor(
-    readonly deps: DriverDeps,
+    deps: DriverDeps,
     private readonly currentSignal: () => AbortSignal | undefined,
   ) {
+    // Each agent turn reads its prompt and lessons.md from the default branch, and a review step
+    // starts every lens at once: within one step they read the same commit, so each file is read once.
+    this.deps = { ...deps, read: (path) => this.once(`read|${path}`, () => deps.read(path)) };
     this.machine = new RunMachine(deps.store, deps.config);
     this.exec = deps.run ?? runCommand;
     this.capturer = deps.capture ?? playwrightCapture(deps.project, this.exec, deps.config.app.narrate);
+  }
+
+  /**
+   * Called by the driver before each step. A step may reuse what it worked out (a file on the
+   * default branch, where a commit left it); the next step asks again, so it sees what a fetch or
+   * a new commit changed meanwhile.
+   */
+  startStep(): void {
+    this.stepMemo.clear();
+  }
+
+  /** `read()`'s answer for `key`, worked out at most once per step. Only for answers nothing in the step can change. */
+  once<T>(key: string, read: () => T): T {
+    if (!this.stepMemo.has(key)) this.stepMemo.set(key, read());
+    return this.stepMemo.get(key) as T;
+  }
+
+  /** Where `head` left the default branch (`freshBase`), once per step and commit. */
+  freshBase(worktree: Worktree, head: string): string {
+    return this.once(`base|${worktree.path}|${head}`, () => freshBase(worktree.path, this.defaultBranch, head, this.exec));
   }
 
   /** Aborted when the run being driven is cancelled or this worker loses its lease. */
@@ -158,7 +185,7 @@ export class StageContext {
   hardRuleHits(run: Run, worktree: Worktree, head: string): string[] {
     const issue = this.issueOf(run);
     const scope = [issue.title, issue.body, ...this.triageScope(this.runDir(run)).map((s) => s.body), ...this.acceptedSpec(run).map((s) => s.body)].join("\n");
-    return diffHardRuleHits({ cwd: worktree.path, defaultBranch: this.defaultBranch, config: this.deps.config, scope, head, run: this.exec });
+    return diffHardRuleHits({ cwd: worktree.path, defaultBranch: this.defaultBranch, config: this.deps.config, scope, head, base: this.freshBase(worktree, head), run: this.exec });
   }
 
   /** The risk triage gave this run, once triage has run. */

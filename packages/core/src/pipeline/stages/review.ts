@@ -3,13 +3,13 @@ import { join, relative } from "node:path";
 import { isBlocking, isTrustedIssue, parseCriteria, parseVerdict, type ParsedVerdict, type ReviewLens } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn, type TurnResult } from "../../agents/turn.js";
-import { gitEvidence, type Worktree } from "../../git/worktrees.js";
+import { gitEvidence, snapshot, type Worktree } from "../../git/worktrees.js";
 import { factoryComment } from "../../github/port.js";
 import type { Issue, Run } from "../../store/store.js";
 import { redactPaths } from "../../util/redact.js";
 import { acceptanceCount, acceptanceReviewText, extractCriteria, matchAnswers, readAcceptanceRecord, writeAcceptanceRecord, type Criterion } from "../acceptance.js";
 import { resolveGate } from "../gates.js";
-import { changeReport, freshBase } from "../hard-rules.js";
+import { changeReport } from "../hard-rules.js";
 import { blockingFindings, diffLines, reviewNotes, verifyProblems, type BlockingFinding, type LensReview, type ReviewNotes } from "../reviews.js";
 import { quietMentions, readReview, readValid, reviewPath, runEvidence, verdictPath } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
@@ -28,12 +28,13 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
   const roundDir = join(dir, `round-${round}`);
   const git = gitEvidence(worktree, ctx.defaultBranch, ctx.exec);
   const commit = parseVerdict("checks", readFileSync(join(roundDir, "checks.md"), "utf8")).header.COMMIT;
-  if (git.head() !== commit) {
-    return ctx.escalate(run, `HEAD is ${git.head().slice(0, 7)} but the quality gate passed ${commit.slice(0, 7)}; reviews only look at the gated commit`);
+  const head = git.head();
+  if (head !== commit) {
+    return ctx.escalate(run, `HEAD is ${head.slice(0, 7)} but the quality gate passed ${commit.slice(0, 7)}; reviews only look at the gated commit`);
   }
   let base: string;
   try {
-    base = freshBase(worktree.path, ctx.defaultBranch, commit, ctx.exec);
+    base = ctx.freshBase(worktree, commit);
   } catch (err) {
     return ctx.escalate(run, `could not find where the branch left ${ctx.defaultBranch}: ${(err as Error).message}`);
   }
@@ -141,7 +142,7 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
   if (gate.outcome === "wait_human") return ctx.waitForHuman(run, "review", [...outcome, ...gate.reasons, ...lifted]);
   for (const line of lifted) ctx.info(run, line);
   ctx.recordProceed(run, "review", mode, [...outcome, ...lifted].join("; "), commit);
-  ctx.move(run, "capture", `reviews clear (round ${round})`, { round, commit }, runEvidence(dir, round, git));
+  ctx.move(run, "capture", `reviews clear (round ${round})`, { round, commit }, runEvidence(dir, round, snapshot(git)));
   return undefined;
 }
 

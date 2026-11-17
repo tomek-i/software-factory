@@ -23,7 +23,7 @@ import {
 } from "../feedback.js";
 import { gateFingerprint, resyncFingerprint } from "../fingerprint.js";
 import { resolveGate, type GateInput } from "../gates.js";
-import { changeReport, freshBase } from "../hard-rules.js";
+import { changeReport } from "../hard-rules.js";
 import { bullets, pause, readValid, reviewPath, runEvidence, section, verdictPath } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
 
@@ -115,7 +115,7 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
   }
   // Whatever a human approves, or GitHub merges, must be what the PR shows; this also catches up
   // on a push that failed in an earlier attempt.
-  const justPushed = !git.isPushed();
+  const justPushed = !git.isPushed(head);
   if (justPushed) ctx.push(worktree);
 
   // Read the checks before anyone is asked: an approval given while a required check has failed,
@@ -364,10 +364,13 @@ function approvalCovers(ctx: StageContext, run: Run, worktree: Worktree, head: s
   if (approved === undefined) return false;
   if (approved === head) return true;
   const cwd = worktree.path;
-  if (ctx.exec("git", ["merge-base", "--is-ancestor", approved, head], { cwd }).code !== 0) return false;
-  // Along the branch's own line only: the commits a re-sync brings in from the default branch are not the branch's.
-  const added = ctx.exec("git", ["rev-list", "--first-parent", "--no-merges", `${approved}..${head}`], { cwd });
-  return added.code === 0 && added.stdout.trim() === "";
+  // A fact about two commits, which never changes; the merge stage asks it up to three times.
+  return ctx.once(`covers|${approved}|${head}`, () => {
+    if (ctx.exec("git", ["merge-base", "--is-ancestor", approved, head], { cwd }).code !== 0) return false;
+    // Along the branch's own line only: the commits a re-sync brings in from the default branch are not the branch's.
+    const added = ctx.exec("git", ["rev-list", "--first-parent", "--no-merges", `${approved}..${head}`], { cwd });
+    return added.code === 0 && added.stdout.trim() === "";
+  });
 }
 
 /** The approver weighs the run's reports and the final diff, and says PROCEED or ESCALATE. */
@@ -376,7 +379,7 @@ async function approverTurn(ctx: StageContext, run: Run, worktree: Worktree, hea
   const issue = ctx.issueOf(run);
   const outputFile = verdictPath(dir, "approver", run.round);
   rmSync(outputFile, { force: true });
-  const base = freshBase(worktree.path, ctx.defaultBranch, head, ctx.exec);
+  const base = ctx.freshBase(worktree, head);
   const changeFile = join(dir, "approval.diff");
   writeFileSync(changeFile, changeReport(worktree.path, base, head, ctx.exec));
   const roundDir = join(dir, `round-${run.round}`);
