@@ -199,6 +199,7 @@ factory new --discard <draft>                # drop a draft
 ```
 
 - An issue writer agent drafts the issue; by default the `issue_writer` gate waits for you to approve the draft.
+- It labels each issue with labels the repo already has on GitHub, never the factory's status labels.
 - Without `--queue`, `factory work` and `factory serve` leave the new issues alone until you queue them.
 - How drafts, the gate and sub-issues work: [Writing issues from an idea](docs/factory-new.md).
 - The web app's New issue screen does the same, with the same rules: [Web mode](docs/web-mode.md#screens).
