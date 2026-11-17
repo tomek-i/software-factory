@@ -30,7 +30,7 @@ export {
   waitingCommit,
 } from "./shared.js";
 export type { DriveOutcome, DriverDeps } from "./stages/context.js";
-export { blockingFindings, refutedFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "./reviews.js";
+export { blockingFindings, diffLines, refutedFindings, reviewNotes, verifyProblems, type BlockingFinding, type DiffLines, type LensReview, type ReviewNotes } from "./reviews.js";
 
 const LEASE_TTL_MS = 15 * 60_000;
 const LEASE_RENEW_MS = 60_000;

@@ -72,27 +72,110 @@ function findingPlace(f: Finding): string {
   return f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : "";
 }
 
+/** The lines of each file a review comment may point at: added and context lines on the new side of a diff. */
+export type DiffLines = Map<string, Set<number>>;
+
 /**
- * The PR description's review notes: minor findings and nits per lens, the blocking findings the
- * verifier refuted (with why), and any it confirmed that are still open because the run stopped for
- * a human (a stall or the review round cap). Undefined when there is nothing to note.
+ * The new-side lines of a unified diff (`git diff`), per file. Anything before the first
+ * `diff --git` (such as the commit log in change.diff) is skipped. A deleted file has none, and
+ * neither has a path git quotes (unusual characters): their findings go in the review's body.
  */
-export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"verify">): string | undefined {
+export function diffLines(diff: string): DiffLines {
+  const lines: DiffLines = new Map();
+  let file: Set<number> | undefined;
+  let started = false;
+  let next = 0;
+  let oldLeft = 0;
+  let newLeft = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith("\\")) continue; // "\ No newline at end of file"
+      if (line.startsWith("-")) {
+        oldLeft--;
+        continue;
+      }
+      file?.add(next++);
+      newLeft--;
+      if (!line.startsWith("+")) oldLeft--;
+      continue;
+    }
+    if (line.startsWith("diff --git ")) {
+      started = true;
+      file = undefined;
+    } else if (started && line.startsWith("+++ b/")) {
+      const name = line.slice("+++ b/".length).replace(/\t$/, "");
+      file = lines.get(name) ?? new Set();
+      lines.set(name, file);
+    } else if (started) {
+      const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+      if (hunk) {
+        oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]);
+        next = Number(hunk[2]);
+        newLeft = hunk[3] === undefined ? 1 : Number(hunk[3]);
+      }
+    }
+  }
+  return lines;
+}
+
+/** A comment on one line of the change, on the new side of the diff. */
+export interface ReviewComment {
+  path: string;
+  line: number;
+  body: string;
+}
+
+/** What the reviews leave for the human: the review's body and its comments on lines of the change. */
+export interface ReviewNotes {
+  body: string;
+  comments: ReviewComment[];
+}
+
+/**
+ * The review notes: minor findings and nits per lens, the blocking findings the verifier refuted
+ * (with why), and any it confirmed that are still open because the run stopped for a human (a stall
+ * or the review round cap). A finding whose file and line are in `inDiff` becomes a comment on that
+ * line, starting with its lens and severity; the rest go in the body, grouped, with their place as
+ * text. Without `inDiff` everything is in the body. Undefined when there is nothing to note.
+ */
+export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"verify">, inDiff?: DiffLines): ReviewNotes | undefined {
+  const comments: ReviewComment[] = [];
+  /** Comments on the finding's line when that line is in the diff; false when it goes in the body. */
+  const inline = (f: Finding, text: string): boolean => {
+    if (!f.file || !f.line) return false;
+    const path = f.file.replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!inDiff?.get(path)?.has(f.line)) return false;
+    comments.push({ path, line: f.line, body: text });
+    return true;
+  };
+  const item = (f: Finding) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`;
   const parts: string[] = [];
+  let count = 0;
+  const byId = new Map(blockingFindings(reviews).map((b) => [b.finding.id, b]));
   if (verified?.header.VERDICT === "CONFIRMED") {
-    parts.push(`**Confirmed by the verifier, not fixed**\n${verified.findings.map((f) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`).join("\n")}`);
+    count += verified.findings.length;
+    const rest = verified.findings.filter((f) => !inline(f, `**${byId.get(f.id)?.lens ?? "verifier"}** · ${f.severity} (confirmed by the verifier, not fixed): ${f.claim}`));
+    if (rest.length) parts.push(["**Confirmed by the verifier, not fixed**", ...rest.map(item)].join("\n"));
   }
   for (const { lens, verdict } of reviews) {
     const minor = verdict.findings.filter((f) => !isBlocking(f));
-    if (minor.length) parts.push(`**${lens}**\n${minor.map((f) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`).join("\n")}`);
+    count += minor.length;
+    const rest = minor.filter((f) => !inline(f, `**${lens}** · ${f.severity}: ${f.claim}`));
+    if (rest.length) parts.push([`**${lens}**`, ...rest.map(item)].join("\n"));
   }
   if (verified) {
-    const byId = new Map(blockingFindings(reviews).map((b) => [b.finding.id, b]));
-    const refuted = refutedFindings(verified.body, [...byId.keys()]).map(({ id, reason }) => {
+    const refuted = refutedFindings(verified.body, [...byId.keys()]);
+    count += refuted.length;
+    const rest = refuted.flatMap(({ id, reason }) => {
       const b = byId.get(id);
-      return b ? `- ${b.lens} ${b.finding.severity}: ${b.finding.claim}${findingPlace(b.finding)}\n  Refuted: ${reason}` : `- ${id}: ${reason}`;
+      if (!b) return [`- ${id}: ${reason}`];
+      const { lens, finding } = b;
+      if (inline(finding, `**${lens}** · ${finding.severity} (refuted by the verifier): ${finding.claim}\n\nRefuted: ${reason}`)) return [];
+      return [`- ${lens} ${finding.severity}: ${finding.claim}${findingPlace(finding)}\n  Refuted: ${reason}`];
     });
-    if (refuted.length) parts.push(`**Refuted by the verifier**\n${refuted.join("\n")}`);
+    if (rest.length) parts.push(["**Refuted by the verifier**", ...rest].join("\n"));
   }
-  return parts.length ? `## Review notes\nLeft for you to judge.\n\n${parts.join("\n\n")}` : undefined;
+  if (!count) return undefined;
+  const intro = `Review notes, left for you to judge.${comments.length ? " A note about a line of the change is on that line." : ""}`;
+  return { body: [intro, ...parts].join("\n\n"), comments };
 }

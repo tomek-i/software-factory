@@ -12,8 +12,7 @@ import { factoryComment, type GithubPort } from "../../github/port.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../../store/store.js";
 import { runCommand, type CommandRunner } from "../../util/exec.js";
 import { diffHardRuleHits } from "../hard-rules.js";
-import { reviewNotes } from "../reviews.js";
-import { latestSpecRound, prBody, readReview, readValid, refined, runDirOf, specFile } from "../shared.js";
+import { latestSpecRound, prBody, readValid, refined, runDirOf, specFile } from "../shared.js";
 import { RunMachine, TransitionError, type Evidence } from "../transitions.js";
 
 export interface DriverDeps {
@@ -206,25 +205,18 @@ export class StageContext {
   }
 
   /**
-   * Rewrite the PR description from this round's files: build.md, the review notes (worked out from
-   * the round's reviews and verify.md unless given) and the capture stage's screenshots, once it ran.
+   * Rewrite the PR description from this round's files: build.md and the capture stage's screenshots,
+   * once it ran. The review notes are a review on the PR, not part of the description.
    */
-  updatePrDescription(run: Run, notes?: string): void {
+  updatePrDescription(run: Run): void {
     if (run.pr_number === null) return;
     try {
       const dir = this.runDir(run);
       const roundDir = join(dir, `round-${run.round}`);
       const build = parseVerdict("build", readFileSync(join(dir, "build.md"), "utf8"));
-      if (notes === undefined) {
-        const reviews = this.reviewLenses(run).flatMap((lens) => {
-          const verdict = readReview(roundDir, lens);
-          return verdict ? [{ lens, verdict }] : [];
-        });
-        notes = reviewNotes(reviews, readValid("verify", join(roundDir, "verify.md"), () => []));
-      }
       const screenshotsFile = join(roundDir, "capture", "screenshots.md");
       const screenshots = existsSync(screenshotsFile) ? readFileSync(screenshotsFile, "utf8") : undefined;
-      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, notes, screenshots));
+      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, screenshots));
     } catch (err) {
       // A convenience; the review and capture files hold the same and `factory show` lists them.
       this.info(run, `could not update the description of PR #${run.pr_number}: ${(err as Error).message}`);

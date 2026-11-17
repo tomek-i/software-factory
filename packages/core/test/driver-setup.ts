@@ -7,7 +7,7 @@ import { createAgentRunner } from "../src/agents/runner.js";
 import type { CapturePort } from "../src/capture/capture.js";
 import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
-import type { CodeScanningAlert, DismissReason, GithubPort, MergeMethod, RequiredCheck } from "../src/github/port.js";
+import type { CodeScanningAlert, DismissReason, GithubPort, MergeMethod, PullRequestReview, RequiredCheck } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
@@ -103,6 +103,9 @@ export function setup(
   const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
   const closedReady = new Set<number>();
   const edits: { number: number; body: string }[] = [];
+  // Every review the factory left on a PR; `reviewErrors`: what the next posts throw, one each, in turn.
+  const reviews: ({ number: number } & PullRequestReview)[] = [];
+  const reviewErrors: string[] = [];
   // The run's PR as the fake GitHub sees it; a test may merge or close it, or make merging fail.
   // `checks`: what each look at the required checks returns, in turn; the last one repeats. None by default.
   const pr: {
@@ -150,6 +153,12 @@ export function setup(
     findOpenPullRequests: (prefix) =>
       readyPrs.flatMap((p, i) => (p.head.startsWith(prefix) && !closedReady.has(8 + i) ? [{ number: 8 + i, head: p.head }] : [])),
     updatePullRequest: (number, body) => edits.push({ number, body }),
+    hasReview: (number, marker) => reviews.some((r) => r.number === number && r.body.startsWith(marker)),
+    createReview: (number, review) => {
+      const error = reviewErrors.shift();
+      if (error) throw new Error(error);
+      reviews.push({ number, ...review });
+    },
     pullRequestState: (number) => {
       pr.onView?.(++views);
       const head = pr.head ?? (prs[0] ? git(remote, "rev-parse", `refs/heads/${prs[0].head}`) : "");
@@ -196,7 +205,7 @@ export function setup(
     checksGraceMs: 200,
     capture: options.capture,
   });
-  return { root, remote, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges, dismissals };
+  return { root, remote, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, reviews, reviewErrors, seen, pr, merges, dismissals };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */

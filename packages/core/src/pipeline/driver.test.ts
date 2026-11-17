@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseVerdict, type Finding, type ParsedVerdict } from "@factory/shared";
 import { buildStep, FAKE_AWS_KEY, READY, setup, TRIAGE } from "../../test/driver-setup.js";
 import { git, GIT_TEST_TIMEOUT, reviewsPass, type FakeStep } from "../../test/helpers.js";
-import { blockingFindings, prBody, refutedFindings, reviewNotes, runDirOf, verifyProblems, type BlockingFinding, type LensReview } from "./driver.js";
+import { blockingFindings, diffLines, prBody, refutedFindings, reviewNotes, runDirOf, verifyProblems, type BlockingFinding, type LensReview } from "./driver.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -220,8 +220,10 @@ describe("prBody", () => {
     expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3)).toBe("## What\n- done\n\nCloses #3\n");
     expect(prBody("STATUS: READY\n", 3)).toBe("Closes #3\n");
   });
-  it("adds the review notes before the closing line", () => {
-    expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3, false, "## Review notes\n- x\n")).toBe("## What\n- done\n\n## Review notes\n- x\n\nCloses #3\n");
+  it("puts the screenshots after the testing notes, and never any review notes", () => {
+    const body = prBody("STATUS: READY\n\n## Summary\n- done\n", 3, false, "## Screenshots\n- x\n");
+    expect(body).toBe("## What\n- done\n\n## Screenshots\n- x\n\nCloses #3\n");
+    expect(body).not.toContain("Review notes");
   });
 });
 
@@ -281,15 +283,14 @@ describe("verifier helpers", () => {
     ]);
   });
 
-  it("notes minor findings per lens and refuted findings with why, or nothing", () => {
+  it("notes minor findings per lens and refuted findings with why, all in the body without a diff, or nothing", () => {
     const reviews: LensReview[] = [
       { lens: "code", verdict: review([f("code-1", "major", { file: "a.ts", line: 3 }), f("code-2", "nit", { file: "b.ts" })]) },
       { lens: "docs", verdict: review([]) },
     ];
-    expect(reviewNotes(reviews, verify("NONE_CONFIRMED", [], ["code-1: a.ts:2 guards it"]))).toBe(
-      [
-        "## Review notes",
-        "Left for you to judge.",
+    expect(reviewNotes(reviews, verify("NONE_CONFIRMED", [], ["code-1: a.ts:2 guards it"]))).toEqual({
+      body: [
+        "Review notes, left for you to judge.",
         "",
         "**code**",
         "- nit: claim code-2 (b.ts)",
@@ -298,7 +299,98 @@ describe("verifier helpers", () => {
         "- code major: claim code-1 (a.ts:3)",
         "  Refuted: a.ts:2 guards it",
       ].join("\n"),
-    );
+      comments: [],
+    });
     expect(reviewNotes([{ lens: "docs", verdict: review([]) }])).toBeUndefined();
+  });
+
+  it("comments on a finding's line when it is in the diff, and puts the rest in the body with their place", () => {
+    const inDiff = new Map([
+      ["a.ts", new Set([3, 4])],
+      ["src/c.ts", new Set([10])],
+    ]);
+    const reviews: LensReview[] = [
+      {
+        lens: "code",
+        verdict: review([
+          f("code-1", "major", { file: "a.ts", line: 3 }),
+          f("code-2", "minor", { file: "a.ts", line: 4 }),
+          f("code-3", "minor", { file: "a.ts", line: 9 }), // outside the diff
+          f("code-4", "nit", { file: "a.ts" }), // no line
+          f("code-5", "nit"), // no place at all
+          f("code-6", "minor", { file: "b.ts", line: 3 }), // a file the change does not touch
+        ]),
+      },
+      { lens: "security", verdict: review([f("security-1", "critical", { file: "./src/c.ts", line: 10 }), f("security-2", "major", { file: "a.ts", line: 99 })]) },
+    ];
+    const verified = verify("CONFIRMED", [f("security-1", "critical", { file: "src/c.ts", line: 10 }), f("verifier-1", "critical")], ["code-1: a.ts:2 guards it", "security-2: unreachable"]);
+    expect(reviewNotes(reviews, verified, inDiff)).toEqual({
+      body: [
+        "Review notes, left for you to judge. A note about a line of the change is on that line.",
+        "",
+        "**Confirmed by the verifier, not fixed**",
+        "- critical: claim verifier-1",
+        "",
+        "**code**",
+        "- minor: claim code-3 (a.ts:9)",
+        "- nit: claim code-4 (a.ts)",
+        "- nit: claim code-5",
+        "- minor: claim code-6 (b.ts:3)",
+        "",
+        "**Refuted by the verifier**",
+        "- security major: claim security-2 (a.ts:99)",
+        "  Refuted: unreachable",
+      ].join("\n"),
+      comments: [
+        { path: "src/c.ts", line: 10, body: "**security** · critical (confirmed by the verifier, not fixed): claim security-1" },
+        { path: "a.ts", line: 4, body: "**code** · minor: claim code-2" },
+        { path: "a.ts", line: 3, body: "**code** · major (refuted by the verifier): claim code-1\n\nRefuted: a.ts:2 guards it" },
+      ],
+    });
+  });
+
+  it("reads the new-side lines of each file in a diff, after the commit log", () => {
+    const diff = [
+      "# Change aaa..bbb",
+      "## Commits",
+      "    diff --git a/fake b/fake",
+      "+++ b/fake",
+      "## Diff",
+      "diff --git a/a.ts b/a.ts",
+      "index 1..2 100644",
+      "--- a/a.ts",
+      "+++ b/a.ts",
+      "@@ -2,4 +2,4 @@ function x() {",
+      " two",
+      "-three",
+      "+THREE",
+      " four",
+      "-five",
+      "+FIVE",
+      "\\ No newline at end of file",
+      "@@ -20 +20,2 @@",
+      " twenty",
+      "+twenty-one",
+      "diff --git a/gone.ts b/gone.ts",
+      "deleted file mode 100644",
+      "--- a/gone.ts",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-bye",
+      "diff --git a/new.md b/new.md",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/new.md",
+      "@@ -0,0 +1,2 @@",
+      "+# Title",
+      "+--- not a header",
+      "",
+    ].join("\n");
+    expect(diffLines(diff)).toEqual(
+      new Map([
+        ["a.ts", new Set([2, 3, 4, 5, 20, 21])],
+        ["new.md", new Set([1, 2])],
+      ]),
+    );
   });
 });

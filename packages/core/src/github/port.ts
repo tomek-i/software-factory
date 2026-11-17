@@ -37,6 +37,17 @@ export interface GithubPort {
   createPullRequest(pr: { head: string; base: string; title: string; body: string }): number;
   /** Replace a PR's description. */
   updatePullRequest(number: number, body: string): void;
+  /**
+   * Whether the account the factory runs as already left a review on the PR whose body starts with
+   * `marker`. Anyone can paste a marker into a review of their own, so only the factory's count.
+   */
+  hasReview(number: number, marker: string): boolean;
+  /**
+   * Leave a review with `event: COMMENT` on `commit` (the factory is the PR's author, so it can neither
+   * approve nor request changes), with inline comments on the new side of the diff. GitHub refuses
+   * the whole review (HTTP 422) when a comment's line is not in the diff.
+   */
+  createReview(number: number, review: PullRequestReview): void;
   pullRequestState(number: number): PullRequestState;
   /** Take a draft PR out of draft. */
   markReady(number: number): void;
@@ -57,6 +68,15 @@ export interface GithubPort {
    * agent or stage may call it.
    */
   dismissCodeScanningAlert(alert: number, reason: DismissReason, comment: string): void;
+}
+
+/** A review the factory leaves on a PR: a body and comments on lines of the change. */
+export interface PullRequestReview {
+  /** The head commit that was reviewed. */
+  commit: string;
+  body: string;
+  /** `line` is a line of `path` on the new (RIGHT) side of the diff. */
+  comments: { path: string; line: number; body: string }[];
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";
@@ -103,6 +123,8 @@ export interface IssueWriterPort {
   /** Link `child` as a GitHub sub-issue of `parent`. */
   addSubIssue(parent: number, child: number): void;
 }
+
+const PR_REVIEWS = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){nodes{body viewerDidAuthor}}}}}";
 
 const ADD_SUB_ISSUE = "mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}";
 
@@ -316,6 +338,30 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     },
     updatePullRequest(number, body) {
       withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));
+    },
+    hasReview(number, marker) {
+      const [owner, name] = repo.split("/");
+      const out = gh(["api", "graphql", "-f", `query=${PR_REVIEWS}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `n=${number}`]);
+      let reviews: { body?: unknown; viewerDidAuthor?: unknown }[];
+      try {
+        const parsed = JSON.parse(out) as { data?: { repository?: { pullRequest?: { reviews?: { nodes?: unknown } } } } };
+        const nodes = parsed.data?.repository?.pullRequest?.reviews?.nodes;
+        if (!Array.isArray(nodes)) throw new Error("no reviews");
+        reviews = nodes as typeof reviews;
+      } catch {
+        throw new GithubError(`gh api graphql returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      return reviews.some((r) => r.viewerDidAuthor === true && typeof r.body === "string" && r.body.trimStart().startsWith(marker));
+    },
+    createReview(number, { commit, body, comments }) {
+      const payload = {
+        commit_id: commit,
+        event: "COMMENT",
+        body,
+        comments: comments.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", body: c.body })),
+      };
+      // From a file: the comments can exceed the Windows command-line limit.
+      withBodyFile(JSON.stringify(payload), (file) => gh(["api", "-X", "POST", `repos/${repo}/pulls/${number}/reviews`, "--input", file, "--silent"]));
     },
   };
 }

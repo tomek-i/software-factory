@@ -272,6 +272,38 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).editComment(12, "x")).toThrow(/gh api -X failed: boom/);
   });
 
+  it("finds a review of its own that starts with a marker", () => {
+    const reviews = (nodes: object[]) => JSON.stringify({ data: { repository: { pullRequest: { reviews: { nodes } } } } });
+    const { calls, run } = fakeGh(
+      reviews([
+        { body: "<!-- factory:r:review-round-1 -->\nsomeone else pasted the marker", viewerDidAuthor: false },
+        { body: "quoting <!-- factory:r:review-round-2 --> later on", viewerDidAuthor: true },
+        { body: "<!-- factory:r:review-round-3 -->\nnotes", viewerDidAuthor: true },
+      ]),
+    );
+    const github = ghPort(project, run);
+    expect(github.hasReview(42, "<!-- factory:r:review-round-1 -->")).toBe(false);
+    expect(github.hasReview(42, "<!-- factory:r:review-round-2 -->")).toBe(false);
+    expect(github.hasReview(42, "<!-- factory:r:review-round-3 -->")).toBe(true);
+    expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*viewerDidAuthor/), "-f", "owner=o", "-f", "name=r", "-F", "n=42"]);
+    expect(() => ghPort(project, fakeGh("{}").run).hasReview(42, "x")).toThrow(/unexpected output/);
+  });
+
+  it("leaves a COMMENT review with inline comments on the new side, sending it from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args[5]!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).createReview(42, { commit: "abc", body: "notes", comments: [{ path: "a.ts", line: 3, body: "**code** · minor: x" }] });
+    expect(calls[0]).toEqual(["api", "-X", "POST", "repos/o/r/pulls/42/reviews", "--input", expect.any(String), "--silent"]);
+    expect(JSON.parse(sent)).toEqual({ commit_id: "abc", event: "COMMENT", body: "notes", comments: [{ path: "a.ts", line: 3, side: "RIGHT", body: "**code** · minor: x" }] });
+    expect(existsSync(calls[0]![5]!)).toBe(false);
+    expect(() => ghPort(project, fakeGh("", 1).run).createReview(42, { commit: "abc", body: "x", comments: [] })).toThrow(/gh api -X failed: boom/);
+  });
+
   it("marks factory comments", () => {
     expect(factoryComment("run-1-a", "triage-reject", "  nope  ")).toBe("<!-- factory:run-1-a:triage-reject -->\nnope\n");
   });

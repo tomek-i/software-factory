@@ -10,7 +10,7 @@ import type { FakeStep } from "./helpers.js";
 export const captureConfig = (app = 'app:\n  start: "node app.js"\n') =>
   `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  merge: human\nreviews:\n  always: [code]\n  ui: []\n${app}`;
 export const UI_TRIAGE = TRIAGE().replace("SURFACES: api", "SURFACES: ui, api");
-// A minor finding, so the PR has review notes the screenshots must not replace.
+// A minor finding, so the PR has review notes, which capture must not put in the description.
 export const CODE_PASS: FakeStep = { role: "reviewer-code", output: review("PASS", "minor") };
 export const PLAN = [
   "CAPTURE: PLAN",

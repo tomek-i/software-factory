@@ -231,9 +231,9 @@ export function longSummaryBullets(buildBody: string): number {
 /**
  * The draft PR description from the builder's hand-over: a short brief for the human reviewer first,
  * with the implementation notes (useful to reviewing agents, noisy for people) collapsed below it.
- * `screenshots` is the capture stage's `## Screenshots` section, `notes` the reviews' notes.
+ * `screenshots` is the capture stage's `## Screenshots` section. The reviews' notes are a review on the PR.
  */
-export function prBody(buildBody: string, issueNumber: number, unsafe = false, notes?: string, screenshots?: string): string {
+export function prBody(buildBody: string, issueNumber: number, unsafe = false, screenshots?: string): string {
   const parts: string[] = [];
   if (unsafe) {
     parts.push("> [!WARNING]\n> Built with `--unsafe`: hard rules (protected paths, new dependencies, secret files, deletions) were lifted for this run.");
@@ -246,7 +246,6 @@ export function prBody(buildBody: string, issueNumber: number, unsafe = false, n
   if (screenshots) parts.push(screenshots.trim());
   // Blank lines around the content so GitHub renders the markdown inside <details>.
   if (details) parts.push(`<details><summary>Implementation details</summary>\n\n${details}\n\n</details>`);
-  if (notes) parts.push(notes.trim());
   parts.push(`Closes #${issueNumber}`);
   return `${parts.join("\n\n")}\n`;
 }

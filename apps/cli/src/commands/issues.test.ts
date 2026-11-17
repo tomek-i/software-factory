@@ -124,6 +124,8 @@ describe("issue commands", () => {
     requiredChecks: () => [],
       codeScanningAlerts: () => [],
       dismissCodeScanningAlert: () => undefined,
+      hasReview: () => false,
+      createReview: () => undefined,
       pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
     };
 
