@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, DraftDetail, DraftView, ProjectInfo, RunChecks, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, RunChecks, RunDetail, RunRow } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -19,6 +19,7 @@ function runRow(patch: Partial<RunRow> = {}): RunRow {
     title: "Add the feature",
     state: "needs_human",
     waitingGate: "triage",
+    pr: null,
     build: 1,
     review: 1,
     resyncs: 0,
@@ -46,6 +47,8 @@ class FakeServer {
   drafts: DraftView[] = [];
   draftDetails: Record<string, DraftDetail> = {};
   projectsStatus = 200;
+  /** Merge-gate details by run id; others get a 404. */
+  mergeGate: Record<string, MergeGateDetails> = {};
   /** Run files by path, served for every run. */
   files: Record<string, string> = {};
   /** The failed checks of each run's PR, by run id. */
@@ -116,6 +119,11 @@ data: ${JSON.stringify(event)}
     if (file) {
       const path = file[2]!.split("/").map(decodeURIComponent).join("/");
       return path in this.files ? json(200, { path, text: this.files[path] }) : json(400, { error: `No file "${path}".` });
+    }
+    const merge = /^\/api\/projects\/p1\/runs\/([^/]+)\/merge-gate$/.exec(url.pathname);
+    if (merge) {
+      const found = this.mergeGate[decodeURIComponent(merge[1]!)];
+      return found ? json(200, found) : json(404, { error: "Not at the merge gate." });
     }
     const checks = /^\/api\/projects\/p1\/runs\/([^/]+)\/checks$/.exec(url.pathname);
     if (checks) {
@@ -470,6 +478,110 @@ describe("inbox", () => {
     renderAt("/inbox");
     expect(await screen.findByRole("button", { name: /Cancel run/ })).toBeTruthy();
     expect(screen.queryByRole("note")).toBeNull();
+  });
+});
+
+describe("merge gate card", () => {
+  const atMerge = (patch: Partial<RunRow> = {}) =>
+    runRow({ waitingGate: "merge", pr: 7, build: 2, review: 3, cost: 1.5, reason: "waiting at merge gate: gate is set to human", ...patch });
+  const details = (patch: Partial<MergeGateDetails> = {}): MergeGateDetails => ({
+    pr: { number: 7, url: "https://github.com/acme/shop/pull/7", head: "abc", additions: 120, deletions: 40, changedFiles: 8 },
+    checks: { passed: 5, failed: 0, pending: 1, skipped: 0, failedChecks: [] },
+    reviews: [
+      { lens: "code", path: "round-3/review-code.md", verdict: "PASS", findings: 2, blocking: 0 },
+      { lens: "security", path: "round-3/review-security.md", verdict: "PASS", findings: 1, blocking: 0 },
+      { lens: "docs", path: "round-3/review-docs.md", verdict: "PASS", findings: 0, blocking: 0 },
+    ],
+    rounds: { build: 2, review: 3 },
+    cost: 1.5,
+    ...patch,
+  });
+
+  it("shows the PR and its size, the checks, the reviews, rounds and cost, without the reason that repeats the gate", async () => {
+    server.runs = [atMerge()];
+    server.mergeGate["run-1"] = details();
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const merge = await screen.findByLabelText("Merge details");
+    expect(within(merge).getByRole("link", { name: "PR #7" }).getAttribute("href")).toBe("https://github.com/acme/shop/pull/7");
+    expect(merge.textContent).toContain("+120 / -40, 8 files");
+    expect(merge.textContent).toContain("5 passed, 0 failed, 1 pending");
+    expect(merge.textContent).toContain("code PASS, security PASS, docs PASS · 3 review notes");
+    expect(merge.textContent).toContain("build round 2 · review round 3 · $1.50");
+    expect(screen.queryByText(/gate is set to human/)).toBeNull();
+    expect(screen.queryByLabelText("Failed checks")).toBeNull();
+    expect(screen.getByRole("link", { name: /Add the feature/ }).getAttribute("href")).toBe("/runs/p1/run-1");
+
+    // No failed check: Approve as on any gate.
+    await user.click(screen.getByRole("button", { name: /^Approve$/ }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "merge" } }]));
+  });
+
+  it("warns on Approve when a check failed, lists the failures above it, links only web addresses, and still approves", async () => {
+    server.runs = [atMerge({ reason: "waiting at merge gate: hard rule: touches .github/workflows/ci.yml" })];
+    server.mergeGate["run-1"] = details({
+      checks: {
+        passed: 4,
+        failed: 2,
+        pending: 0,
+        skipped: 1,
+        failedChecks: [{ name: "CodeQL", link: "https://github.com/acme/shop/runs/9" }, { name: "evil", link: "javascript:alert(1)" }],
+      },
+    });
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const failed = await screen.findByLabelText("Failed checks");
+    expect(failed.textContent).toContain("2 checks failed on this PR");
+    expect(within(failed).getByRole("link", { name: "CodeQL" }).getAttribute("href")).toBe("https://github.com/acme/shop/runs/9");
+    expect(within(failed).getByText("evil").closest("a")).toBeNull();
+    expect(screen.getByLabelText("Merge details").textContent).toContain("4 passed, 2 failed, 0 pending, 1 skipped");
+    // A reason that says more than the gate stays.
+    expect(screen.getByText("waiting at merge gate: hard rule: touches .github/workflows/ci.yml")).toBeTruthy();
+    // The failures come before the actions.
+    const anyway = screen.getByRole("button", { name: /Approve anyway/ });
+    expect(failed.compareDocumentPosition(anyway) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Readable in both themes (WCAG AA for small text): white only on amber-700 or darker, black on amber-500.
+    const readable = (button: HTMLElement) => {
+      const classes = new Set(button.className.split(/\s+/));
+      for (const c of ["bg-amber-700", "text-white", "hover:bg-amber-800", "dark:bg-amber-500", "dark:text-black"]) expect(classes.has(c), c).toBe(true);
+      for (const c of ["bg-amber-500", "bg-amber-600", "bg-primary"]) expect(classes.has(c), c).toBe(false);
+    };
+    readable(anyway);
+    expect(screen.queryByRole("button", { name: /^Approve$/ })).toBeNull();
+
+    await user.click(anyway);
+    const submit = within(screen.getByRole("form", { name: "Approve anyway" })).getByRole("button", { name: "Approve anyway" });
+    readable(submit);
+    await user.click(submit);
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "merge" } }]));
+  });
+
+  it("says when GitHub can't be read, and the rest of the card and its actions still work", async () => {
+    server.runs = [atMerge()];
+    server.mergeGate["run-1"] = details({ pr: { number: 7, url: "https://github.com/acme/shop/pull/7" }, checks: null, githubError: "gh pr view failed: HTTP 502" });
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const merge = await screen.findByLabelText("Merge details");
+    expect(merge.textContent).toContain("Could not read GitHub: gh pr view failed: HTTP 502");
+    expect(within(merge).getByRole("link", { name: "PR #7" })).toBeTruthy();
+    expect(merge.textContent).toContain("code PASS");
+
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cancel", body: { state: "needs_human", gate: "merge" } }]));
+  });
+
+  it("leaves cards at other gates as they were", async () => {
+    server.runs = [runRow({ reason: "waiting at triage gate: gate is set to human" })];
+    renderAt("/inbox");
+
+    expect(await screen.findByText("waiting at triage gate: gate is set to human")).toBeTruthy();
+    expect(screen.queryByLabelText("Merge details")).toBeNull();
+    expect(server.gets.some((g) => g.endsWith("/merge-gate"))).toBe(false);
   });
 });
 

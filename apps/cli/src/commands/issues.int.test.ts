@@ -126,6 +126,7 @@ describe("issue commands", () => {
     mergePullRequest: () => undefined,
     requiredChecks: () => [],
     pullRequestChecks: () => [],
+    pullRequestDiff: () => ({ head: "h", additions: 0, deletions: 0, changedFiles: 0 }),
     unresolvedReviewThreads: () => [],
       codeScanningAlerts: () => [],
       dismissCodeScanningAlert: () => undefined,

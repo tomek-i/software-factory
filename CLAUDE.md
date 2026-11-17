@@ -61,6 +61,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 
 `apps/server/src`: `factory serve` (see [Web mode](docs/web-mode.md))
 - `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks
+- `merge-gate.ts`: `MergeGateReader`, what the Inbox's merge-gate card shows (PR, diff size, checks, reviews), with GitHub's answers cached per head
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
 - `drafts.ts`: the New issue screen's routes (`draftRoutes`) over the core draft service, and `DraftJobs`, the issue writers the server started (one per project at a time), with their progress; `rate-limit.ts`: `RateLimiter`, the per-route limit on the draft routes
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1

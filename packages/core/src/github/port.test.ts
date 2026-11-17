@@ -246,6 +246,17 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).dismissCodeScanningAlert(4, "used in tests", "x")).toThrow(/gh api -X failed: boom/);
   });
 
+  it("reads a PR's head commit and diff size", () => {
+    const view = fakeGh(JSON.stringify({ headRefOid: "abc123", additions: 120, deletions: 40, changedFiles: 8 }));
+    expect(ghPort(project, view.run).pullRequestDiff(42)).toEqual({ head: "abc123", additions: 120, deletions: 40, changedFiles: 8 });
+    expect(view.calls[0]).toEqual(["pr", "view", "42", "-R", "o/r", "--json", "headRefOid,additions,deletions,changedFiles"]);
+
+    expect(() => ghPort(project, fakeGh("nope").run).pullRequestDiff(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ headRefOid: "abc", additions: "1", deletions: 0, changedFiles: 0 })).run).pullRequestDiff(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ additions: 1, deletions: 0, changedFiles: 0 })).run).pullRequestDiff(42)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("", 1).run).pullRequestDiff(42)).toThrow(/gh pr view failed: boom/);
+  });
+
   it("opens an issue from a body file, which it removes afterwards, and returns its number", () => {
     let sent = "";
     const calls: string[][] = [];

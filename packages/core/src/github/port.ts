@@ -85,6 +85,8 @@ export interface GithubPort {
   requiredChecks(number: number): RequiredCheck[];
   /** Every status check on the PR's head, required or not, with its summary; empty when there are none. */
   pullRequestChecks(number: number): PullRequestCheck[];
+  /** The PR's head commit and the size of its diff. */
+  pullRequestDiff(number: number): PullRequestDiff;
   /**
    * The PR's review threads that are neither resolved nor outdated (their line changed since), each
    * with its first comment. Throws when the PR has more threads than one page holds, rather than
@@ -113,6 +115,14 @@ export interface PullRequestReview {
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";
+
+/** The size of a PR's diff, at its head commit. */
+export interface PullRequestDiff {
+  head: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}
 
 /** GitHub's reasons for dismissing a code scanning alert. */
 export const DISMISS_REASONS = ["false positive", "won't fix", "used in tests"] as const;
@@ -438,6 +448,20 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     },
     pullRequestChecks(number) {
       return prChecks(number, ["--json", "name,bucket,link,description"]);
+    },
+    pullRequestDiff(number) {
+      const out = gh(["pr", "view", String(number), "-R", repo, "--json", "headRefOid,additions,deletions,changedFiles"]);
+      let pr: { headRefOid?: unknown; additions?: unknown; deletions?: unknown; changedFiles?: unknown };
+      try {
+        pr = JSON.parse(out) as typeof pr;
+      } catch {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      const count = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n >= 0;
+      if (typeof pr.headRefOid !== "string" || !pr.headRefOid || !count(pr.additions) || !count(pr.deletions) || !count(pr.changedFiles)) {
+        throw new GithubError(`gh pr view returned unexpected output: ${out.slice(0, 200)}`);
+      }
+      return { head: pr.headRefOid, additions: pr.additions as number, deletions: pr.deletions as number, changedFiles: pr.changedFiles as number };
     },
     unresolvedReviewThreads(number) {
       const [owner, name] = repo.split("/");

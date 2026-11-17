@@ -1,6 +1,6 @@
 import type { RunState } from "@factory/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, ListChecks, Undo2, Wrench, X } from "lucide-react";
+import { Ban, Check, ListChecks, TriangleAlert, Undo2, Wrench, X } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 import { api, DISMISS_REASONS, type CodeScanningAlert, type DismissReason, type RunChecks, type RunRow } from "../lib/api";
 import { COSTLY_TARGETS, failureMessage, TARGET_HELP, webLink } from "../lib/failure";
@@ -8,6 +8,10 @@ import { Button } from "./ui/button";
 import { Input, Select, Textarea } from "./ui/input";
 
 type Mode = "approve" | "reject" | "resume" | "cancel" | "checks";
+
+// Amber like the gate badge: a warning to read first, not a refusal. White text needs amber-700 or
+// darker for 4.5:1 contrast (amber-600 is about 3.2:1); dark mode puts black on amber-500.
+const WARNING = "bg-amber-700 text-white hover:bg-amber-800 dark:bg-amber-500 dark:text-black dark:hover:bg-amber-500/90";
 
 /** GitHub refuses a longer dismissal comment. */
 const DISMISS_COMMENT_MAX = 280;
@@ -18,8 +22,10 @@ const checksKey = (run: RunRow) => ["checks", run.project, run.id];
  * The decisions on a run waiting for a human: approve or reject at a gate, send it back to a stage
  * (with the failure it waits on, if any), dismiss a false-positive code scanning alert, cancel.
  * Shared by the Inbox card and the run's detail view, so both follow one set of rules.
+ * With `warn` (e.g. a failed check on the PR), Approve says "Approve anyway": it still posts the
+ * same approval; the warning is the caller's to explain.
  */
-export function RunActions({ run }: { run: RunRow }) {
+export function RunActions({ run, warn = false }: { run: RunRow; warn?: boolean }) {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<Mode>();
   const [message, setMessage] = useState("");
@@ -51,7 +57,7 @@ export function RunActions({ run }: { run: RunRow }) {
   const canResume = run.resumeTargets.length > 0;
   const toBuilder = run.failure && run.resumeTargets.includes("build") ? run.failure : undefined;
   // Approving the merge gate past open review threads or failed checks merges despite them, for this commit only.
-  const approveLabel = run.failure?.kind === "feedback" ? "Merge anyway" : "Approve";
+  const approveLabel = run.failure?.kind === "feedback" ? "Merge anyway" : warn ? "Approve anyway" : "Approve";
   // A reason is the service's rule for reject and resume; say so before asking it.
   const needsReason = mode === "reject" || mode === "resume";
   const open = (m: Mode) => {
@@ -97,8 +103,8 @@ export function RunActions({ run }: { run: RunRow }) {
         <div className="flex flex-wrap gap-2">
           {gate && (
             <>
-              <Button size="sm" onClick={() => open("approve")}>
-                <Check aria-hidden /> {approveLabel}
+              <Button size="sm" className={warn ? WARNING : undefined} onClick={() => open("approve")}>
+                {warn ? <TriangleAlert aria-hidden /> : <Check aria-hidden />} {approveLabel}
               </Button>
               <Button size="sm" variant="outline" onClick={() => open("reject")}>
                 <X aria-hidden /> Reject
@@ -188,7 +194,13 @@ export function RunActions({ run }: { run: RunRow }) {
         </p>
       )}
       <div className="flex gap-2">
-        <Button type="submit" size="sm" variant={mode === "approve" || mode === "resume" ? "default" : "destructive"} disabled={act.isPending || (needsReason && !message.trim())}>
+        <Button
+          type="submit"
+          size="sm"
+          variant={mode === "approve" || mode === "resume" ? "default" : "destructive"}
+          className={mode === "approve" && warn ? WARNING : undefined}
+          disabled={act.isPending || (needsReason && !message.trim())}
+        >
           {submitLabel}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setMode(undefined)}>
