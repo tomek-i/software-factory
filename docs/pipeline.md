@@ -340,7 +340,7 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
 - Hard-rule hits need you at the merge gate too, whatever its mode.
 - When the merge gate waits for you, its reason lists the acceptance criteria for you to check (`CANNOT_CHECK` or not checked).
 
-## Open review threads and failed checks
+### Open review threads and failed checks
 
 - After the required checks, and again right before the merge, the engine reads what else is open on the PR:
   - review threads that are neither resolved nor outdated (their line changed since);

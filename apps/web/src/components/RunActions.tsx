@@ -56,6 +56,8 @@ export function RunActions({ run }: { run: RunRow }) {
   const needsReason = mode === "reject" || mode === "resume";
   const open = (m: Mode) => {
     act.reset();
+    // A message prefilled for another action (the builder's failure text) must not become this one's note.
+    setMessage("");
     if (m === "resume") {
       setTo(firstTarget ?? "");
       setResetLoops(!!run.capReached);
