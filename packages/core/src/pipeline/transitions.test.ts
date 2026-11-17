@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict, type RunState } from "@factory/shared";
 import { Store, type StatePatch } from "../store/store.js";
-import { allowedTargets, resumeTargets, RunMachine, sendBackTargets, TransitionError, type Evidence } from "./transitions.js";
+import { allowedTargets, closedIssueReason, resumeTargets, RunMachine, sendBackTargets, TransitionError, type Evidence } from "./transitions.js";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -694,5 +694,45 @@ describe("RunMachine.closeByPullRequest", () => {
     store.acquireLease(run.id, "worker-1", 60_000);
     expect(() => machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE })).toThrow(/leased by worker-1/);
     expect(machine.closeByPullRequest(run.id, { number: 7, state: "merged", mergeCommit: MERGE }, "worker-1").state).toBe("done");
+  });
+});
+
+describe("RunMachine.closeByIssue", () => {
+  const CLOSED = { number: 1, state: "closed" as const, reason: "completed", closedBy: [221] };
+
+  it("cancels a run whose issue was closed on GitHub, recording why as a human decision", () => {
+    const { machine, store, run, at } = setup();
+    at("needs_human", { waiting_gate: "triage", parked_from: "triage" });
+
+    const cancelled = machine.closeByIssue(run.id, CLOSED, false);
+
+    expect(cancelled).toMatchObject({ state: "cancelled", waiting_gate: null, parked_from: null });
+    expect(store.listDecisions(run.id)).toMatchObject([
+      { gate: "triage", outcome: "reject", actor: "human", comment: "issue #1 was closed on GitHub (completed, by #221)" },
+    ]);
+    expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "needs_human", to_state: "cancelled", data: { issue: 1, closedBy: [221] } });
+  });
+
+  it("refuses an open issue, another issue, an open PR, a finished run and a run another worker drives", () => {
+    const { machine, store, run, at } = setup();
+    at("needs_human", { pr_number: 7, waiting_gate: "merge" });
+    expect(() => machine.closeByIssue(run.id, { ...CLOSED, state: "open" }, false)).toThrow(/still open/);
+    expect(() => machine.closeByIssue(run.id, { ...CLOSED, number: 2 }, false)).toThrow(/not the run's issue/);
+    expect(() => machine.closeByIssue(run.id, CLOSED, true)).toThrow(/PR #7 is still open: a human decides/);
+    expect(store.getRun(run.id)!.state).toBe("needs_human");
+
+    at("build");
+    store.acquireLease(run.id, "worker-1", 60_000);
+    expect(() => machine.closeByIssue(run.id, CLOSED, false)).toThrow(/leased by worker-1/);
+    expect(machine.closeByIssue(run.id, CLOSED, false, "worker-1").state).toBe("cancelled");
+    expect(() => machine.closeByIssue(run.id, CLOSED, false)).toThrow(/already cancelled/);
+  });
+});
+
+describe("closedIssueReason", () => {
+  it("says how and by what the issue was closed, when GitHub knows", () => {
+    expect(closedIssueReason({ number: 4, reason: "not_planned", closedBy: [] })).toBe("issue #4 was closed on GitHub (not planned)");
+    expect(closedIssueReason({ number: 4, closedBy: [221, 224] })).toBe("issue #4 was closed on GitHub (by #221, #224)");
+    expect(closedIssueReason({ number: 4, closedBy: [] })).toBe("issue #4 was closed on GitHub");
   });
 });

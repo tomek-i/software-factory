@@ -3,41 +3,76 @@ import type { GithubPort } from "../github/port.js";
 import type { Project, Store } from "../store/store.js";
 import { tickMetCriteria } from "./acceptance.js";
 import { runDirOf } from "./shared.js";
-import { RunMachine } from "./transitions.js";
+import { closedIssueReason, RunMachine } from "./transitions.js";
 
 /**
- * Finish the project's runs whose PR was merged or closed on GitHub: merged -> done, closed ->
- * cancelled. A run another worker is driving is left for next time. Returns one line per run that
- * moved, and a warning instead of throwing when GitHub cannot be asked (offline, not logged in).
+ * Finish the project's runs that GitHub has moved past. A run whose PR was merged ends done, closed
+ * cancelled. A run whose issue was closed (done in another PR, a duplicate, not planned) is cancelled
+ * when it has no open PR; with an open PR it stays for a human, who sees the closed issue on the run
+ * (`waitingOn`) and whose cancel closes the PR too. A run another worker is driving is left for next
+ * time. Returns one line per run that moved or was newly flagged, and a warning instead of throwing
+ * when GitHub cannot be asked (offline, not logged in).
  * A merged run's MET acceptance criteria are ticked on the issue (see tickMetCriteria).
  * `onMoved` is told each run it finished, e.g. to clean it up.
  */
-export function reconcilePullRequests(store: Store, project: Project, github: GithubPort, config: FactoryConfig, onMoved?: (runId: string) => void): string[] {
+export function reconcileWithGithub(store: Store, project: Project, github: GithubPort, config: FactoryConfig, onMoved?: (runId: string) => void): string[] {
   const machine = new RunMachine(store, config);
   const now = new Date().toISOString();
   const runs = store
     .listRuns({ project_id: project.id })
-    .filter((r) => !isTerminal(r.state) && r.pr_number !== null && !(r.lease_expires_at !== null && r.lease_expires_at > now));
+    .filter((r) => !isTerminal(r.state) && (r.pr_number !== null || r.issue_number !== null) && !(r.lease_expires_at !== null && r.lease_expires_at > now));
   const lines: string[] = [];
   for (const run of runs) {
-    let pr;
+    let openPr = false;
+    if (run.pr_number !== null) {
+      let pr;
+      try {
+        pr = github.pullRequestState(run.pr_number);
+      } catch (err) {
+        lines.push(`warning: could not check PR #${run.pr_number} of ${run.id}: ${(err as Error).message}`);
+        continue;
+      }
+      if (pr.state === "open") {
+        openPr = true;
+      } else {
+        try {
+          const moved = machine.closeByPullRequest(run.id, pr);
+          lines.push(`${run.id}: PR #${pr.number} ${pr.state} -> ${moved.state}`);
+          // Merged: tick the criteria the acceptance lens found MET. A closed PR ticks nothing.
+          if (pr.state === "merged" && run.issue_number !== null) {
+            lines.push(...tickMetCriteria(github, runDirOf(project.repo_path, run.id), run.issue_number).map((note) => `${run.id}: ${note}`));
+          }
+          onMoved?.(run.id);
+        } catch (err) {
+          // E.g. a worker took the run in the meantime; it is checked again next time.
+          lines.push(`warning: could not finish ${run.id}: ${(err as Error).message}`);
+        }
+        continue;
+      }
+    }
+    if (run.issue_number === null) continue;
+
+    let issue;
     try {
-      pr = github.pullRequestState(run.pr_number!);
+      issue = github.issueState(run.issue_number);
     } catch (err) {
-      lines.push(`warning: could not check PR #${run.pr_number} of ${run.id}: ${(err as Error).message}`);
+      lines.push(`warning: could not check issue #${run.issue_number} of ${run.id}: ${(err as Error).message}`);
       continue;
     }
-    if (pr.state === "open") continue;
+    if (issue.state === "open") continue;
+    // A sync only lists open issues; record this one closed so the backlog and the inbox agree.
+    const wasOpen = store.getIssue(project.id, issue.number)?.state === "open";
+    store.closeIssue(project.id, issue.number);
+    if (openPr) {
+      // Closing a PR is the human's call. Said once, when the issue is first seen closed.
+      if (wasOpen) lines.push(`${run.id}: ${closedIssueReason(issue)}; PR #${run.pr_number} is still open, cancel the run to close it`);
+      continue;
+    }
     try {
-      const moved = machine.closeByPullRequest(run.id, pr);
-      lines.push(`${run.id}: PR #${pr.number} ${pr.state} -> ${moved.state}`);
-      // Merged: tick the criteria the acceptance lens found MET. A closed PR ticks nothing.
-      if (pr.state === "merged" && run.issue_number !== null) {
-        lines.push(...tickMetCriteria(github, runDirOf(project.repo_path, run.id), run.issue_number).map((note) => `${run.id}: ${note}`));
-      }
+      const moved = machine.closeByIssue(run.id, issue, false);
+      lines.push(`${run.id}: ${closedIssueReason(issue)} -> ${moved.state}`);
       onMoved?.(run.id);
     } catch (err) {
-      // E.g. a worker took the run in the meantime; it is checked again next time.
       lines.push(`warning: could not finish ${run.id}: ${(err as Error).message}`);
     }
   }

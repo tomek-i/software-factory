@@ -7,7 +7,7 @@ import {
   type Stage,
   type VerdictKind,
 } from "@factory/shared";
-import type { PullRequestState } from "../github/port.js";
+import type { IssueState, PullRequestState } from "../github/port.js";
 import type { Run, RunEvent, RunPatch, StatePatch, Store } from "../store/store.js";
 import { findingsFingerprint } from "./fingerprint.js";
 
@@ -501,6 +501,36 @@ export class RunMachine {
     });
   }
 
+  /**
+   * The run's issue was closed on GitHub (done by hand in another PR, a duplicate, not planned):
+   * cancel the run. Only for a run without an open PR of its own, whose fate a human decides
+   * (`cancelRun` closes the PR too); `openPr` is what GitHub says about the run's PR, if it has one.
+   * A run another worker is driving is refused, as in closeByPullRequest.
+   */
+  closeByIssue(runId: string, issue: Pick<IssueState, "number" | "state" | "reason" | "closedBy">, openPr: boolean, owner?: string): Run {
+    const run = this.load(runId);
+    this.checkLease(run, "cancelled", owner);
+    const problems: string[] = [];
+    if (isTerminal(run.state)) problems.push(`run is already ${run.state}`);
+    if (run.issue_number !== issue.number) problems.push(`issue #${issue.number} is not the run's issue`);
+    if (issue.state !== "closed") problems.push(`issue #${issue.number} is still open`);
+    if (openPr) problems.push(`PR #${run.pr_number} is still open: a human decides`);
+    if (problems.length) throw new TransitionError(runId, run.state, "cancelled", problems);
+
+    const reason = closedIssueReason(issue);
+    return this.commit(run, "cancelled", { waiting_gate: null, parked_from: null, ...releaseIfTerminal("cancelled") }, () => {
+      this.store.recordDecision({
+        run_id: runId,
+        gate: run.waiting_gate ?? "escalation",
+        mode: "human",
+        outcome: "reject",
+        actor: "human",
+        comment: reason,
+      });
+      this.store.appendEvent(runId, run.state, "cancelled", reason, { issue: issue.number, ...(issue.closedBy.length ? { closedBy: issue.closedBy } : {}) });
+    });
+  }
+
   private load(runId: string): Run {
     const run = this.store.getRun(runId);
     if (!run) throw new Error(`run ${runId} not found`);
@@ -540,4 +570,10 @@ function runGuard(guard: Guard, ctx: GuardContext): string[] {
   } catch (err) {
     return [`evidence unavailable: ${(err as Error).message}`];
   }
+}
+
+/** Why a run ended with its issue, e.g. "issue #173 was closed on GitHub (completed, by #221)". */
+export function closedIssueReason(issue: Pick<IssueState, "number" | "reason" | "closedBy">): string {
+  const why = [issue.reason?.replace(/_/g, " "), issue.closedBy.length ? `by ${issue.closedBy.map((n) => `#${n}`).join(", ")}` : undefined].filter(Boolean);
+  return `issue #${issue.number} was closed on GitHub${why.length ? ` (${why.join(", ")})` : ""}`;
 }

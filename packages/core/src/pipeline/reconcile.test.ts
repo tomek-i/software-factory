@@ -2,21 +2,23 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, type RunState } from "@factory/shared";
-import type { GithubPort, PullRequestState } from "../github/port.js";
+import type { GithubPort, IssueState, PullRequestState } from "../github/port.js";
 import { Store, type StatePatch } from "../store/store.js";
 import { tempDir } from "../../test/helpers.js";
 import { writeAcceptanceRecord } from "./acceptance.js";
-import { reconcilePullRequests } from "./reconcile.js";
+import { reconcileWithGithub } from "./reconcile.js";
 import { runDirOf } from "./shared.js";
 
 const MERGE = "c".repeat(40);
 
-function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, repoPath = "/repo") {
+/** Issues not listed in `issues` are open. */
+function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, repoPath = "/repo", issues: Record<number, Omit<IssueState, "number"> | Error> = {}) {
   const store = new Store(":memory:");
   const config = factoryConfigSchema.parse({ version: 1 });
   const project = store.upsertProject({ name: "demo", repo_path: repoPath, github_repo: "o/r" });
   const issueEdits: { number: number; body: string }[] = [];
   const asked: number[] = [];
+  const askedIssues: number[] = [];
   const github: GithubPort = {
     commentOnIssue: () => undefined,
     findComment: () => undefined,
@@ -45,16 +47,25 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, re
       if (pr instanceof Error) throw pr;
       return { number, ...pr };
     },
+    issueState: (number) => {
+      askedIssues.push(number);
+      const issue = issues[number] ?? { state: "open", closedBy: [] };
+      if (issue instanceof Error) throw issue;
+      return { number, ...issue };
+    },
+    closePullRequest: () => {
+      throw new Error("reconcile closed a PR: only a human's cancel may");
+    },
   };
   const make = (issue: number, state: RunState, patch: StatePatch = {}) => {
     const run = store.createRun({ project_id: project.id, title: "t", issue_number: issue });
     store.writeState(run.id, state, patch);
     return run.id;
   };
-  return { store, config, project, github, asked, make, issueEdits, reconcile: () => reconcilePullRequests(store, project, github, config) };
+  return { store, config, project, github, asked, askedIssues, make, issueEdits, reconcile: () => reconcileWithGithub(store, project, github, config) };
 }
 
-describe("reconcilePullRequests", () => {
+describe("reconcileWithGithub", () => {
   it("finishes merged and closed PRs and leaves open ones and runs without a PR alone", () => {
     const { store, make, reconcile, asked } = setup({
       1: { state: "merged", draft: false, head: "h", mergeCommit: MERGE },
@@ -80,7 +91,7 @@ describe("reconcilePullRequests", () => {
     // Finished by its worker, not by reconcile.
     make(2, "cancelled");
     const moved: string[] = [];
-    reconcilePullRequests(store, project, github, config, (id) => moved.push(id));
+    reconcileWithGithub(store, project, github, config, (id) => moved.push(id));
     expect(moved).toEqual([merged]);
   });
 
@@ -120,5 +131,56 @@ describe("reconcilePullRequests", () => {
     expect(reconcile()).toEqual([]);
     expect(asked).toEqual([]);
     expect(store.getRun(driven)!.state).toBe("merge");
+  });
+
+  describe("closed issues", () => {
+    const CLOSED: Omit<IssueState, "number"> = { state: "closed", reason: "completed", closedBy: [221] };
+
+    it("cancels a run without a PR whose issue was closed, and marks the issue closed", () => {
+      const { store, project, github, config, make, reconcile } = setup({}, "/repo", { 4: CLOSED });
+      store.upsertIssue(project.id, { number: 4, title: "t", body: "", state: "open", author: "a", labels: [], url: "u", gh_updated_at: "2026-01-01T00:00:00Z" });
+      store.setQueued(project.id, 4, true);
+      const parked = make(4, "needs_human", { waiting_gate: "triage" });
+      const moved: string[] = [];
+
+      expect(reconcileWithGithub(store, project, github, config, (id) => moved.push(id))).toEqual([
+        `${parked}: issue #4 was closed on GitHub (completed, by #221) -> cancelled`,
+      ]);
+      expect(moved).toEqual([parked]);
+      expect(store.getRun(parked)!.state).toBe("cancelled");
+      expect(store.getIssue(project.id, 4)).toMatchObject({ state: "closed", queued_at: null });
+      expect(store.listDecisions(parked).at(-1)).toMatchObject({ gate: "triage", outcome: "reject", comment: "issue #4 was closed on GitHub (completed, by #221)" });
+      expect(reconcile()).toEqual([]);
+    });
+
+    it("leaves a run with an open PR for a human, and says so once", () => {
+      const { store, project, make, reconcile } = setup({ 3: { state: "open", draft: false, head: "h" } }, "/repo", { 4: { state: "closed", reason: "duplicate", closedBy: [] } });
+      store.upsertIssue(project.id, { number: 4, title: "t", body: "", state: "open", author: "a", labels: [], url: "u", gh_updated_at: "2026-01-01T00:00:00Z" });
+      const waiting = make(4, "needs_human", { pr_number: 3, waiting_gate: "merge" });
+
+      expect(reconcile()).toEqual([`${waiting}: issue #4 was closed on GitHub (duplicate); PR #3 is still open, cancel the run to close it`]);
+      expect(store.getRun(waiting)!.state).toBe("needs_human");
+      expect(store.getIssue(project.id, 4)!.state).toBe("closed");
+      expect(reconcile()).toEqual([]);
+    });
+
+    it("finishes by the PR first when it was merged or closed, without asking about the issue", () => {
+      const { make, reconcile, askedIssues } = setup({ 1: { state: "closed", draft: false, head: "h" } }, "/repo", { 1: CLOSED });
+      const closed = make(1, "needs_human", { pr_number: 1 });
+      expect(reconcile()).toEqual([`${closed}: PR #1 closed -> cancelled`]);
+      expect(askedIssues).toEqual([]);
+    });
+
+    it("leaves runs with an open issue, warns when GitHub cannot be asked, and skips a driven run", () => {
+      const { store, make, reconcile, askedIssues } = setup({}, "/repo", { 5: new Error("gh: not logged in"), 6: CLOSED });
+      const open = make(4, "needs_human");
+      const broken = make(5, "build");
+      const driven = make(6, "build");
+      store.acquireLease(driven, "worker-1", 60_000);
+
+      expect(reconcile()).toEqual([`warning: could not check issue #5 of ${broken}: gh: not logged in`]);
+      expect([open, broken, driven].map((id) => store.getRun(id)!.state)).toEqual(["needs_human", "build", "build"]);
+      expect(askedIssues.sort()).toEqual([4, 5]);
+    });
   });
 });
