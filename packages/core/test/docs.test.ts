@@ -60,16 +60,19 @@ describe("README and docs", () => {
     expect(broken).toEqual([]);
   });
 
-  it("links the README to every doc, and every doc back to the README", () => {
-    const readme = read("README.md");
-    const docs = DOCS.filter((f) => f !== "README.md");
+  // The README is a short landing page; docs/README.md is the index that lists every doc.
+  it("links the README to the docs index, the index to every doc, and every doc back", () => {
+    expect(read("README.md")).toContain("](docs/README.md)");
+    const index = read("docs/README.md");
+    const docs = DOCS.filter((f) => f !== "README.md" && f !== "docs/README.md");
     expect(docs.length).toBeGreaterThan(5);
-    expect(docs.filter((f) => !readme.includes(`](${f}`))).toEqual([]);
-    expect(docs.filter((f) => !read(f).includes("](../README.md"))).toEqual([]);
+    expect(docs.filter((f) => !index.includes(`](${f.slice("docs/".length)})`))).toEqual([]);
+    expect(docs.filter((f) => !/\]\((\.\.\/)?README\.md[)#]/.test(read(f)))).toEqual([]);
   });
 
   it("gives every pipeline stage its own section", () => {
     const stages = [
+      "Overview",
       "Triage",
       "Refine",
       "Spec critic",
@@ -79,8 +82,7 @@ describe("README and docs", () => {
       "Verifier",
       "Review gate",
       "Capture and PR",
-      "Re-sync and merge gate",
-      "Merge",
+      "Merge stage",
       "Learn",
     ];
     const sections = prose(read("docs/pipeline.md")).flatMap(({ line }) => /^## (.+)$/.exec(line)?.[1] ?? []);

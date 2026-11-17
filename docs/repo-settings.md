@@ -1,8 +1,9 @@
 # Repository settings
 
+For maintainers of this repository, not for using the factory.
 How `main` is protected and how the repo is set up, with the commands to apply it again.
 Run them as a repo admin with the GitHub CLI.
-Back to the [README](../README.md).
+See also [CONTRIBUTING](../CONTRIBUTING.md).
 
 ## What is protected
 
@@ -95,3 +96,5 @@ Check:
 gh api repos/$REPO/rules/branches/main --jq '.[].type'
 gh repo view $REPO --json deleteBranchOnMerge,squashMergeAllowed,repositoryTopics
 ```
+
+[All docs](README.md)

@@ -1,7 +1,6 @@
 # Lessons
 
 How the factory learns from its runs.
-Back to the [README](../README.md); the learner itself is in [Pipeline: Learn](pipeline.md#learn).
 
 ```sh
 factory lessons                    # lessons the learner proposed, waiting for you; -a/--all includes approved and rejected ones
@@ -50,3 +49,5 @@ factory lessons reject 5 -m "why"  # never apply this lesson; -m is optional
 
 - `factory lessons reject <id...> -m "why"` marks them rejected.
 - They are kept with your reason and never applied.
+
+[All docs](README.md)

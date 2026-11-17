@@ -1,22 +1,23 @@
 # Agent permissions
 
 What each agent may write and run, what it is given to read, and what it never gets.
-Back to the [README](../README.md).
+Read this to know what an agent working on untrusted issue text can and can't do on your machine.
 
 ## For every agent
 
 - Agents run with `--permission-mode dontAsk` and a per-role allowlist.
 - The allowlist is written to `.factory/runs/<run>/agent/`.
 - They ignore your own Claude Code settings, hooks and MCP servers (`--setting-sources ""`, `--strict-mcp-config`).
-- So nothing outside the profile applies to an agent reading issue text.
-- The profile limits writes, the shell and the web, not reads (see [Read access](#read-access)).
+- So nothing outside the allowlist applies to an agent reading issue text.
+- The allowlist limits writes, the shell and the web, not reads (see [Read access](#read-access)).
 - `ANTHROPIC_API_KEY` is removed from their environment, so runs use your subscription, not API billing.
 - They don't get your GitHub login.
 - The engine pushes, opens PRs and merges itself; agents never need to.
 - Agent text the factory posts on an issue (the spec, the critic's problems and questions) has its `@mentions` in backticks.
 - So it never notifies anyone.
 - The engine, not an agent, runs the app and the browser.
-- Bash deny rules are prefix matches, so also protect your default branch on GitHub.
+- The builder's blocked shell commands are matched by how they start, so a reworded command can get through.
+  That is one more reason to protect your default branch on GitHub (see [The credential barrier](#the-credential-barrier)).
 
 ## The credential barrier
 
@@ -28,7 +29,7 @@ Back to the [README](../README.md).
 - ssh may use no key file or agent.
 - So a plain `git push` from an agent's shell has no credentials, over https or ssh.
 - Your git config is not touched.
-- The builder's profile denies `gh` and `git push` outright.
+- The builder's allowlist denies `gh` and `git push` outright.
 - This is a barrier, not a sandbox: agents run as you, so one that goes looking can undo it.
   - For example `git -c credential.helper=manager push`.
   - Or reading your OS keyring: `gh auth token` reads it directly.
@@ -80,3 +81,5 @@ A repo overrides it with `.factory/prompts/<role>.md` on its default branch.
 - The only read limit is the issue writer's: it may not read `.factory/runs/`, `.worktrees/` or other drafts.
 - So keep secrets out of files an agent reading untrusted issue text could find.
 - The builder can also read anything through its shell.
+
+[All docs](README.md)

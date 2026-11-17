@@ -6,7 +6,7 @@ Factory agents start with `--setting-sources ""`, so Claude Code does not load t
 
 ## Architecture map
 
-A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development](README.md#development).
+A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layout](CONTRIBUTING.md#layout).
 
 `packages/shared/src`: zod schemas used everywhere
 - `states.ts`: `STAGES`, parked and terminal states, `GATES` and gate modes
@@ -56,8 +56,8 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 `apps/cli/src`: the `factory` command
 - `main.ts` and `program.ts`: entry point and commander wiring
 - `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`, `work.ts`, `serve.ts`: formatting over `packages/core/src/service/`
-- `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](README.md#dogfooding))
-- `apps/cli/scripts/bundle.mjs`: builds the npm package (see [Releases](README.md#releases)). The bundle defines `__FACTORY_BUNDLE__`, which `SHIPPED_PROMPTS_DIR` and `defaultWebRoot` check to find the prompts and the web app next to the bundle's folder. A new runtime dependency of any package must also go in `apps/cli/package.json`
+- `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](CONTRIBUTING.md#dogfooding))
+- `apps/cli/scripts/bundle.mjs`: builds the npm package (see [Releases](CONTRIBUTING.md#releases)). The bundle defines `__FACTORY_BUNDLE__`, which `SHIPPED_PROMPTS_DIR` and `defaultWebRoot` check to find the prompts and the web app next to the bundle's folder. A new runtime dependency of any package must also go in `apps/cli/package.json`
 
 `apps/server/src`: `factory serve` (see [Web mode](docs/web-mode.md))
 - `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks
@@ -84,7 +84,7 @@ A stage:
 - Write it as a function `(ctx, run) => StepResult` in `packages/core/src/pipeline/stages/<stage>.ts`, and add a `case` for it in `PipelineDriver.step` (`packages/core/src/pipeline/driver.ts`).
 - If it has a gate, add it to `GATES` and handle it in `approveTarget`.
 - Summarise its output file in `runOverview` (`packages/core/src/service/show.ts`) and format it in `apps/cli/src/commands/show.ts`.
-- Update the README [Pipeline](README.md#pipeline) diagram and give the stage its own section in [docs/pipeline.md](docs/pipeline.md).
+- Update the diagram in [Pipeline: Overview](docs/pipeline.md#overview) and give the stage its own section in [docs/pipeline.md](docs/pipeline.md).
 
 An agent role:
 - Add it to `PromptRole` in `packages/core/src/agents/prompts.ts` and `AGENT_ROLES` in `packages/shared/src/config.ts`.
@@ -119,7 +119,7 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 - While working, run `pnpm test:unit` (seconds) and the targeted integration files (`pnpm vitest run <file>`); run the full suite (`pnpm test`) once at the end, with `pnpm lint` and `pnpm typecheck`.
 - Every test file gets its own temp `FACTORY_DATA_DIR` (`packages/core/test/setup-data-dir.ts`), so `factory init` in a test never adds to the user's project list.
   Run Vitest from the repo root: without that setup file, `factoryDataDir` throws under Vitest rather than use the real folder.
-- `FACTORY_REQUIRE_BROWSER=1` makes the real-browser tests fail rather than skip without Chromium; `FACTORY_TEST_NARRATE=1` runs the real narrate plugin tests. See [Development](README.md#development).
+- `FACTORY_REQUIRE_BROWSER=1` makes the real-browser tests fail rather than skip without Chromium; `FACTORY_TEST_NARRATE=1` runs the real narrate plugin tests. See [Development](CONTRIBUTING.md#development).
 - `packages/core/test/claude-md.test.ts` checks that every path, symbol and link in this file exists.
 
 ## Windows notes

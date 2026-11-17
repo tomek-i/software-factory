@@ -264,7 +264,7 @@ export function buildProgram(): Command {
     .argument("<run>", "run id, id prefix, or issue number")
     .requiredOption("--to <stage>", "stage to continue from, e.g. build")
     .requiredOption("-m, --message <text>", "why (required, stored with the decision)")
-    .option("--reset-loops", "give the build and review loops a fresh budget")
+    .option("--reset-loops", "give the build, review, spec and re-sync loops a fresh budget")
     .option("--no-run", "only record the decision; continue later with `factory run`")
     .action(async (ref: string, options: { to: string; message: string; resetLoops?: boolean; run: boolean }) => {
       if (options.run) refuseRunningOnItself(process.cwd());

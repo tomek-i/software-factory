@@ -1,7 +1,7 @@
 # Moving between machines
 
 How `factory export` and `factory import` carry local state to another clone of the same GitHub repo.
-Back to the [README](../README.md#moving-between-machines) for the commands.
+The commands are in [Using the factory](usage.md#move-to-another-machine).
 
 ## Why
 
@@ -43,15 +43,13 @@ Back to the [README](../README.md#moving-between-machines) for the commands.
   - when both sides queued an issue, the later queue time wins (queued again means run again);
   - when only one side did, the queued side wins, so an import never drops work;
   - a closed issue is never queued;
-  - an imported issue keeps the time it was queued on the other machine;
-    - so the worker takes it in turn by that time among the issues queued here, not at the end;
-  - issues new to this database are added for the queue with only their number, state and queue time;
-    - their title, body, author, labels and link come from GitHub, never from the file;
-    - until `factory sync` fills them in, they show empty;
-    - `factory run <n>` and the worker fetch such an issue from GitHub before starting a run on it;
+  - an imported issue keeps the time it was queued on the other machine, so the worker takes it in turn by that time, not at the end;
+  - issues new to this database are added with only their number, state and queue time;
+  - their title, body, author, labels and link come from GitHub, never from the file, and show empty until `factory sync` fills them in;
+  - `factory run <n>` and the worker fetch such an issue from GitHub before starting a run on it;
   - to unqueue on both machines, unqueue on each.
 - Issues the factory opened:
-  - the file's word alone trusts nothing: an imported mark is only a claim;
+  - an imported "opened by the factory" mark is only a claim, not trust;
   - the next fetch from GitHub (`factory sync`, `factory run <n>` or the worker) settles it;
   - it is kept only if GitHub says the factory's own gh login opened the issue, and dropped otherwise;
   - until then the issue counts as untrusted;
@@ -70,3 +68,5 @@ Back to the [README](../README.md#moving-between-machines) for the commands.
 - Never commit it to a shared repo.
 - Only import a file you exported yourself, never one someone gave you.
 - `factory import` reads only the file you name.
+
+[All docs](README.md)
