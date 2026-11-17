@@ -44,8 +44,45 @@ export function nextAfterTriage(runDir: string, config: Pick<FactoryConfig, "gat
   return config.gates.critic === "always" ? "build" : "critic";
 }
 
-/** Hidden marker of the refined spec's comment on the issue, one per issue, edited in place on later rounds. */
+/**
+ * Hidden marker of the refined spec on the issue, one per issue, edited in place on later rounds: the
+ * start of its comment, or of its section in the body of an issue the factory's account wrote.
+ */
 export const REFINE_MARKER = "<!-- factory:refine -->";
+/** Where that section in the issue body ends. */
+export const REFINE_END_MARKER = "<!-- /factory:refine -->";
+
+/**
+ * The issue body with `section` (which starts with REFINE_MARKER and ends with REFINE_END_MARKER) in
+ * place of the one already there, or added at the end. Only a start marker followed by an end marker
+ * counts, so a stray marker never cuts the author's text. The section takes the body's line endings:
+ * bodies written in GitHub's editor use CRLF.
+ */
+export function withSpecSection(body: string, section: string): string {
+  const text = /\r\n/.test(body) ? section.replace(/\r?\n/g, "\r\n") : section;
+  const range = specSectionRange(body);
+  if (range) return body.slice(0, range.start) + text + body.slice(range.end);
+  const before = body.trimEnd();
+  return before ? `${before}${/\r\n/.test(body) ? "\r\n\r\n" : "\n\n"}${text}` : text;
+}
+
+/** Where the spec section is in an issue body, markers included: a start marker followed by an end marker. */
+export function specSectionRange(body: string): { start: number; end: number } | undefined {
+  const start = body.indexOf(REFINE_MARKER);
+  const end = start === -1 ? -1 : body.indexOf(REFINE_END_MARKER, start);
+  return end === -1 ? undefined : { start, end: end + REFINE_END_MARKER.length };
+}
+
+/** Agent text without the refine markers, so a spec quoting them cannot end its own section early. */
+export function withoutMarkers(text: string): string {
+  return text.replaceAll(REFINE_END_MARKER, "").replaceAll(REFINE_MARKER, "");
+}
+
+/** The issue body as its author wrote it: without the factory's spec section. */
+export function withoutSpecSection(body: string): string {
+  const range = specSectionRange(body);
+  return range ? body.slice(0, range.start) + body.slice(range.end) : body;
+}
 
 /**
  * Spec rounds live in `spec-N/`: refine.md (when refine ran) and the critic.md that judged it. The
@@ -171,6 +208,7 @@ export function verdictPath(runDir: string, kind: VerdictKind, round: number): s
     case "checks":
     case "verify":
     case "capture":
+    case "acceptance":
       return join(runDir, `round-${round}`, `${kind}.md`);
     case "approver":
       return join(runDir, "approval.md");

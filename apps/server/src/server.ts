@@ -215,6 +215,12 @@ function redactorOf(ctx: ProjectContext, run: Run): (text: string) => string {
 function redactSection(section: OverviewSection, redact: (text: string) => string): OverviewSection {
   if (section.kind === "unparsed") return { ...section, problem: redact(section.problem) };
   if (section.kind === "capture") return { ...section, summary: section.summary.map(redact) };
+  if (section.kind === "acceptance") {
+    return {
+      ...section,
+      criteria: section.criteria.map((c) => ({ ...c, text: redact(c.text), ...(c.evidence === undefined ? {} : { evidence: redact(c.evidence) }) })),
+    };
+  }
   return {
     ...section,
     value: redact(section.value),

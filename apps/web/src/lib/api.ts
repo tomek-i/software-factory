@@ -118,7 +118,17 @@ export interface Finding {
 export type OverviewSection =
   | { kind: "verdict"; path: string; key: string; value: string; summary: string[]; blocking: Finding[]; refuted: number }
   | { kind: "unparsed"; path: string; problem: string }
-  | { kind: "capture"; path: string; summary: string[] };
+  | { kind: "capture"; path: string; summary: string[] }
+  | { kind: "acceptance"; path: string; count: string; criteria: AcceptanceCriterion[] };
+
+/** One acceptance criterion as the acceptance lens judged it. */
+export interface AcceptanceCriterion {
+  id: string;
+  source: "issue" | "spec";
+  text: string;
+  status: "MET" | "NOT_MET" | "CANNOT_CHECK" | "NOT_CHECKED";
+  evidence?: string;
+}
 
 /** One run in full. Its text comes from agents that read untrusted issues: show it as text only. */
 export interface RunDetail {
