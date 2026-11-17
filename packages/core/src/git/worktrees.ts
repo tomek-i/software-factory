@@ -19,9 +19,10 @@ export function slugify(text: string, max = 40): string {
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    // Dashes are single by now; matching one rather than `-+$` avoids polynomial backtracking.
+    .replace(/^-|-$/g, "")
     .slice(0, max)
-    .replace(/-+$/, "");
+    .replace(/-$/, "");
   return slug || "work";
 }
 
