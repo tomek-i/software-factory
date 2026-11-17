@@ -348,7 +348,8 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
   - Nothing is ticked before the merge, or when the PR is closed without merging.
 - It changes only those checkboxes, on exactly the lines it read; no other text changes.
 - The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
-- The refine spec's criteria are ticked in the factory's refine comment.
+- The refine spec's criteria are ticked where the spec is: the factory's refine comment, or the spec section of the factory's own issue.
+- The spec section in the body never counts as the issue's own criteria, so each criterion is checked once.
 - `CANNOT_CHECK`, not-checked and `NOT_MET` criteria stay unticked.
 - A line that was edited since is left alone and noted; a GitHub failure is a warning and never reopens the run.
 

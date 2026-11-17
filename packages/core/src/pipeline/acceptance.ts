@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isBlocking, type CriterionAnswer, type CriterionStatus, type Finding } from "@factory/shared";
 import type { GithubPort } from "../github/port.js";
-import { quietMentions, REFINE_MARKER } from "./shared.js";
+import { quietMentions, REFINE_MARKER, specSectionRange, withoutSpecSection } from "./shared.js";
 
 /**
  * The acceptance lens: the engine (not the agent) reads the checkbox criteria of the issue and of the
@@ -70,7 +70,8 @@ export function criterionLines(text: string): { index: number; checked: boolean;
  * criterion's text is the one the factory posted (mentions quoted), so ticking finds it in the comment.
  */
 export function extractCriteria(issueBody: string, specBody?: string): Criterion[] {
-  const issue = criterionLines(issueBody).map((c) => ({ source: "issue" as const, text: c.text }));
+  // On the factory's own issues refine keeps the spec in the body too; it counts once, as the spec.
+  const issue = criterionLines(withoutSpecSection(issueBody)).map((c) => ({ source: "issue" as const, text: c.text }));
   const spec = specBody ? criterionLines(specBody).map((c) => ({ source: "spec" as const, text: quietMentions(c.text) })) : [];
   return [...issue, ...spec].map((c, i) => ({ id: `AC-${i + 1}`, ...c }));
 }
@@ -254,16 +255,37 @@ export function tickMetCriteria(github: GithubPort, runDir: string, issueNumber:
     (text) => github.editIssueBody(issueNumber, text),
     `not ticking the body of issue #${issueNumber}: the factory's account did not write it`,
   );
+  if (!met.some((c) => c.source === "spec")) return notes;
+  // The spec is in the refine comment, or, on the factory's own issues, in a section of the body.
   let comment: number | undefined;
+  try {
+    comment = github.findComment(issueNumber, REFINE_MARKER);
+  } catch (err) {
+    notes.push(`warning: could not tick the acceptance criteria in the refine comment: ${(err as Error).message}`);
+    return notes;
+  }
+  if (comment !== undefined) {
+    tick(
+      "the refine comment",
+      "spec",
+      () => github.commentBody(comment!),
+      (text) => github.editComment(comment!, text),
+      "",
+    );
+    return notes;
+  }
+  let body = "";
+  let range: { start: number; end: number } | undefined;
   tick(
-    "the refine comment",
+    `the spec section of issue #${issueNumber}`,
     "spec",
     () => {
-      comment = github.findComment(issueNumber, REFINE_MARKER);
-      return comment === undefined ? undefined : github.commentBody(comment);
+      body = github.ownIssueBody(issueNumber) ?? "";
+      range = specSectionRange(body);
+      return range && body.slice(range.start, range.end);
     },
-    (text) => github.editComment(comment!, text),
-    `warning: the refine comment on issue #${issueNumber} was not found; its criteria stay unticked`,
+    (text) => github.editIssueBody(issueNumber, body.slice(0, range!.start) + text + body.slice(range!.end)),
+    `warning: no refine comment or spec section was found on issue #${issueNumber}; its spec criteria stay unticked`,
   );
   return notes;
 }

@@ -17,15 +17,18 @@ const revise = (n: number): FakeStep => ({ role: "critic", output: `VERDICT: REV
 describe("PipelineDriver", () => {
   describe("refine on an issue the factory's account wrote", () => {
     it("puts the spec in a section of the issue body instead of a comment, and replaces it on the next round", async () => {
-      const { driver, comments, ownIssue } = setup([{ output: INCOMPLETE }, refined(1), revise(1), refined(2), revise(2)], { config });
-      ownIssue.body = "Please add feature.txt.\r\n";
+      const { driver, comments, issueBody } = setup([{ output: INCOMPLETE }, refined(1), revise(1), refined(2), revise(2)], {
+        config,
+        ownIssue: true,
+        issueBody: "Please add feature.txt.\r\n",
+      });
       const run = driver.startRun(12);
 
       expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", state: "needs_human" });
 
       expect(comments).toEqual([]);
-      expect(ownIssue.edits).toBe(2);
-      const body = ownIssue.body;
+      expect(issueBody.edits).toBe(2);
+      const body = issueBody.text;
       // The author's text stays as it was, with the one section after it, in the body's CRLF line endings.
       expect(body.startsWith(`Please add feature.txt.\r\n\r\n${REFINE_MARKER}\r\n`)).toBe(true);
       expect(body.endsWith(REFINE_END_MARKER)).toBe(true);

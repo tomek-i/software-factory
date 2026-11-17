@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REFINE_END_MARKER, REFINE_MARKER, withSpecSection } from "./shared.js";
+import { REFINE_END_MARKER, REFINE_MARKER, specSectionRange, withoutSpecSection, withSpecSection } from "./shared.js";
 
 const section = (text: string) => `${REFINE_MARKER}\n${text}\n${REFINE_END_MARKER}`;
 
@@ -26,5 +26,18 @@ describe("withSpecSection", () => {
     expect(withSpecSection("Please add it.\r\n", section("v1"))).toBe(`Please add it.\r\n\r\n${REFINE_MARKER}\r\nv1\r\n${REFINE_END_MARKER}`);
     const body = `Intro\r\n\r\n${REFINE_MARKER}\r\nv1\r\n${REFINE_END_MARKER}\r\nAfter`;
     expect(withSpecSection(body, section("v2"))).toBe(`Intro\r\n\r\n${REFINE_MARKER}\r\nv2\r\n${REFINE_END_MARKER}\r\nAfter`);
+  });
+});
+
+describe("withoutSpecSection", () => {
+  it("drops the section and keeps the author's text around it", () => {
+    expect(withoutSpecSection(`Intro\n\n${section("## Acceptance criteria\n- [ ] spec")}\n\nAfter`)).toBe("Intro\n\n\n\nAfter");
+    expect(withoutSpecSection("No section")).toBe("No section");
+  });
+
+  it("keeps the body whole when the markers do not pair up", () => {
+    const startOnly = `Intro ${REFINE_MARKER} quoted`;
+    expect(withoutSpecSection(startOnly)).toBe(startOnly);
+    expect(specSectionRange(`${REFINE_END_MARKER} then ${REFINE_MARKER}`)).toBeUndefined();
   });
 });

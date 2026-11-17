@@ -60,11 +60,23 @@ export const REFINE_END_MARKER = "<!-- /factory:refine -->";
  */
 export function withSpecSection(body: string, section: string): string {
   const text = /\r\n/.test(body) ? section.replace(/\r?\n/g, "\r\n") : section;
-  const start = body.indexOf(REFINE_MARKER);
-  const end = start === -1 ? -1 : body.indexOf(REFINE_END_MARKER, start);
-  if (end !== -1) return body.slice(0, start) + text + body.slice(end + REFINE_END_MARKER.length);
+  const range = specSectionRange(body);
+  if (range) return body.slice(0, range.start) + text + body.slice(range.end);
   const before = body.trimEnd();
   return before ? `${before}${/\r\n/.test(body) ? "\r\n\r\n" : "\n\n"}${text}` : text;
+}
+
+/** Where the spec section is in an issue body, markers included: a start marker followed by an end marker. */
+export function specSectionRange(body: string): { start: number; end: number } | undefined {
+  const start = body.indexOf(REFINE_MARKER);
+  const end = start === -1 ? -1 : body.indexOf(REFINE_END_MARKER, start);
+  return end === -1 ? undefined : { start, end: end + REFINE_END_MARKER.length };
+}
+
+/** The issue body as its author wrote it: without the factory's spec section. */
+export function withoutSpecSection(body: string): string {
+  const range = specSectionRange(body);
+  return range ? body.slice(0, range.start) + body.slice(range.end) : body;
 }
 
 /**
