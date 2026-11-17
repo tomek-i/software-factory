@@ -46,6 +46,13 @@ describe("normaliseOutput", () => {
   it("replaces JSON-escaped worktree paths too", () => {
     expect(normaliseOutput(`"file": "C:\\\\Users\\\\dev\\\\repo\\\\.worktrees\\\\run-1\\\\x.ts"`, [WORKTREE])).toBe(`"file": "<path>\\\\x.ts"`);
   });
+
+  it("ignores trailing separators on a path, and handles many of them quickly", () => {
+    expect(normaliseOutput("at /repo/run-1/x.ts", ["/repo/run-1/\\/"])).toBe("at <path>/x.ts");
+    const started = Date.now();
+    expect(normaliseOutput("ok", [`a${"/".repeat(50_000)}b`])).toBe("ok");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });
 
 describe("gateFingerprint", () => {

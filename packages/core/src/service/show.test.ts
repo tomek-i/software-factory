@@ -106,6 +106,15 @@ describe("runFile and resolveInRunDir", () => {
     expect(() => runFile(store, project, run.id, "build")).toThrow(new ServiceError(`No file "build.md" in the run folder of ${run.id}. Files there:\n  triage.md`));
   });
 
+  it("never reads a file outside the run folder, even one that exists", () => {
+    const { store, project, run, runDir } = setup({ "triage.md": TRIAGE });
+    const secret = join(dirname(runDir), "secret.txt");
+    writeFileSync(secret, "do not show");
+    for (const outside of ["../secret.txt", "..\\secret.txt", "round-1/../../secret.txt", secret, secret.replace(/\\/g, "/")]) {
+      expect(() => runFile(store, project, run.id, outside)).toThrow(new ServiceError(`"${outside}" is outside the run folder; give a path inside it, e.g. triage.md or round-1/checks.md.`));
+    }
+  });
+
   it("picks the highest round numerically", () => {
     const files = ["round-9/checks.md", "round-10/checks.md", "spec-2/critic.md", "spec-1/critic.md", "round-11/sub/checks.md"];
     expect(latestChecks(files)).toBe("round-10/checks.md");

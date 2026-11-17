@@ -51,6 +51,11 @@ function plainFileList(files: string[]): string {
   return files.length ? files.map((f) => `  ${f}`).join("\n") : "  (none)";
 }
 
+/** The error for a path that would leave the run folder. */
+function outsideRunDir(file: string): ServiceError {
+  return new ServiceError(`"${file}" is outside the run folder; give a path inside it, e.g. triage.md or round-1/checks.md.`);
+}
+
 /**
  * The run-folder-relative path `file` names, or a ServiceError. Lexical only: `\` counts as a
  * separator on every OS, and anything that would leave the run folder (`..`, absolute or drive
@@ -85,9 +90,7 @@ export function resolveInRunDir(runDir: string, file: string, files: string[]): 
     normalised === ".." ||
     normalised.startsWith("../");
   const rel = relative(runDir, resolve(runDir, normalised));
-  if (outside || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new ServiceError(`"${file}" is outside the run folder; give a path inside it, e.g. triage.md or round-1/checks.md.`);
-  }
+  if (outside || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw outsideRunDir(file);
   return normalised;
 }
 
@@ -195,7 +198,11 @@ export function runFile(store: Store, project: Project, ref: string, file: strin
   const runDir = runDirOf(project.repo_path, run.id);
   const files = listRunFiles(runDir);
   const path = resolveInRunDir(runDir, file, files);
-  const full = join(runDir, path);
+  // Checked again on the very path that is read, so a gap in the lexical checks above cannot reach
+  // a file outside the run folder (the web app sends `file` as it gets it).
+  const root = resolve(runDir);
+  const full = resolve(root, path);
+  if (!full.startsWith(root + sep)) throw outsideRunDir(file);
   if (!existsSync(full) || !statSync(full).isFile()) {
     throw new ServiceError(`No file "${path}" in the run folder of ${run.id}. Files there:\n${plainFileList(files)}`);
   }

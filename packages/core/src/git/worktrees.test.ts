@@ -19,6 +19,12 @@ describe("slugify / branchName", () => {
     expect(branchName(null, "idea")).toBe("factory/new-idea");
   });
 
+  it("slugifies long runs of dashes quickly", () => {
+    const started = Date.now();
+    expect(slugify(`${"-".repeat(100_000)}a${"- ".repeat(100_000)}!`)).toBe("a");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it("only yields names git accepts", () => {
     const dir = tempDir();
     for (const title of ["Fix: a..b", "  spaces  ", "émoji 🚀 time", "trailing.lock", "@{weird}"]) {

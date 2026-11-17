@@ -167,4 +167,17 @@ describe("declaredDependencies", () => {
   it("ignores files that are not manifests", () => {
     expect(declaredDependencies("src/index.ts", "import x from 'y'")).toBeUndefined();
   });
+
+  it("reads long hostile pyproject and go.mod lines quickly", () => {
+    const started = Date.now();
+    expect(declaredDependencies("pyproject.toml", `[${" ".repeat(50_000)}x`)).toEqual(new Map());
+    expect(declaredDependencies("go.mod", `require${" ".repeat(50_000)}x\ry`)).toEqual(new Map());
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("still reads table headers with spaces and single-line requires", () => {
+    const toml = '[ tool.poetry.dependencies ]\nrequests = "^2"\n[[ "project" ]]\n';
+    expect(declaredDependencies("pyproject.toml", toml)).toEqual(new Map([["requests", '"^2"']]));
+    expect(declaredDependencies("go.mod", "module x\nrequire \t github.com/a/b v1.0.0\n")).toEqual(new Map([["github.com/a/b", "v1.0.0"]]));
+  });
 });

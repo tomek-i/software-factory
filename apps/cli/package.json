@@ -30,7 +30,7 @@
     "prepack": "node scripts/bundle.mjs"
   },
   "dependencies": {
-    "@fastify/static": "10.1.8",
+    "@fastify/static": "10.1.9",
     "better-sqlite3": "^12.4.1",
     "commander": "^15.1.0",
     "execa": "^10.2.1",
