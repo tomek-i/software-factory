@@ -119,7 +119,8 @@ Related docs:
   - reading or writing outside the intended folder;
   - credentials, tokens or local paths leaking.
 - "Hard to exploit" lowers such a finding from critical to major, never to minor.
-- The security lens also checks the factory's own invariants (the trusted reader, untrusted text as data, `quietMentions` and `redactPaths`, child process environments, cleanup) and the repo's `SECURITY.md`.
+- The security lens also checks where trust and config are read from, untrusted text framed as data, child process environments and cleanup.
+- It checks the change against the project's own security rules: the repo's `SECURITY.md` and any security section in its `CLAUDE.md`.
 - If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
 
 ### Acceptance criteria

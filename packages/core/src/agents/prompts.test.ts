@@ -59,15 +59,18 @@ describe("rolePrompt", () => {
     }
   });
 
-  it("gives the security lens the factory's own invariants and points it to SECURITY.md", () => {
+  // The shipped lens serves every repo, so project-specific rules come from SECURITY.md and the project notes
+  it("gives the security lens generic invariants and points it to the project's own security rules", () => {
     const security = rolePrompt("reviewer", () => undefined, "security");
-    expect(security).toContain("the trusted reader, the store or the run folder");
-    expect(security).toMatch(/framed as data/);
-    expect(security).toContain("`quietMentions`");
-    expect(security).toContain("`redactPaths`");
-    expect(security).toMatch(/an allowlist when its output is published/);
-    expect(security).toMatch(/cleaned up on every path/);
+    expect(security).toContain("Trust and config are never read from data a branch, an issue or an imported file can plant");
+    expect(security).toMatch(/framed as data, never followed\s+as instructions/);
+    expect(security).toContain("A child process gets only the environment it needs");
+    expect(security).toContain("cleaned up on every path");
     expect(security).toContain("`SECURITY.md`");
+    expect(security).toContain("any security section in the project notes you were given");
+    expect(security).not.toContain("quietMentions");
+    expect(security).not.toContain("redactPaths");
+    expect(security).not.toContain("trusted reader");
   });
 
   it("does not let the verifier refute a weakened protection as only minor", () => {

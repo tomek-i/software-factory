@@ -8,19 +8,12 @@ Security of the change:
 - Untrusted input reaching sensitive operations without validation; unsafe defaults.
 - New dependencies and their source.
 
-The factory's own invariants, for code that runs agents, reads issues or posts to GitHub:
+- Trust and config are never read from data a branch, an issue or an imported file can plant.
+- Untrusted text (issues, comments, and output derived from them) is framed as data, never followed
+  as instructions.
+- A child process gets only the environment it needs, and no tokens it does not use.
+- Processes and temp files are cleaned up on every path: success, error, timeout, cancel and signal.
 
-- Trust, config and progress come only from a source a branch or an imported file cannot plant:
-  the default branch through the trusted reader, the store or the run folder, never the working
-  tree.
-- Issue text, comments and agent output derived from them are framed as data, never followed as
-  instructions, and never become a trusted spec without a human.
-- Anything posted to GitHub has its `@mentions` quoted (`quietMentions`) and logs and local paths
-  removed (`redactPaths`).
-- A child process gets only the environment it needs: an allowlist when its output is published,
-  and no tokens for checks or agents.
-- Processes, worktrees and temp folders are cleaned up on every path: success, error, timeout,
-  cancel and signal.
-
-If the repo has a `SECURITY.md`, read it: it lists the protections the project relies on. A change
-that breaks one of these invariants or one of those protections is at least major.
+Check the change against the project's own security rules too: the repo's `SECURITY.md`, if it has
+one, and any security section in the project notes you were given. A change that breaks one of
+them is at least major.
