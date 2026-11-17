@@ -210,6 +210,37 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
   };
 }
 
+/** One lens's review of the latest gated round: its verdict and how many findings it has and how many block. */
+export type ReviewSummary =
+  | { lens: string; path: string; verdict: string; findings: number; blocking: number }
+  /** A review file that does not parse: the first problem, never a verdict. */
+  | { lens: string; path: string; problem: string };
+
+/**
+ * The reviews of the same round the overview shows (the latest with a checks.md), one per lens,
+ * for a merge decision. Read-only; empty when there is no run folder or no reviewed round.
+ */
+export function latestReviews(store: Store, project: Project, ref: string): ReviewSummary[] {
+  const run = findRun(store, project, ref);
+  const runDir = runDirOf(project.repo_path, run.id);
+  const files = listRunFiles(runDir);
+  const round = latestChecks(files)?.split("/")[0];
+  if (!round) return [];
+  return files.flatMap((path): ReviewSummary[] => {
+    const prefix = `${round}/review-`;
+    if (!path.startsWith(prefix) || !path.endsWith(".md")) return [];
+    const lens = path.slice(prefix.length, -".md".length);
+    if (!lens || lens.includes("/")) return [];
+    try {
+      const verdict = parseVerdict("review", readFileSync(join(runDir, path), "utf8"));
+      return [{ lens, path, verdict: verdict.header.VERDICT, findings: verdict.findings.length, blocking: verdict.findings.filter(isBlocking).length }];
+    } catch (err) {
+      if (!(err instanceof VerdictParseError)) throw err;
+      return [{ lens, path, problem: err.problems[0] ?? err.message }];
+    }
+  });
+}
+
 /** One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk. */
 export function runFile(store: Store, project: Project, ref: string, file: string): { run: Run; path: string; text: string } {
   const run = findRun(store, project, ref);
