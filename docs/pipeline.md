@@ -40,8 +40,11 @@ Related docs:
 - It writes acceptance criteria, scope, out of scope and open questions (with the assumption it made for each) in `spec-N/refine.md`.
 - Its header is `STATUS: REFINED`.
 - `BLOCKED` with a reason stops the run for you.
-- The engine posts the spec on the issue as one comment marked `<!-- factory:refine -->`.
-- The engine edits that comment in place on later rounds, so the issue shows the current spec rather than every version.
+- On an issue the factory's GitHub account wrote (such as one from `factory new`), the engine puts the spec in a section at the end of the issue body.
+  - The section is marked `<!-- factory:refine -->` … `<!-- /factory:refine -->`; the text above it is never changed.
+  - Edit the section to correct the spec: after `factory sync`, the next triage reads it as part of the issue.
+- On anyone else's issue, the engine posts the spec as one comment marked `<!-- factory:refine -->` and leaves the issue as they wrote it.
+- Later rounds replace the section or edit the comment in place, so the issue shows the current spec rather than every version.
 
 ## Spec critic
 
@@ -345,7 +348,8 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
   - Nothing is ticked before the merge, or when the PR is closed without merging.
 - It changes only those checkboxes, on exactly the lines it read; no other text changes.
 - The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
-- The refine spec's criteria are ticked in the factory's refine comment.
+- The refine spec's criteria are ticked where the spec is: the factory's refine comment, or the spec section of the factory's own issue.
+- The spec section in the body never counts as the issue's own criteria, so each criterion is checked once.
 - `CANNOT_CHECK`, not-checked and `NOT_MET` criteria stay unticked.
 - A line that was edited since is left alone and noted; a GitHub failure is a warning and never reopens the run.
 

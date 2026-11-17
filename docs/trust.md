@@ -25,6 +25,9 @@ trust:
   - They were written from your own idea and approved by you (or by the gate you configured).
   - The factory records this locally when it creates them, so a later `factory sync` never clears it and nobody on GitHub can set it.
   - Comments on them by others are still judged by their own author.
+- On an issue the factory's gh account wrote, refine puts its spec in the issue body (see [Refine](pipeline.md#refine)).
+  - A later triage reads that agent-written section with the rest of the issue, at the issue's trust.
+  - Only the factory's own issues are edited, so an untrusted author's text never becomes part of a trusted issue this way.
 - The trust list is read from the default branch, so a branch cannot change it (see [What steers the agents](runs.md#what-steers-the-agents)).
 - An imported snapshot can queue issues and mark them as opened by the factory (see [Moving between machines](moving-between-machines.md)).
 
