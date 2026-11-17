@@ -27,6 +27,12 @@ describe("the npm package bundle", () => {
     const version = (JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8")) as { version: string }).version;
     expect(execFileSync(process.execPath, [join(outDir, "dist", "main.js"), "--version"], { encoding: "utf8" }).trim()).toBe(version);
     expect(readFileSync(join(outDir, "dist", "main.js"), "utf8")).not.toMatch(/from "@factory\//);
+
+    // What `factory upgrade` reads the leases with, in a child process; no projects here.
+    const env = { ...process.env, FACTORY_DATA_DIR: join(scratch, "data") };
+    expect(execFileSync(process.execPath, [join(outDir, "dist", "main.js"), "upgrade", "--list-leases"], { encoding: "utf8", env }).trim()).toBe("[]");
+    // A bundle outside node_modules is a checkout's build, which `git pull` updates; refused before any lookup.
+    expect(() => execFileSync(process.execPath, [join(outDir, "dist", "main.js"), "upgrade"], { encoding: "utf8", env, stdio: "pipe" })).toThrow(/git pull/);
   });
 
   it("finds the shipped prompts and the web app next to dist/", async () => {

@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { DEFAULT_PORT } from "@factory/server";
 import { runChecksList, runDismiss } from "./commands/checks.js";
@@ -14,6 +14,7 @@ import { runApprove, runCancel, runLogs, runReject, runResume, runRun, runStatus
 import { parsePort, runServe } from "./commands/serve.js";
 import { runShow } from "./commands/show.js";
 import { runExport, runImport } from "./commands/snapshot.js";
+import { runListLeases, runUpgrade } from "./commands/upgrade.js";
 import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork } from "./commands/work.js";
 import { refuseRunningOnItself } from "./self.js";
 import { styleFor } from "./style.js";
@@ -297,6 +298,17 @@ export function buildProgram(): Command {
     .option("--dry-run", "list what would be removed and kept, change nothing")
     .action((options: { dryRun?: boolean }) => {
       console.log(runCleanup(process.cwd(), options));
+    });
+
+  program
+    .command("upgrade")
+    .description("install the latest published version of the factory, with the package manager that installed it")
+    .option("--check", "only say whether a newer version is available")
+    // Internal: `factory upgrade` reads the runs' leases through a child process (see leasesFromChild).
+    .addOption(new Option("--list-leases").hideHelp())
+    .action((options: { check?: boolean; listLeases?: boolean }) => {
+      if (options.listLeases) return console.log(runListLeases());
+      console.log(runUpgrade(options, { installed: program.version()! }));
     });
 
   return program;
