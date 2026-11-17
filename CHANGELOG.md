@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/tomek-i/software-factory/compare/v0.4.0...v0.5.0) (2026-11-17)
+
+
+### Features
+
+* **agents:** give agents the default branch's CLAUDE.md ([#149](https://github.com/tomek-i/software-factory/issues/149)) ([85462dd](https://github.com/tomek-i/software-factory/commit/85462dd0999a030e2faa35ebb49cd3d690578f4d)), closes [#127](https://github.com/tomek-i/software-factory/issues/127)
+* **core:** let the issue writer pick labels the repository has ([#211](https://github.com/tomek-i/software-factory/issues/211)) ([2347491](https://github.com/tomek-i/software-factory/commit/234749189143308596a3683d319931cb55984176))
+* **core:** put the refined spec in the body of the factory's own issues ([#209](https://github.com/tomek-i/software-factory/issues/209)) ([3f1a8d4](https://github.com/tomek-i/software-factory/commit/3f1a8d42d2c75291566ff1804d4ca6198a2dcdc9))
+* **core:** retry failed checks and park runs whose gate only timed out ([#214](https://github.com/tomek-i/software-factory/issues/214)) ([293d48b](https://github.com/tomek-i/software-factory/commit/293d48be0382d2bfdcb7cd44abc751ad530b3cf0))
+* **merge:** read checks before the merge gate and count re-syncs apart ([#194](https://github.com/tomek-i/software-factory/issues/194)) ([35e04f6](https://github.com/tomek-i/software-factory/commit/35e04f6ac3d75017f21a0abf2c10490e83b1ccc4)), closes [#192](https://github.com/tomek-i/software-factory/issues/192)
+* **review:** check each acceptance criterion and tick met ones after merge ([#199](https://github.com/tomek-i/software-factory/issues/199)) ([02bd2c6](https://github.com/tomek-i/software-factory/commit/02bd2c6063889f39ec2dfcebc4e4be3793e6078a)), closes [#190](https://github.com/tomek-i/software-factory/issues/190)
+* **review:** post review notes as an inline pr review ([#206](https://github.com/tomek-i/software-factory/issues/206)) ([d0543df](https://github.com/tomek-i/software-factory/commit/d0543df0d41ed0b2fea0ff03e69f0fa0a0a9fde9))
+* **web:** send a waiting run back to a stage and dismiss false-positive alerts ([#195](https://github.com/tomek-i/software-factory/issues/195)) ([0ba567b](https://github.com/tomek-i/software-factory/commit/0ba567b75c8cf431d35d1bfbf1eec49119fbd0dc)), closes [#191](https://github.com/tomek-i/software-factory/issues/191)
+
 ## [0.4.0](https://github.com/tomek-i/software-factory/compare/v0.3.1...v0.4.0) (2026-11-16)
 
 
