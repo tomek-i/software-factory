@@ -1,6 +1,6 @@
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exportSnapshot, importChangeCount, importSnapshot, ServiceError, type CommandRunner, type ImportReport } from "@factory/core";
 import { CliError, withProject } from "../context.js";
 import { printable } from "./lessons.js";
@@ -90,8 +90,25 @@ export function runImport(cwd: string, file: string, options: { dryRun?: boolean
 }
 
 function inside(root: string, target: string): boolean {
-  const rel = relative(resolve(root), target);
+  const rel = relative(realPath(root), realPath(target));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The path as the file system names it. One folder can be spelled two ways (a Windows short name
+ * such as `RUNNER~1`, a symlink or junction), and git names the repo one way while the target may
+ * use the other, so comparing the text would miss a file inside the repo. The target may not exist
+ * yet: its nearest existing folder is resolved and the rest appended.
+ */
+function realPath(path: string): string {
+  const full = resolve(path);
+  let existing = full;
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return full;
+    existing = parent;
+  }
+  return join(realpathSync.native(existing), relative(existing, full));
 }
 
 /** Text from the file (the host name) is printed with `printable`: the file may not be your own. */
