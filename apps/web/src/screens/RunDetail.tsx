@@ -176,7 +176,7 @@ export function RunDetail() {
             </CardContent>
           </Card>
 
-          {data.leftover && <Leftover run={run} leftover={data.leftover} />}
+          <Leftover key={`${run.project}/${run.id}`} run={run} leftover={data.leftover} />
 
           <Card>
             <CardHeader>

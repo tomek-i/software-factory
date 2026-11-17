@@ -707,6 +707,26 @@ describe("run details", () => {
     expect(within(await screen.findByRole("status")).getByText("run-1: kept: the branch has commits that are not on the remote")).toBeTruthy();
   });
 
+  it("keeps saying what it removed once the run's worktree and branch are gone", async () => {
+    server.runs = [runRow({ state: "done", waitingGate: null })];
+    const detail = server.detail;
+    let left = true;
+    server.detail = (run) => ({ ...detail(run), ...(left ? { leftover: { worktree: ".worktrees/run-1", branch: "factory/12-add" } } : {}) });
+    server.answers.set("/run-1/cleanup", { lines: ["run-1: removed worktree, local branch factory/12-add"] });
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    const clean = await screen.findByRole("button", { name: /Clean up/ });
+    // The server removes them on the post, so every later read of the run has no leftover.
+    left = false;
+    await user.click(clean);
+
+    expect(within(await screen.findByRole("status")).getByText("run-1: removed worktree, local branch factory/12-add")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(".worktrees/run-1")).toBeNull());
+    expect(screen.getByRole("status").textContent).toBe("run-1: removed worktree, local branch factory/12-add");
+    expect(screen.queryByRole("button", { name: /Clean up/ })).toBeNull();
+  });
+
   it("lists each acceptance criterion with its status and evidence, wrapping long paths", async () => {
     const evidence = "packages/core/src/pipeline/driver.acceptance.test.ts:123";
     server.runs = [runRow({ state: "build", waitingGate: null })];

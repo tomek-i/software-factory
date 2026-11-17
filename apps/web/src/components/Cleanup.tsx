@@ -6,27 +6,33 @@ import { Card, CardContent, CardHeader } from "./ui/card";
 
 /**
  * A finished run's worktree and branch that cleanup has not removed yet, with a button to remove them
- * now. The server keeps work that would be lost and says why, as the automatic cleanup does.
+ * now. The server keeps work that would be lost and says why, as the automatic cleanup does. After a
+ * removal the card stays, with what was removed, until the page changes.
  */
-export function Leftover({ run, leftover }: { run: RunRow; leftover: NonNullable<RunDetail["leftover"]> }) {
+export function Leftover({ run, leftover }: { run: RunRow; leftover?: RunDetail["leftover"] }) {
   const queryClient = useQueryClient();
   const clean = useMutation({ mutationFn: () => api.cleanupRun(run), onSuccess: () => queryClient.invalidateQueries() });
+  if (!leftover && !clean.data) return null;
   return (
     <Card>
       <CardHeader>
         <h2 className="text-sm font-medium">Worktree and branch</h2>
       </CardHeader>
       <CardContent className="space-y-3">
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-          <dt className="text-muted-foreground">Worktree</dt>
-          <dd className="break-all font-mono">{leftover.worktree}</dd>
-          <dt className="text-muted-foreground">Branch</dt>
-          <dd className="break-all font-mono">{leftover.branch}</dd>
-        </dl>
-        {leftover.kept && <p className="text-sm">Kept on purpose: {leftover.kept}</p>}
-        <Button size="sm" variant="outline" disabled={clean.isPending} onClick={() => clean.mutate()}>
-          <Trash2 aria-hidden /> Clean up
-        </Button>
+        {leftover && (
+          <>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              <dt className="text-muted-foreground">Worktree</dt>
+              <dd className="break-all font-mono">{leftover.worktree}</dd>
+              <dt className="text-muted-foreground">Branch</dt>
+              <dd className="break-all font-mono">{leftover.branch}</dd>
+            </dl>
+            {leftover.kept && <p className="text-sm">Kept on purpose: {leftover.kept}</p>}
+            <Button size="sm" variant="outline" disabled={clean.isPending} onClick={() => clean.mutate()}>
+              <Trash2 aria-hidden /> Clean up
+            </Button>
+          </>
+        )}
         {clean.error && <p className="text-sm text-destructive">{clean.error.message}</p>}
         {clean.data && <Outcome result={{ lines: clean.data.lines, skipped: [] }} />}
       </CardContent>

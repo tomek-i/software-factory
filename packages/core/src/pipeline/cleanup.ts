@@ -275,10 +275,14 @@ export function describeCleanup(runId: string, result: CleanupResult, dryRun = f
 
 /**
  * Store a cleanup's warnings and kept reason with the run, so `factory logs` shows them. The same
- * note twice in a row is stored once: a sweep retries a failing cleanup on every status.
+ * note twice in a row is stored once: a sweep retries a failing cleanup on every status. A removal
+ * is stored only after an earlier cleanup note, so the run's reason no longer says it was kept; a
+ * run cleaned up the first time keeps its own reason, such as its PR being merged.
  */
 export function recordCleanup(store: Store, target: Run, result: CleanupResult): void {
-  for (const note of [...(result.kept ? [`kept: ${result.kept}`] : []), ...result.warnings]) {
+  const afterNote = store.listEvents(target.id).at(-1)?.reason?.startsWith("cleanup: ") === true;
+  const removed = afterNote && result.removed.length ? [`removed ${result.removed.join(", ")}`] : [];
+  for (const note of [...removed, ...(result.kept ? [`kept: ${result.kept}`] : []), ...result.warnings]) {
     const reason = `cleanup: ${note}`;
     if (store.listEvents(target.id).at(-1)?.reason === reason) continue;
     store.appendEvent(target.id, target.state, target.state, reason);

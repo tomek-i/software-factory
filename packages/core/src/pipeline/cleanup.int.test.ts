@@ -359,6 +359,8 @@ describe("cleanupFinishedRuns", () => {
     expect(skipped).toEqual(["a worker still holds it, and cleans it up once it has stopped"]);
     store.releaseLease(run.id, "worker");
     expect(sweep()).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}`]);
+    // Cleaned up the first time: the run keeps its own reason.
+    expect(store.listEvents(run.id).some((e) => e.reason.startsWith("cleanup:"))).toBe(false);
   });
 
   it("records why it kept a run once, lists without removing in a dry run, and looks again when asked", () => {
@@ -381,5 +383,7 @@ describe("cleanupFinishedRuns", () => {
     // Pushed since: `factory cleanup` now removes it.
     git(kept.worktree.path, "push", "--quiet", "origin", `HEAD:refs/heads/${BRANCH}`);
     expect(cleanupFinishedRuns(kept.store, kept.project, { ...options, recheckKept: true })).toEqual([`${kept.run.id}: removed worktree, local branch ${BRANCH}`]);
+    // The run's reason no longer says it was kept.
+    expect(kept.store.listEvents(kept.run.id).at(-1)?.reason).toBe(`cleanup: removed worktree, local branch ${BRANCH}`);
   });
 });
