@@ -441,8 +441,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     };
   });
   runAction("cancel", (ctx, run, body) => {
-    const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", options.run);
-    return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned };
+    const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", { run: options.run, github: options.github?.(ctx.project) });
+    return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned, ...(cancelled.closedPr ? { closedPr: cancelled.closedPr } : {}) };
   });
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });

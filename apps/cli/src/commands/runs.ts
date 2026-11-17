@@ -442,15 +442,21 @@ export function runReject(cwd: string, ref: string, options: { message: string }
  * `factory cancel <run>`: stop its agent (and everything the agent started) and end the run. Its
  * worktree and branch are cleaned up now when no worker drives it, or else by the worker once it stopped.
  */
-export function runCancel(cwd: string, ref: string, options: { message?: string }, run?: CommandRunner): string {
+export function runCancel(cwd: string, ref: string, options: { message?: string }, deps: Pick<RunDeps, "run" | "github"> = {}): string {
   return withProject(
     cwd,
     (ctx) => {
-      const cancelled = cancelRun(ctx, ref, options.message?.trim() || "cancelled from the CLI", run);
-      const { stopped: count } = cancelled;
+      const cancelled = cancelRun(ctx, ref, options.message?.trim() || "cancelled from the CLI", deps);
+      const { stopped: count, closedPr } = cancelled;
       const stopped = count ? ` Stopped ${count} agent process${count > 1 ? "es" : ""}.` : "";
-      return `Cancelled ${cancelled.run.id}.${stopped}${describeMedia(cancelled.media)}${cancelled.cleaned.map((l) => `\n${l}`).join("")}`;
+      // Its issue was closed on GitHub, so its PR went with it.
+      const pr = !closedPr
+        ? ""
+        : closedPr.error
+          ? `\nCould not close PR #${closedPr.number}: ${closedPr.error}`
+          : `\nClosed PR #${closedPr.number} and deleted its branch: the issue was closed on GitHub.`;
+      return `Cancelled ${cancelled.run.id}.${stopped}${describeMedia(cancelled.media)}${pr}${cancelled.cleaned.map((l) => `\n${l}`).join("")}`;
     },
-    run,
+    deps.run,
   );
 }

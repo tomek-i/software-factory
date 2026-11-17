@@ -243,6 +243,40 @@ describe("approve, resume, reject and cancel", () => {
     expect(() => cancelRun(ctx, run.id, "again")).toThrow(new ServiceError(`Run ${run.id} is already cancelled.`));
   });
 
+  it("closes the open PR of a run whose issue was closed on GitHub, and only then", () => {
+    const { ctx, store, project, github } = context();
+    const closed: { number: number; comment: string }[] = [];
+    const prState = { state: "open" as "open" | "closed" };
+    const port = {
+      ...github,
+      pullRequestState: (number: number) => ({ number, state: prState.state, draft: false, head: "h" }),
+      closePullRequest: (number: number, comment: string) => void closed.push({ number, comment }),
+    };
+    const parked = () => {
+      const run = store.createRun({ project_id: project.id, title: "Add the feature", issue_number: 12 });
+      store.writeState(run.id, "needs_human", { pr_number: 7, waiting_gate: "merge" });
+      return run.id;
+    };
+
+    // The issue is open: a plain cancel leaves the PR alone.
+    expect(cancelRun(ctx, parked(), "not now", { github: port }).closedPr).toBeUndefined();
+    expect(closed).toEqual([]);
+
+    store.closeIssue(project.id, 12);
+    expect(cancelRun(ctx, parked(), "done elsewhere", { github: port }).closedPr).toEqual({ number: 7 });
+    expect(closed).toEqual([{ number: 7, comment: "Issue #12 was closed on GitHub, so the factory's run for it was cancelled." }]);
+
+    // Already closed on GitHub: nothing to do.
+    prState.state = "closed";
+    expect(cancelRun(ctx, parked(), "again", { github: port }).closedPr).toBeUndefined();
+
+    // GitHub refuses: the run is cancelled anyway, and the caller hears why the PR is still open.
+    prState.state = "open";
+    const failing = { ...port, closePullRequest: () => { throw new Error("gh pr close failed: no access\nmore"); } };
+    const refused = cancelRun(ctx, parked(), "again", { github: failing });
+    expect(refused).toMatchObject({ run: { state: "cancelled" }, closedPr: { number: 7, error: "gh pr close failed: no access" } });
+  });
+
   it("stops the running agent of a run a worker drives, and leaves its cleanup to that worker", async () => {
     const { ctx, store, project, root } = context();
     const run = store.createRun({ project_id: project.id, title: "Add the feature", issue_number: 12 });

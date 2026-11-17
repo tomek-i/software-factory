@@ -139,7 +139,7 @@ describe("approve / reject / cancel", () => {
     expect(gh).toEqual([["release", "delete", `factory-media-${first}`, "--yes", "-R", "o/r"]]);
     expect(existsSync(join(runs, first, MEDIA_MARKER))).toBe(false);
 
-    const cancelled = runCancel(dir, second, {}, runner(true));
+    const cancelled = runCancel(dir, second, {}, { run: runner(true) });
     expect(cancelled).toMatch(/^Cancelled /);
     expect(cancelled).toContain(`Could not delete its screenshots release (gh release delete failed: HTTP 403); delete it with \`gh release delete factory-media-${second}\`.`);
     // Kept, so a later cancel or reject does not lose track of the release.
