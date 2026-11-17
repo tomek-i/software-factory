@@ -113,6 +113,14 @@ Related docs:
 - Each writes `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit.
 - Only critical and major findings count against a change.
 - Minor ones and nits never hold the run up.
+- Anything that weakens a protection is at least major, in every lens:
+  - a way to become trusted or to skip a human gate;
+  - untrusted data reaching a link, HTML, a shell, a query, a path or the terminal without validation or escaping;
+  - reading or writing outside the intended folder;
+  - credentials, tokens or local paths leaking.
+- "Hard to exploit" lowers such a finding from critical to major, never to minor.
+- The security lens also checks where trust and config are read from, untrusted text framed as data, child process environments and cleanup.
+- It checks the change against the project's own security rules: the repo's `SECURITY.md` and any security section in its `CLAUDE.md`.
 - If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
 
 ### Acceptance criteria
@@ -136,6 +144,7 @@ Related docs:
 - It has no shell, and by default it uses a different model from the reviewers.
 - It writes `round-N/verify.md`: `VERDICT: CONFIRMED` with the findings that hold.
 - It adds a `## Refuted` line with the reason for each finding that doesn't hold.
+- It never refutes a real finding that weakens a protection as only minor.
 - The engine rejects a verdict that skips a finding or judges one twice.
 - **Confirmed** findings go back to the builder, which gets them in its next turn.
   - That costs a review round (`loops.max_review_rounds`).

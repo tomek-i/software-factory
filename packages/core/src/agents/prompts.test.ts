@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../test/helpers.js";
-import type { ReviewLens } from "@factory/shared";
+import { REVIEW_LENSES, type ReviewLens } from "@factory/shared";
 import {
   absoluteRule,
   issueBlock,
@@ -44,6 +44,40 @@ describe("rolePrompt", () => {
     const builder = rolePrompt("builder", () => undefined);
     expect(builder).toContain("the tests that cover what you changed");
     expect(builder).toContain("Do not run the whole test suite");
+  });
+
+  // Security weaknesses graded minor merged unfixed (#167), so every lens and the verifier hold them at major
+  it("tells every reviewer lens that weakening a protection is at least major, never minor", () => {
+    for (const lens of REVIEW_LENSES) {
+      const reviewer = rolePrompt("reviewer", () => undefined, lens);
+      expect(reviewer).toContain("Anything that weakens a protection is at least **major**");
+      expect(reviewer).toMatch(/a way to become trusted or to skip a human gate/);
+      expect(reviewer).toMatch(/untrusted data reaching a link, HTML, a shell, a query, a path or the terminal/);
+      expect(reviewer).toMatch(/reading or writing outside the intended folder/);
+      expect(reviewer).toMatch(/credentials, tokens or local paths leaking/);
+      expect(reviewer).toMatch(/lowers such a finding from critical to major, never to\s+minor/);
+    }
+  });
+
+  // The shipped lens serves every repo, so project-specific rules come from SECURITY.md and the project notes
+  it("gives the security lens generic invariants and points it to the project's own security rules", () => {
+    const security = rolePrompt("reviewer", () => undefined, "security");
+    expect(security).toContain("Trust and config are never read from data a branch, an issue or an imported file can plant");
+    expect(security).toMatch(/framed as data, never followed\s+as instructions/);
+    expect(security).toContain("A child process gets only the environment it needs");
+    expect(security).toContain("cleaned up on every path");
+    expect(security).toContain("`SECURITY.md`");
+    expect(security).toContain("any security section in the project notes you were given");
+    expect(security).not.toContain("quietMentions");
+    expect(security).not.toContain("redactPaths");
+    expect(security).not.toContain("trusted reader");
+  });
+
+  it("does not let the verifier refute a weakened protection as only minor", () => {
+    const verifier = rolePrompt("verifier", () => undefined);
+    expect(verifier).toContain("A real finding that weakens a protection is at least major, so never refute it as only minor");
+    expect(verifier).toMatch(/a way to become trusted or to skip a human gate/);
+    expect(verifier).toMatch(/makes it major rather than critical, not minor/);
   });
 });
 
