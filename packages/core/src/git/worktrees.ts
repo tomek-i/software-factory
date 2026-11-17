@@ -101,7 +101,8 @@ export interface GitEvidence {
   head(): string;
   isClean(): boolean;
   commitsAhead(): number;
-  isPushed(): boolean;
+  /** With `head`, compares the remote branch to that commit instead of reading HEAD again. */
+  isPushed(head?: string): boolean;
 }
 
 export function gitEvidence(
@@ -115,9 +116,25 @@ export function gitEvidence(
     isClean: () => at(["status", "--porcelain"]) === "",
     commitsAhead: () => Number(at(["rev-list", "--count", `origin/${defaultBranch}..HEAD`])),
     // Ask the remote itself: a local tracking ref can be stale or point at a different remote.
-    isPushed: () => {
+    isPushed: (head) => {
       const line = at(["ls-remote", "origin", `refs/heads/${worktree.branch}`]);
-      return line !== "" && line.split(/\s+/)[0] === at(["rev-parse", "HEAD"]);
+      return line !== "" && line.split(/\s+/)[0] === (head ?? at(["rev-parse", "HEAD"]));
     },
   };
+}
+
+/**
+ * The same facts, each read at most once. Only for a stretch where nothing can change them: after
+ * the last agent turn, check or wait of a step, up to its move. A push of HEAD keeps them true, but
+ * `isPushed` must not be read before it.
+ */
+export function snapshot(git: GitEvidence, knownHead?: string): GitEvidence {
+  const once = <T>(read: () => T) => {
+    let value: { v: T } | undefined;
+    return () => (value ??= { v: read() }).v;
+  };
+  // A caller that has just read HEAD itself, with nothing run since, passes it in.
+  const head = knownHead === undefined ? once(() => git.head()) : () => knownHead;
+  const isPushed = once(() => git.isPushed(head()));
+  return { head, isClean: once(() => git.isClean()), commitsAhead: once(() => git.commitsAhead()), isPushed };
 }

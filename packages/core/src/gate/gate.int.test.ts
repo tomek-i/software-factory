@@ -48,6 +48,15 @@ describe("runQualityGate", () => {
     expect(readFileSync(result.logFile, "utf8")).toContain("all good");
   });
 
+  // The gate stage trusts this: it takes the gate's HEAD as the commit it moves on with (see stages/gate.ts).
+  it("refuses to report on a commit when HEAD moved while the checks ran", async () => {
+    const { commit, gate } = setup();
+    commit("feature.txt", "hello\n");
+
+    const committing = check("commits", "git -c user.email=f@example.invalid -c user.name=f commit --allow-empty -qm meanwhile");
+    await expect(gate([committing])).rejects.toThrow(/^HEAD moved from [0-9a-f]{7} to [0-9a-f]{7} while the gate ran$/);
+  });
+
   it("fails with the tail of the failing output for the builder", async () => {
     const { commit, gate } = setup();
     commit("feature.txt", "hello\n");

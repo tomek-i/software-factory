@@ -4,7 +4,7 @@ import { isTrustedIssue, pullRequestTitleProblem } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn } from "../../agents/turn.js";
 import { scanSecrets } from "../../gate/gate.js";
-import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../../git/worktrees.js";
+import { branchName, createWorktree, gitEvidence, snapshot, type GitEvidence, type Worktree } from "../../git/worktrees.js";
 import type { Issue, Run } from "../../store/store.js";
 import { feedbackFile } from "../feedback.js";
 import { DEFAULT_PORT_BASE, LONG_SUMMARY_BULLET, longSummaryBullets, prBody, readValid, runEvidence, section } from "../shared.js";
@@ -19,6 +19,11 @@ export async function build(ctx: StageContext, run: Run): Promise<StepResult> {
   const outputFile = join(dir, "build.md");
   const files = writeRoleFiles(dir, "builder", rolePrompt("builder", ctx.deps.read), permissionProfile("builder", { runDirFromCwd: relative(worktree.path, dir) }));
   const session = ctx.deps.store.latestSession(run.id, "builder");
+  // The facts the last hand-over was checked against. Only the push runs between that check and the
+  // move, and it changes none of them, so the guard reuses them. A commit made meanwhile still shows,
+  // as the remote then differs from that HEAD; a tree dirtied meanwhile (something the builder left
+  // running) shows at the gate, which reads the worktree afresh.
+  let handedOver: GitEvidence | undefined;
 
   const prompt = session
     ? builderFollowUp(ctx, run, outputFile)
@@ -58,7 +63,7 @@ export async function build(ctx: StageContext, run: Run): Promise<StepResult> {
         ? [
             // Only the hand-over that opens the PR names it; later rounds keep its title.
             ...(run.pr_number == null ? [pullRequestTitleProblem(verdict.header.TITLE)].filter((p) => p !== undefined) : []),
-            ...handOverProblems(ctx, worktree, git, verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)),
+            ...handOverProblems(ctx, worktree, (handedOver = snapshot(git)), verdict.header.COMMIT, join(dir, `round-${run.round + 1}`)),
           ]
         : [],
   });
@@ -71,7 +76,7 @@ export async function build(ctx: StageContext, run: Run): Promise<StepResult> {
   const long = longSummaryBullets(turn.verdict.body);
   if (long > 0) ctx.info(run, `note: ${long} Summary bullet(s) longer than ${LONG_SUMMARY_BULLET} characters; the PR's What section may be hard to scan`);
   const pr = publish(ctx, worktree, turn.verdict.header.TITLE ?? issue.title, issue, turn.verdict.body, run.unsafe);
-  ctx.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.round + 1, git), {
+  ctx.move(run, "gate", "builder handed over", { commit: turn.verdict.header.COMMIT }, runEvidence(dir, run.round + 1, handedOver ?? git), {
     pr_number: pr,
   });
   return undefined;

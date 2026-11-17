@@ -96,11 +96,27 @@ const LOCKFILES = new Set([
 /** A version spec that only pins a version from the usual registry. Anything else (a URL, git, npm: alias, file:, a tag) is a source change. */
 const PLAIN_VERSION = /^[\sv\d.^~<>=*xX|,!+-]*$/;
 
+type Manifest = "package.json" | "msbuild" | "requirements" | "toml" | "go.mod";
+
+/** Which kind of dependency manifest the file is, by its name, or undefined when it is none. */
+function manifestKind(path: string): Manifest | undefined {
+  const name = basename(path).toLowerCase();
+  if (name === "package.json") return "package.json";
+  if (/\.(cs|fs|vb)proj$/.test(name) || name === "directory.packages.props" || name === "packages.config") return "msbuild";
+  if (/^(requirements|constraints).*\.txt$/.test(name)) return "requirements";
+  if (name === "pyproject.toml" || name === "pipfile") return "toml";
+  if (name === "go.mod") return "go.mod";
+  return undefined;
+}
+
+/** Whether the file can declare dependencies, so its contents are worth reading. */
+export const isManifest = (path: string): boolean => manifestKind(path) !== undefined;
+
 /** Dependencies a manifest declares, as entry -> spec, or undefined when the file is not a manifest. */
 export function declaredDependencies(path: string, text: string): Map<string, string> | undefined {
-  const name = basename(path).toLowerCase();
-  if (name === "package.json") return packageJsonDependencies(text);
-  if (/\.(cs|fs|vb)proj$/.test(name) || name === "directory.packages.props" || name === "packages.config") {
+  const kind = manifestKind(path);
+  if (kind === "package.json") return packageJsonDependencies(text);
+  if (kind === "msbuild") {
     const deps = new Map<string, string>();
     for (const m of text.matchAll(/<(?:PackageReference|PackageVersion|package)\b([^>]*)>/gi)) {
       const attrs = m[1]!;
@@ -110,9 +126,9 @@ export function declaredDependencies(path: string, text: string): Map<string, st
     }
     return deps;
   }
-  if (/^(requirements|constraints).*\.txt$/.test(name)) return requirementsDependencies(text);
-  if (name === "pyproject.toml" || name === "pipfile") return tomlDependencies(text);
-  if (name === "go.mod") return goDependencies(text);
+  if (kind === "requirements") return requirementsDependencies(text);
+  if (kind === "toml") return tomlDependencies(text);
+  if (kind === "go.mod") return goDependencies(text);
   return undefined;
 }
 
@@ -292,7 +308,8 @@ export function hardRuleHits({ files, config, read, scope }: HardRuleInput): str
     if (triggers.has("new_dependency")) {
       if (LOCKFILES.has(lower)) hits.push(`lockfile ${file.status === "A" ? "added" : file.status === "D" ? "deleted" : "changed"}: ${path}`);
       if (DEPENDENCY_CONFIG.has(lower)) hits.push(`dependency config changed: ${path}`);
-      if (file.status !== "D") {
+      // Only a manifest can declare dependencies; reading every changed file costs a git call each.
+      if (file.status !== "D" && isManifest(path)) {
         const after = declaredDependencies(path, read("head", path) ?? "");
         if (after) {
           const beforeText = read("base", path);
@@ -339,12 +356,14 @@ export function diffHardRuleHits(options: {
   config: FactoryConfig;
   scope: string;
   head?: string;
+  /** Where `head` left the default branch, when the caller already has it from `freshBase`. */
+  base?: string;
   run?: CommandRunner;
 }): string[] {
   const run = options.run ?? runCommand;
   const git = gitIn(options.cwd, run);
   const head = options.head ?? "HEAD";
-  const base = freshBase(options.cwd, options.defaultBranch, head, run);
+  const base = options.base ?? freshBase(options.cwd, options.defaultBranch, head, run);
   const read = (rev: "base" | "head", path: string) => {
     const shown = git(["show", `${rev === "base" ? base : head}:${path}`]);
     return shown.code === 0 ? shown.stdout : undefined;
