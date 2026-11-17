@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/tomek-i/software-factory/compare/v0.5.0...v0.6.0) (2026-11-17)
+
+
+### Features
+
+* **cli:** add factory upgrade ([#223](https://github.com/tomek-i/software-factory/issues/223)) ([688929b](https://github.com/tomek-i/software-factory/commit/688929bcb6b697c547e02de73e577e93d671884f))
+* **merge:** hold the merge on open review threads and failed checks ([#221](https://github.com/tomek-i/software-factory/issues/221)) ([1346d1e](https://github.com/tomek-i/software-factory/commit/1346d1e16b6a2a3a4a87142a6d014b87afc6eb48)), closes [#173](https://github.com/tomek-i/software-factory/issues/173)
+* **prompts:** grade weakened protections as at least major ([#220](https://github.com/tomek-i/software-factory/issues/220)) ([5c6640e](https://github.com/tomek-i/software-factory/commit/5c6640e38807d5a88ac3873435b0b7bd5f829cc2)), closes [#177](https://github.com/tomek-i/software-factory/issues/177)
+
+
+### Bug Fixes
+
+* **cli:** compare real paths when warning about an export inside the repo ([#226](https://github.com/tomek-i/software-factory/issues/226)) ([3b581f1](https://github.com/tomek-i/software-factory/commit/3b581f1653468eb8850013266f4a84d8de21df69))
+* **import:** let github, not the snapshot file, settle trust and issue fields ([#222](https://github.com/tomek-i/software-factory/issues/222)) ([da9acbc](https://github.com/tomek-i/software-factory/commit/da9acbc3b87b48b0feaf0b838b9718aa0799b254)), closes [#178](https://github.com/tomek-i/software-factory/issues/178)
+* resolve the code scanning and dependabot findings on main ([#219](https://github.com/tomek-i/software-factory/issues/219)) ([45d5215](https://github.com/tomek-i/software-factory/commit/45d52159a6fc05e6b638a8fda4706dea11a05e64)), closes [#215](https://github.com/tomek-i/software-factory/issues/215)
+
 ## [0.5.0](https://github.com/tomek-i/software-factory/compare/v0.4.0...v0.5.0) (2026-11-17)
 
 
