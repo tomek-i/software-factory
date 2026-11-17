@@ -693,7 +693,7 @@ function draftView(patch: Partial<DraftView> = {}): DraftView {
       decision: "PROCEED",
       summary: ["one issue"],
       reasons: [],
-      issue: { title: "Add CSV export", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+      issue: { title: "Add CSV export", ui: false, risk: "LOW", labels: [], dependsOn: [], body: SECTIONS },
       subIssues: [],
     },
     problems: [],
@@ -751,7 +751,7 @@ describe("new issue", () => {
     expect((await screen.findByRole("alert")).textContent).toBe(refusal);
     expect(server.posts.at(-1)).toEqual({
       path: `/api/projects/p1/drafts/${id}/save`,
-      body: { issue: { title: "Add CSV export", ui: false, risk: "LOW", body: "## Why\nBecause." }, subIssues: [] },
+      body: { issue: { title: "Add CSV export", ui: false, risk: "LOW", body: "## Why\nBecause.", labels: [] }, subIssues: [] },
     });
 
     server.failures.delete("/save");
@@ -769,7 +769,7 @@ describe("new issue", () => {
     expect(screen.getByRole("link", { name: /#20\s*Export orders as CSV/ }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/20");
     expect(screen.getByText(/Not queued/)).toBeTruthy();
     expect(server.posts.slice(-2)).toEqual([
-      { path: `/api/projects/p1/drafts/${id}/save`, body: { issue: { title: "Export orders as CSV", ui: false, risk: "LOW", body: SECTIONS }, subIssues: [] } },
+      { path: `/api/projects/p1/drafts/${id}/save`, body: { issue: { title: "Export orders as CSV", ui: false, risk: "LOW", body: SECTIONS, labels: [] }, subIssues: [] } },
       { path: `/api/projects/p1/drafts/${id}/publish`, body: { queue: false } },
     ]);
   });
@@ -781,10 +781,10 @@ describe("new issue", () => {
         decision: "ESCALATE",
         summary: [],
         reasons: ["the export format is a guess"],
-        issue: { title: "Exports", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
+        issue: { title: "Exports", ui: false, risk: "LOW", labels: ["enhancement"], dependsOn: [], body: SECTIONS },
         subIssues: [
-          { title: "CSV export", ui: false, risk: "LOW", dependsOn: [], body: SECTIONS },
-          { title: "Excel export", ui: true, risk: "MEDIUM", dependsOn: [1], body: SECTIONS },
+          { title: "CSV export", ui: false, risk: "LOW", labels: [], dependsOn: [], body: SECTIONS },
+          { title: "Excel export", ui: true, risk: "MEDIUM", labels: ["ui"], dependsOn: [1], body: SECTIONS },
         ],
       },
     });
@@ -794,6 +794,9 @@ describe("new issue", () => {
 
     expect(await screen.findByText("the export format is a guess")).toBeTruthy();
     expect((screen.getByLabelText("Sub-issue 2 depends on") as HTMLInputElement).value).toBe("1");
+    expect((screen.getByLabelText("Parent issue labels") as HTMLInputElement).value).toBe("enhancement");
+    expect((screen.getByLabelText("Sub-issue 2 labels") as HTMLInputElement).value).toBe("ui");
+    await user.type(screen.getByLabelText("Sub-issue 1 labels"), "bug, , tests ");
     await user.selectOptions(screen.getByLabelText("Sub-issue 1 risk"), "HIGH");
     await user.type(screen.getByLabelText("Sub-issue 2 depends on"), ", x");
     expect((await screen.findByRole("alert")).textContent).toBe("sub-issue 2: DEPENDS_ON x is not a sub-issue number");
@@ -806,10 +809,10 @@ describe("new issue", () => {
         {
           path: `/api/projects/p1/drafts/${id}/save`,
           body: {
-            issue: { title: "Exports", ui: false, risk: "LOW", body: SECTIONS },
+            issue: { title: "Exports", ui: false, risk: "LOW", body: SECTIONS, labels: ["enhancement"] },
             subIssues: [
-              { title: "CSV export", ui: false, risk: "HIGH", body: SECTIONS, dependsOn: [] },
-              { title: "Excel export", ui: true, risk: "MEDIUM", body: SECTIONS, dependsOn: [1] },
+              { title: "CSV export", ui: false, risk: "HIGH", body: SECTIONS, labels: ["bug", "tests"], dependsOn: [] },
+              { title: "Excel export", ui: true, risk: "MEDIUM", body: SECTIONS, labels: ["ui"], dependsOn: [1] },
             ],
           },
         },

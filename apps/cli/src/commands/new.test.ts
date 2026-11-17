@@ -8,6 +8,12 @@ import { runNew } from "./new.js";
 // Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
+/** The fake GitHub's labels, with a status label the issue writer must never be offered. */
+const REPO_LABELS = [
+  { name: "ui", description: "Visible changes" },
+  { name: "bug", description: "" },
+  { name: "factory", description: "Queued in the software factory" },
+];
 const SECTIONS = "## Why\nBecause.\n\n## What\nDo it.\n\n## Acceptance criteria\n- [ ] it works\n\n## Scope\nThis.\n\n## Out of scope\nThat.\n";
 const block = (title: string, sub = false, extra = "") =>
   `${sub ? "=== SUB-ISSUE ===" : "=== ISSUE ==="}\nTITLE: ${title}\nUI: NO\nRISK: LOW\n${extra}\n${SECTIONS}`;
@@ -23,13 +29,14 @@ function setup(steps: FakeStep[], gate?: string) {
   const project = store.upsertProject({ name: "demo", repo_path: root, github_repo: "o/r" });
   store.close();
 
-  const created: { number: number; title: string; body: string }[] = [];
+  const created: { number: number; title: string; body: string; labels?: string[] }[] = [];
   const links: [number, number][] = [];
   const github: IssueWriterPort = {
-    createIssue: ({ title, body }) => {
-      created.push({ number: 20 + created.length, title, body });
+    createIssue: ({ title, body, labels }) => {
+      created.push({ number: 20 + created.length, title, body, labels });
       return created.at(-1)!.number;
     },
+    listLabels: () => REPO_LABELS,
     addSubIssue: (parent, child) => links.push([parent, child]),
   };
   // `gh issue view` answers for the issues the fake GitHub created; git runs for real.

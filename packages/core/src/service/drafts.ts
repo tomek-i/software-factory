@@ -17,8 +17,9 @@ import {
   type DraftEntry,
   type PublishedDraft,
 } from "../drafts/writer.js";
+import { offeredLabels } from "../drafts/labels.js";
 import type { FactoryEvents } from "../events.js";
-import { ghPort, type IssueWriterPort } from "../github/port.js";
+import { ghPort, type IssueWriterPort, type RepoLabel } from "../github/port.js";
 import { ensureGitignore } from "../init/init.js";
 import { resolveGate } from "../pipeline/gates.js";
 import type { CommandRunner } from "../util/exec.js";
@@ -60,6 +61,8 @@ export async function draftIssue(
   deps: {
     run?: CommandRunner;
     env?: NodeJS.ProcessEnv;
+    /** Where the repository's labels come from; ghPort by default. */
+    github?: IssueWriterPort;
     events?: FactoryEvents;
     signal?: AbortSignal;
     /** Told the draft's id as soon as its folder exists, while the issue writer still works. */
@@ -72,7 +75,21 @@ export async function draftIssue(
   const read = trustedReader(root, defaultBranch, deps.run);
   const config = loadTrustedConfig(read, defaultBranch);
   const runAgent = createAgentRunner({ events: deps.events, env: deps.env });
-  const written = await writeDraft({ root, config, read, runAgent, idea, signal: deps.signal, onStart: deps.onStart });
+  // Read live: one call next to minutes of agent work, and never stale. Labels are a nicety, so a
+  // failure leaves them out rather than stopping the draft.
+  let labels: RepoLabel[] | undefined;
+  let labelsTrouble: string | undefined;
+  try {
+    labels = offeredLabels((deps.github ?? ghPort(ctx.project, deps.run)).listLabels(), config.github.label_prefix);
+  } catch (err) {
+    labelsTrouble = `Could not read the repository's labels, so the draft gets none: ${(err as Error).message}`;
+  }
+  // After onStart: a listener may keep a draft's events only once it knows the draft's id.
+  const onStart = (id: string) => {
+    deps.onStart?.(id);
+    if (labelsTrouble) deps.events?.emit({ type: "info", runId: id, message: labelsTrouble });
+  };
+  const written = await writeDraft({ root, config, read, runAgent, idea, labels, signal: deps.signal, onStart });
 
   const { id, file, turn } = written;
   const fileRef = relative(root, file);
@@ -113,7 +130,10 @@ export function approveDraft(ctx: ServiceContext, ref: string, deps: DraftDeps =
   try {
     const entry = approvableDraft(draftCtx, ref);
     deps.onCreate?.(readFileSync(entry.file, "utf8"));
-    return publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id, queue: deps.queue });
+    // Which labels are the factory's own is set on the default branch, like the prompt that picks them.
+    const defaultBranch = ctx.config.project.default_branch;
+    const statusLabelPrefix = loadTrustedConfig(trustedReader(ctx.project.repo_path, defaultBranch, deps.run), defaultBranch).github.label_prefix;
+    return publishDraft({ ...draftCtx, github: deps.github ?? ghPort(ctx.project, deps.run), ref: entry.id, queue: deps.queue, statusLabelPrefix });
   } catch (err) {
     if (err instanceof VerdictParseError) {
       throw new ServiceError([`Draft ${ref} is not valid:`, ...err.problems.map((p) => `- ${p}`), "Fix it and approve it again, or discard it."].join("\n"));

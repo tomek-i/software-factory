@@ -8,6 +8,7 @@ import { parseVerdict, VerdictParseError } from "@factory/shared";
  *   TITLE: ...
  *   UI: YES | NO
  *   RISK: LOW | MEDIUM | HIGH
+ *   LABELS: ui, bug        <- optional: labels the repository has
  *
  *   ## Why / ## What / ## Acceptance criteria / ## Scope / ## Out of scope
  *
@@ -32,6 +33,8 @@ export interface DraftIssue {
   title: string;
   ui: boolean;
   risk: (typeof RISKS)[number];
+  /** Labels to open the issue with, as written; checked against the repository's labels before creating it. */
+  labels: string[];
   /** Sub-issues only: positions (1-based) of earlier sub-issues this one needs first. */
   dependsOn: number[];
   /** The issue's sections, as written. */
@@ -73,7 +76,7 @@ function parseBlock(lines: string[], name: string, sub: boolean, position: numbe
     if (key in raw) problems.push(`${name}: header ${key} appears more than once`);
     raw[key] = match[2]!.trim();
   }
-  const allowed = sub ? ["TITLE", "UI", "RISK", "DEPENDS_ON"] : ["TITLE", "UI", "RISK"];
+  const allowed = sub ? ["TITLE", "UI", "RISK", "LABELS", "DEPENDS_ON"] : ["TITLE", "UI", "RISK", "LABELS"];
   for (const key of Object.keys(raw)) {
     if (!allowed.includes(key)) problems.push(`${name}: unknown header ${key} (allowed: ${allowed.join(", ")})`);
   }
@@ -85,6 +88,15 @@ function parseBlock(lines: string[], name: string, sub: boolean, position: numbe
   if (ui !== "YES" && ui !== "NO") problems.push(`${name}: UI must be YES or NO`);
   const risk = raw.RISK?.toUpperCase();
   if (!RISKS.includes(risk as (typeof RISKS)[number])) problems.push(`${name}: RISK must be LOW, MEDIUM or HIGH`);
+
+  const labels = [
+    ...new Set(
+      (raw.LABELS ?? "")
+        .split(",")
+        .map((l) => l.trim())
+        .filter(Boolean),
+    ),
+  ];
 
   const dependsOn: number[] = [];
   for (const part of (sub ? (raw.DEPENDS_ON ?? "") : "").split(",").map((p) => p.trim().replace(/^#/, "")).filter(Boolean)) {
@@ -107,7 +119,7 @@ function parseBlock(lines: string[], name: string, sub: boolean, position: numbe
   }
 
   if (problems.length) return { problems };
-  return { issue: { title, ui: ui === "YES", risk: risk as DraftIssue["risk"], dependsOn, body }, problems };
+  return { issue: { title, ui: ui === "YES", risk: risk as DraftIssue["risk"], labels, dependsOn, body }, problems };
 }
 
 /** The issues of a draft body (everything after the header lines), or the problems found. */
@@ -160,6 +172,7 @@ export function parseDraft(text: string): IssueDraft {
 
 function formatBlock(issue: DraftIssue, sub: boolean): string {
   const header = [`TITLE: ${issue.title}`, `UI: ${issue.ui ? "YES" : "NO"}`, `RISK: ${issue.risk}`];
+  if (issue.labels.length) header.push(`LABELS: ${issue.labels.join(", ")}`);
   if (sub && issue.dependsOn.length) header.push(`DEPENDS_ON: ${issue.dependsOn.join(", ")}`);
   // The blank line ends the header, so a body line such as "NOTE: x" stays in the body.
   return [sub ? SUB_ISSUE_DELIMITER : ISSUE_DELIMITER, ...header, "", issue.body.trim(), ""].join("\n");

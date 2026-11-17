@@ -68,7 +68,7 @@ async function draftIdea(ctx: ProjectContext, idea: string, queue: boolean, deps
   process.once("SIGINT", onSigint);
   let outcome: DraftOutcome;
   try {
-    outcome = await draftIssue(ctx, idea, { run: deps.run, env: deps.env, events, signal: controller.signal });
+    outcome = await draftIssue(ctx, idea, { run: deps.run, env: deps.env, github: deps.github, events, signal: controller.signal });
   } finally {
     process.off("SIGINT", onSigint);
   }

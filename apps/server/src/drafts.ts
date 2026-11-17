@@ -148,6 +148,7 @@ export class DraftJobs {
     const work = draftIssue(ctx, idea, {
       run: this.deps.run,
       env: this.deps.env,
+      github: this.deps.issueWriter?.(ctx.project),
       events,
       signal: controller.signal,
       onStart: (draftId) => {
@@ -258,7 +259,9 @@ function issueEdit(value: unknown, name: string): DraftIssueEdit {
   if (typeof fields.ui !== "boolean") throw new BadRequest(`${name}.ui must be true or false.`);
   const dependsOn = fields.dependsOn ?? [];
   if (!Array.isArray(dependsOn) || !dependsOn.every((n) => Number.isInteger(n))) throw new BadRequest(`${name}.dependsOn must be a list of numbers.`);
-  return { title: fields.title as string, ui: fields.ui, risk: fields.risk as string, body: fields.body as string, dependsOn: dependsOn as number[] };
+  const labels = fields.labels ?? [];
+  if (!Array.isArray(labels) || !labels.every((l) => typeof l === "string")) throw new BadRequest(`${name}.labels must be a list of text.`);
+  return { title: fields.title as string, ui: fields.ui, risk: fields.risk as string, body: fields.body as string, labels: labels as string[], dependsOn: dependsOn as number[] };
 }
 
 /** The editor's fields, checked for their types only: what they say is parseDraft's to judge. */

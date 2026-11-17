@@ -157,6 +157,7 @@ export interface DraftIssue {
   title: string;
   ui: boolean;
   risk: "LOW" | "MEDIUM" | "HIGH";
+  labels: string[];
   /** Sub-issues only: positions (1-based) of earlier sub-issues. */
   dependsOn: number[];
   body: string;
@@ -219,8 +220,8 @@ export interface DraftDetail {
 
 /** The editor's fields; the server validates them as `factory new --approve` does. */
 export interface DraftEdit {
-  issue: { title: string; ui: boolean; risk: string; body: string };
-  subIssues: { title: string; ui: boolean; risk: string; body: string; dependsOn: number[] }[];
+  issue: { title: string; ui: boolean; risk: string; body: string; labels: string[] };
+  subIssues: { title: string; ui: boolean; risk: string; body: string; labels: string[]; dependsOn: number[] }[];
 }
 
 /** What the event stream sends: the scheduler's events, and "changed" after an action. */
