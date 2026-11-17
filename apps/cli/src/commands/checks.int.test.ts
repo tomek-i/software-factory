@@ -1,6 +1,8 @@
+import { stripVTControlCharacters } from "node:util";
 import type { CodeScanningAlert, GithubPort, RequiredCheck } from "@factory/core";
 import { describe, expect, it } from "vitest";
 import { github, setup } from "../../test/runs-setup.js";
+import { createStyle } from "../style.js";
 import { runChecksList, runDismiss } from "./checks.js";
 
 const alert = (number: number, line: number): CodeScanningAlert => ({
@@ -51,6 +53,17 @@ describe("factory checks and factory dismiss", () => {
     expect(text).toContain("CodeQL (https://github.com/o/r/runs/1): code scanning, 1 open alert");
     expect(text).toContain("#26 (CodeQL js/missing-rate-limiting at src/drafts.ts:317) high: Missing rate limiting");
     expect(text).toContain("https://github.com/o/r/security/code-scanning/26");
+  });
+
+  it("colours the failed count and the commands to run, and is the plain text without the codes", () => {
+    const { dir, run, gh } = parked([alert(26, 317)], [{ name: "test", bucket: "fail" }]);
+    const colour = createStyle(true);
+
+    const text = runChecksList(dir, "#12", { github: gh, style: colour });
+
+    expect(text).toContain(`PR #7 of ${colour.detail(run.id)}: ${colour.check(false, "2 required checks failed")}.`);
+    expect(text).toContain(colour.hint(`\`factory resume ${run.id} --to build --reset-loops -m "<what to fix>"\``));
+    expect(stripVTControlCharacters(text)).toBe(runChecksList(dir, "#12", { github: gh }));
   });
 
   it("dismisses an alert as a human decision, keeps waiting while alerts are left, and goes back to merge once the check passes", () => {

@@ -158,9 +158,9 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
 }
 
 /** `factory stop`: asks every running `factory work` and `factory serve` to stop, through a file they check. */
-export function runStop(options: { now?: boolean }, file?: string): string {
+export function runStop(options: { now?: boolean }, file?: string, style: Style = plain): string {
   requestStop({ now: options.now }, file);
   return options.now
-    ? "Asked any running `factory work` or `factory serve` to interrupt its runs and exit. The runs continue on the next `factory work` or `factory serve`, or with `factory run <n>`."
+    ? `Asked any running \`factory work\` or \`factory serve\` to interrupt its runs and exit. ${style.hint("The runs continue on the next `factory work` or `factory serve`, or with `factory run <n>`.")}`
     : "Asked any running `factory work` or `factory serve` to start no more runs, finish the ones going on, and exit.";
 }

@@ -1,9 +1,12 @@
 import { describeAlert, dismissAlert, DISMISS_REASON_FLAGS, runChecks, type CodeScanningAlert, type CommandRunner, type GithubPort } from "@factory/core";
 import { CliError, withProject } from "../context.js";
+import { plain, type Style } from "../style.js";
 
 export interface ChecksDeps {
   run?: CommandRunner;
   github?: GithubPort;
+  /** How to style output; plain unless the caller decided colour is on. */
+  style?: Style;
 }
 
 function alertLines(alerts: CodeScanningAlert[]): string[] {
@@ -12,19 +15,25 @@ function alertLines(alerts: CodeScanningAlert[]): string[] {
 
 /** `factory checks <run>`: the required checks that failed on the run's PR, and its open code scanning alerts. */
 export function runChecksList(cwd: string, ref: string, deps: ChecksDeps = {}): string {
+  const style = deps.style ?? plain;
   return withProject(
     cwd,
     (ctx) => {
       const { run, pr, failed, otherAlerts } = runChecks(ctx, ref, deps);
-      const lines = [failed.length ? `PR #${pr} of ${run.id}: ${failed.length} required check${failed.length > 1 ? "s" : ""} failed.` : `PR #${pr} of ${run.id}: no required check failed.`];
+      const of = `PR #${pr} of ${style.detail(run.id)}:`;
+      const lines = [
+        failed.length
+          ? `${of} ${style.check(false, `${failed.length} required check${failed.length > 1 ? "s" : ""} failed`)}.`
+          : `${of} ${style.check(true, "no required check failed")}.`,
+      ];
       for (const check of failed) {
         const name = check.link ? `${check.name} (${check.link})` : check.name;
         if (check.alerts.length) {
           lines.push("", `${name}: code scanning, ${check.alerts.length} open alert${check.alerts.length > 1 ? "s" : ""}`, ...alertLines(check.alerts));
-          lines.push(`  A false positive: \`factory dismiss ${run.id} <alert> --reason false-positive -m "<why>"\`.`);
+          lines.push(`  ${style.hint(`A false positive: \`factory dismiss ${run.id} <alert> --reason false-positive -m "<why>"\`.`)}`);
         } else {
           // Branch protection refuses the merge while it fails, so accepting it here would change nothing.
-          lines.push("", `${name}: a required check the factory cannot accept; send the run to the builder:`, `  \`factory resume ${run.id} --to build --reset-loops -m "<what to fix>"\``);
+          lines.push("", `${name}: a required check the factory cannot accept; send the run to the builder:`, `  ${style.hint(`\`factory resume ${run.id} --to build --reset-loops -m "<what to fix>"\``)}`);
         }
       }
       if (otherAlerts.length) lines.push("", "Other open code scanning alerts on the PR:", ...alertLines(otherAlerts));

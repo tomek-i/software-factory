@@ -57,7 +57,7 @@ export function buildProgram(): Command {
     .command("init")
     .description("set up the factory in the current git repository")
     .action(() => {
-      console.log(runInit(process.cwd()));
+      console.log(runInit(process.cwd(), undefined, styleFor(process.stdout)));
     });
 
   const config = program.command("config").description("manage .factory/config.yaml");
@@ -68,7 +68,7 @@ export function buildProgram(): Command {
     .argument("[settings...]", "sections or dotted entries, e.g. models or models.roles.builder")
     .option("--all", "reset everything except project, checks, app and trust")
     .action((settings: string[], options: { all?: boolean }) => {
-      console.log(runConfigReset(process.cwd(), settings, options));
+      console.log(runConfigReset(process.cwd(), settings, options, undefined, styleFor(process.stdout)));
     });
 
   const projects = program
@@ -98,7 +98,7 @@ export function buildProgram(): Command {
     .command("sync")
     .description("pull open issues from GitHub into the local database")
     .action(() => {
-      console.log(runSync(process.cwd()));
+      console.log(runSync(process.cwd(), undefined, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -106,7 +106,7 @@ export function buildProgram(): Command {
     .description("write this project's local state (queue, finished runs, lessons, drafts) as JSON, to move it to another machine")
     .argument("[file]", "where to write it, outside the repo (default: stdout)")
     .action((file: string | undefined) => {
-      const text = runExport(process.cwd(), file);
+      const text = runExport(process.cwd(), file, { style: styleFor(process.stdout), warnStyle: styleFor(process.stderr) });
       process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
     });
 
@@ -116,7 +116,7 @@ export function buildProgram(): Command {
     .argument("<file>", "the snapshot; only import your own")
     .option("--dry-run", "list what would be added or changed, write nothing")
     .action((file: string, options: { dryRun?: boolean }) => {
-      console.log(runImport(process.cwd(), file, options));
+      console.log(runImport(process.cwd(), file, options, { style: styleFor(process.stdout) }));
     });
 
   program
@@ -147,7 +147,7 @@ export function buildProgram(): Command {
     .description("queue issues for the factory to work on")
     .argument("<numbers...>", "issue numbers, e.g. 12 15 18")
     .action((numbers: string[]) => {
-      console.log(runQueue(process.cwd(), numbers, true));
+      console.log(runQueue(process.cwd(), numbers, true, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -155,7 +155,7 @@ export function buildProgram(): Command {
     .description("remove issues from the factory's queue")
     .argument("<numbers...>", "issue numbers")
     .action((numbers: string[]) => {
-      console.log(runQueue(process.cwd(), numbers, false));
+      console.log(runQueue(process.cwd(), numbers, false, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -204,7 +204,7 @@ export function buildProgram(): Command {
     .description("ask running `factory work` and `factory serve` processes to finish their runs and exit")
     .option("--now", "interrupt their runs instead (they can be continued later)")
     .action((options: { now?: boolean }) => {
-      console.log(runStop(options));
+      console.log(runStop(options, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -272,7 +272,7 @@ export function buildProgram(): Command {
     .description("list the required checks that failed on a run's PR, with their open code scanning alerts")
     .argument("<run>", "run id, id prefix, or issue number")
     .action((ref: string) => {
-      console.log(runChecksList(process.cwd(), ref));
+      console.log(runChecksList(process.cwd(), ref, { style: styleFor(process.stdout) }));
     });
 
   program
@@ -291,7 +291,7 @@ export function buildProgram(): Command {
     .description("list the lessons the learner proposed after runs; approve or reject them")
     .option("-a, --all", "include approved and rejected lessons")
     .action((options: { all?: boolean }) => {
-      console.log(runLessons(process.cwd(), options));
+      console.log(runLessons(process.cwd(), options, undefined, styleFor(process.stdout)));
     });
 
   lessons
@@ -299,7 +299,7 @@ export function buildProgram(): Command {
     .description("append lessons to .factory/lessons.md through one pull request")
     .argument("<ids...>", "lesson ids, e.g. 3 4")
     .action((ids: string[]) => {
-      console.log(runLessonsApprove(process.cwd(), ids));
+      console.log(runLessonsApprove(process.cwd(), ids, { style: styleFor(process.stdout) }));
     });
 
   lessons
@@ -325,7 +325,7 @@ export function buildProgram(): Command {
     .description("remove the worktrees and branches of finished runs that still have them")
     .option("--dry-run", "list what would be removed and kept, change nothing")
     .action((options: { dryRun?: boolean }) => {
-      console.log(runCleanup(process.cwd(), options));
+      console.log(runCleanup(process.cwd(), options, undefined, styleFor(process.stdout)));
     });
 
   program
@@ -336,7 +336,7 @@ export function buildProgram(): Command {
     .addOption(new Option("--list-leases").hideHelp())
     .action((options: { check?: boolean; listLeases?: boolean }) => {
       if (options.listLeases) return console.log(runListLeases());
-      console.log(runUpgrade(options, { installed: program.version()! }));
+      console.log(runUpgrade(options, { installed: program.version()!, style: styleFor(process.stdout) }));
     });
 
   return program;

@@ -268,7 +268,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
       const lessons = lessonsNote(store, project);
       const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
-      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.") + footer;
+      if (runs.length === 0) return notes + (options.all ? "No runs yet." : `No active runs. ${style.hint("`factory status --all` shows finished ones.")}`) + footer;
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
       const rows = runs.map((r) => [
         r.id,

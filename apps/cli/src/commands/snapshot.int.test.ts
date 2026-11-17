@@ -1,10 +1,12 @@
 import { chmodSync, existsSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { isUnprintable } from "@factory/shared";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../../../packages/core/test/helpers.js";
 import { setup } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
+import { createStyle, plain } from "../style.js";
 import { runExport, runImport } from "./snapshot.js";
 
 const NOW = new Date("2026-11-16T10:00:00.000Z");
@@ -69,6 +71,20 @@ describe("factory export", () => {
     // Gitignored folders are still the working tree.
     const nested = exportTo(a.dir, join(a.root, ".factory", "snapshot.json"));
     expect(nested.warnings).toContainEqual(expect.stringMatching(/is inside the repository/));
+  });
+
+  it("colours the warnings with the stderr style and the next step with the stdout style", () => {
+    const a = laptop();
+    const colour = createStyle(true);
+    const warnings: string[] = [];
+    const out = runExport(a.dir, "snapshot.json", { warn: (l) => warnings.push(l), now: NOW, host: "laptop", style: plain, warnStyle: colour });
+    expect(warnings).toHaveLength(2);
+    for (const warning of warnings) expect(warning).toBe(colour.warning(stripVTControlCharacters(warning)));
+    expect(stripVTControlCharacters(warnings[1]!)).toMatch(/^warning: snapshot\.json is inside the repository\./);
+    expect(out).not.toContain("\x1b[");
+
+    const coloured = runExport(a.dir, join(tempDir("factory-snapshot-"), "laptop.json"), { warn: () => {}, now: NOW, style: colour });
+    expect(coloured.split("\n")[1]).toBe(colour.hint("On the other machine: `factory import <file>`, then `factory sync`."));
   });
 
   it("warns when the repository is reached under another name for the same folder", () => {

@@ -1,5 +1,7 @@
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { GithubPort } from "@factory/core";
+import { createStyle, plain } from "../style.js";
 import { git } from "../../../../packages/core/test/helpers.js";
 import { github, prEdits, readyPrs, setup } from "../../test/runs-setup.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./lessons.js";
@@ -36,6 +38,21 @@ describe("factory lessons", () => {
       ].join("\n"),
     );
     expect(runLessons(dir, { all: true })).toContain(`${ids[1]}  rejected: already in the README  ${runId} (#12)`);
+  });
+
+  it("colours each status by meaning and the hint, and is the plain text without the codes", () => {
+    const { dir, runId, ids, db } = withLessons("Run lint first.", "Use pnpm, not npm.");
+    const store = db();
+    store.decideLessons([ids[1]!], "rejected", { comment: "already in the README" });
+    store.close();
+    const colour = createStyle(true);
+
+    const out = runLessons(dir, { all: true }, undefined, colour);
+    expect(out).toContain(`${colour.detail(String(ids[0]))}  ${colour.lesson("proposed")}  ${colour.detail(runId)} (#12)`);
+    expect(out).toContain(colour.lesson("rejected", "rejected: already in the README"));
+    expect(out).toContain(colour.hint('Approve with `factory lessons approve <id...>`, or reject with `factory lessons reject <id...> -m "<why>"`.'));
+    expect(stripVTControlCharacters(out)).toBe(runLessons(dir, { all: true }));
+    expect(runLessons(dir, { all: true }, undefined, plain)).toBe(runLessons(dir, { all: true }));
   });
 
   it("says when nothing waits", () => {

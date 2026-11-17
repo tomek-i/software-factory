@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { liveLeases, liveWorkers, runCommand, ServiceError, takeUpgradeLock, type CommandRunner, type LiveLease, type LiveWorker } from "@factory/core";
 import { CliError } from "../context.js";
 import { CLI_FILE } from "../self.js";
+import { plain, type Style } from "../style.js";
 
 /** Set by the npm package's bundler (apps/cli/scripts/bundle.mjs); undefined everywhere else. */
 declare const __FACTORY_BUNDLE__: true | undefined;
@@ -35,6 +36,8 @@ export interface UpgradeDeps {
   leases?: () => LiveLease[];
   /** Takes the upgrade lock, which keeps workers from starting; returns its release. */
   lock?: () => () => void;
+  /** How to style output; plain unless the caller decided colour is on. */
+  style?: Style;
 }
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
@@ -51,6 +54,7 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
   const platform = deps.platform ?? process.platform;
   const cliFile = deps.cliFile ?? CLI_FILE;
   const bundled = deps.bundled ?? typeof __FACTORY_BUNDLE__ !== "undefined";
+  const style = deps.style ?? plain;
 
   // Checking is harmless from anywhere; only installing needs the published package.
   const installable = bundled && installedFromRegistry(cliFile);
@@ -59,11 +63,11 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
   }
 
   const latest = latestVersion(run, platform);
-  if (compareVersions(latest, deps.installed) <= 0) return `factory ${deps.installed} is up to date.`;
-  const available = `${latest} is available (you have ${deps.installed}). Release notes: ${RELEASES_URL}`;
+  if (compareVersions(latest, deps.installed) <= 0) return style.success(`factory ${deps.installed} is up to date.`);
+  const available = `${style.attention(`${latest} is available`)} (you have ${deps.installed}). Release notes: ${RELEASES_URL}`;
   if (options.check) {
     print(available);
-    return installable ? "Install it with `factory upgrade`." : `This factory runs from a source checkout. ${FROM_CHECKOUT}`;
+    return installable ? style.hint("Install it with `factory upgrade`.") : `This factory runs from a source checkout. ${style.hint(FROM_CHECKOUT)}`;
   }
 
   const pkgDir = packageDir(cliFile);
@@ -102,7 +106,7 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
   } finally {
     release();
   }
-  return `Upgraded factory to ${latest}.`;
+  return style.success(`Upgraded factory to ${latest}.`);
 }
 
 function takeLock(): () => void {
