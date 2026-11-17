@@ -686,6 +686,25 @@ describe("backlog", () => {
     expect(screen.queryByRole("combobox", { name: "Filter by label" })).toBeNull();
   });
 
+  it("links an issue only to GitHub", () => {
+    const client = newQueryClient();
+    const issues = [
+      issue({ number: 1, title: "Synced" }),
+      issue({ number: 2, title: "Imported, not synced yet", url: "" }),
+      issue({ number: 3, title: "Crafted", url: "javascript:alert(1)" }),
+    ];
+    render(
+      <QueryClientProvider client={client}>
+        <BacklogTable project="p1" issues={issues} label="" />
+      </QueryClientProvider>,
+    );
+
+    const href = (title: string) => within(screen.getByText(title).closest("tr")!).getByText(/^#\d+$/).getAttribute("href");
+    expect(href("Synced")).toBe("https://github.com/acme/shop/issues/1");
+    expect(href("Imported, not synced yet")).toBeNull();
+    expect(href("Crafted")).toBeNull();
+  });
+
   it("says so when no issue carries the chosen label", () => {
     const client = newQueryClient();
     render(
