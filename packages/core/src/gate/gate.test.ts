@@ -15,7 +15,8 @@ const FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE";
 const FAKE_GH_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 
 const node = (script: string) => `node -e "${script}"`;
-const check = (name: string, run: string, timeout_sec = 60): Check => ({ name, run, timeout_sec });
+// No retries unless a test asks for them, so a failing check runs once.
+const check = (name: string, run: string, timeout_sec = 60, retries = 0): Check => ({ name, run, timeout_sec, retries });
 
 function setup() {
   const { root } = repoWithRemote({ "README.md": "# demo\n", ".factory/config.yaml": "version: 1\nchecks: []\n" });
@@ -25,13 +26,13 @@ function setup() {
     git(wt.path, "add", "-A");
     git(wt.path, "-c", "user.email=f@example.invalid", "-c", "user.name=f", "commit", "-qm", `add ${path}`);
   };
-  const gate = (checks: Check[]) =>
+  const gate = (checks: Check[], round = 1) =>
     runQualityGate({
       runId: "run-1-a",
       worktreePath: wt.path,
       defaultBranch: "main",
       checks,
-      roundDir: join(root, ".factory", "runs", "run-1-a", "round-1"),
+      roundDir: join(root, ".factory", "runs", "run-1-a", `round-${round}`),
       gitleaks: false,
     });
   return { root, wt, commit, gate };
@@ -78,6 +79,42 @@ describe("runQualityGate", () => {
     expect(result.passed).toBe(false);
     expect(result.checks[0]).toMatchObject({ timedOut: true, passed: false });
     expect(readFileSync(result.checksFile, "utf8")).toMatch(/slow: TIMED OUT[\s\S]*timed out after 1s/);
+  });
+
+  it("runs a failed check again and passes it when the retry passes, saying it was flaky", async () => {
+    const { wt, commit, gate } = setup();
+    commit("feature.txt", "hello\n");
+    // Fails the first time, passes once the marker file exists.
+    const flaky = node("const fs = require('fs'); if (fs.existsSync('ran.txt')) process.exit(0); fs.writeFileSync('ran.txt', ''); process.exit(1)");
+
+    const result = await gate([check("test", flaky, 60, 1)]);
+
+    expect(result.passed).toBe(true);
+    expect(result.checks[0]).toMatchObject({ passed: true, attempts: 2 });
+    expect(readFileSync(result.checksFile, "utf8")).toContain("- test: passed on attempt 2 (it failed before: flaky)");
+    expect(readFileSync(result.logFile, "utf8")).toContain("===== test (attempt 2):");
+    expect(readFileSync(join(wt.path, "ran.txt"), "utf8")).toBe("");
+  });
+
+  it("fails a check that fails on every attempt, with the number of attempts", async () => {
+    const { commit, gate } = setup();
+    commit("feature.txt", "hello\n");
+
+    const result = await gate([check("test", node("process.exit(1)"), 60, 2)]);
+
+    expect(result.passed).toBe(false);
+    expect(result.checks[0]).toMatchObject({ passed: false, attempts: 3 });
+    expect(readFileSync(result.checksFile, "utf8")).toContain("- test: FAILED (exit 1) on all 3 attempts");
+  });
+
+  it("lets the checks of two gates take turns instead of running at the same time", async () => {
+    const { wt, commit, gate } = setup();
+    commit("feature.txt", "hello\n");
+    const busy = node("const fs = require('fs'); fs.appendFileSync('turns.log', 'start\\n'); setTimeout(() => fs.appendFileSync('turns.log', 'end\\n'), 500)");
+
+    await Promise.all([gate([check("a", busy)], 1), gate([check("b", busy)], 2)]);
+
+    expect(readFileSync(join(wt.path, "turns.log"), "utf8").split(/\r?\n/).filter(Boolean)).toEqual(["start", "end", "start", "end"]);
   });
 
   it("fails when the branch adds a secret, without repeating it in the report", async () => {

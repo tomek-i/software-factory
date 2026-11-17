@@ -19,6 +19,8 @@ export interface CheckResult {
   durationMs: number;
   /** Last lines of output, for the builder to act on. */
   tail: string;
+  /** How many times the check ran: more than once when a failure was retried. */
+  attempts: number;
 }
 
 export interface SecretScan {
@@ -65,10 +67,10 @@ export const CHECK_ENV_DENYLIST = ["ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKE
 
 export class GateCancelledError extends Error {}
 
-async function runCheck(check: Check, cwd: string, logFile: string, signal?: AbortSignal): Promise<CheckResult> {
+async function runCheck(check: Check, cwd: string, logFile: string, attempt: number, signal?: AbortSignal): Promise<CheckResult> {
   if (signal?.aborted) throw new GateCancelledError("quality gate was cancelled");
   const started = Date.now();
-  appendFileSync(logFile, `\n===== ${check.name}: ${check.run}\n`);
+  appendFileSync(logFile, `\n===== ${check.name}${attempt > 1 ? ` (attempt ${attempt})` : ""}: ${check.run}\n`);
   const child = execa(check.run, {
     shell: true,
     cwd,
@@ -107,7 +109,27 @@ async function runCheck(check: Check, cwd: string, logFile: string, signal?: Abo
     exitCode: result.exitCode,
     durationMs: Date.now() - started,
     tail,
+    attempts: attempt,
   };
+}
+
+/** Run a check, and run it again after a failure up to `retries` times: only a repeated failure counts. */
+async function runWithRetries(check: Check, cwd: string, logFile: string, signal?: AbortSignal): Promise<CheckResult> {
+  let result = await runCheck(check, cwd, logFile, 1, signal);
+  while (!result.passed && result.attempts <= check.retries) {
+    result = await runCheck(check, cwd, logFile, result.attempts + 1, signal);
+  }
+  return result;
+}
+
+// The checks of different runs in this process take turns: two test suites at once on one machine
+// slow each other down until their tests time out.
+let checksQueue: Promise<unknown> = Promise.resolve();
+
+function takeTurn<T>(fn: () => Promise<T>): Promise<T> {
+  const turn = checksQueue.then(fn, fn);
+  checksQueue = turn.catch(() => undefined);
+  return turn;
 }
 
 function hasGitleaks(run: CommandRunner, cwd: string): boolean {
@@ -154,7 +176,8 @@ export function renderChecks(result: Omit<QualityGateResult, "checksFile" | "log
   if (result.checks.length === 0) lines.push("- no checks are configured in .factory/config.yaml");
   for (const c of result.checks) {
     const status = c.passed ? "passed" : c.timedOut ? "TIMED OUT" : `FAILED (exit ${c.exitCode})`;
-    lines.push(`- ${c.name}: ${status} in ${(c.durationMs / 1000).toFixed(1)}s`);
+    const attempts = c.attempts > 1 ? (c.passed ? ` on attempt ${c.attempts} (it failed before: flaky)` : ` on all ${c.attempts} attempts`) : "";
+    lines.push(`- ${c.name}: ${status}${attempts} in ${(c.durationMs / 1000).toFixed(1)}s`);
   }
   const { secrets } = result;
   lines.push(
@@ -187,12 +210,15 @@ export async function runQualityGate(options: QualityGateOptions): Promise<Quali
   if (headResult.code !== 0) throw new Error(`git rev-parse HEAD failed: ${headResult.stderr}`);
   const head = headResult.stdout;
 
-  const checks: CheckResult[] = [];
-  for (const check of options.checks) {
-    const result = await runCheck(check, options.worktreePath, logFile, options.signal);
-    checks.push(result);
-    options.events?.emit({ type: "gate:check", runId: options.runId, name: check.name, passed: result.passed, durationMs: result.durationMs });
-  }
+  const checks = await takeTurn(async () => {
+    const results: CheckResult[] = [];
+    for (const check of options.checks) {
+      const result = await runWithRetries(check, options.worktreePath, logFile, options.signal);
+      results.push(result);
+      options.events?.emit({ type: "gate:check", runId: options.runId, name: check.name, passed: result.passed, durationMs: result.durationMs });
+    }
+    return results;
+  });
   const secrets = scanSecrets({ ...options, reportDir: options.roundDir }, run);
 
   // The checks must have run on the commit we report: if HEAD moved meanwhile (an agent still

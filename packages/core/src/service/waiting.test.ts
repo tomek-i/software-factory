@@ -28,8 +28,8 @@ const failedGate = renderChecks({
   passed: false,
   head: HEAD,
   checks: [
-    { name: "lint", command: "pnpm lint", passed: true, exitCode: 0, timedOut: false, durationMs: 1000, tail: "" },
-    { name: "test", command: "pnpm test", passed: false, exitCode: 1, timedOut: false, durationMs: 2000, tail: "1 failed" },
+    { name: "lint", command: "pnpm lint", passed: true, exitCode: 0, timedOut: false, durationMs: 1000, tail: "", attempts: 1 },
+    { name: "test", command: "pnpm test", passed: false, exitCode: 1, timedOut: false, durationMs: 2000, tail: "1 failed", attempts: 1 },
   ],
   secrets: { tool: "regex", hits: [] },
 });

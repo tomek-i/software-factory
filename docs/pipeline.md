@@ -91,6 +91,12 @@ Related docs:
 
 - The engine runs your `checks` on the pushed commit, plus the secret scan again.
 - Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment.
+- A failed check runs again, up to its `retries` (default 1), before the gate fails.
+  - A busy machine makes tests time out, and a failure that does not repeat is not the builder's to fix.
+  - A check that passes on a retry passes the gate; `checks.md` says which attempt passed, so a flaky check stays visible.
+- The checks of different runs in one `factory work` or `factory serve` take turns, so two test suites do not slow each other into timeouts. Agents still run at the same time.
+- If the only failures are checks that ran past their `timeout_sec` on every attempt, the run waits for you instead of going back to the builder.
+  - Resume it to `gate` to run the checks again, or to `build` if the code hangs.
 - On failure the builder gets the report and tries again, up to `loops.max_build_iterations`.
 - Then the run waits for you.
 - If two rounds in a row fail the same way, the run stops before the cap and waits for you.

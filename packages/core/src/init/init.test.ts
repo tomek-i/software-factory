@@ -142,7 +142,7 @@ describe("initRepo", () => {
     const result = initRepo({ cwd: dir, run: gh.run });
 
     expect(result.githubRepo).toBe("acme/shop");
-    expect(loadConfig(dir).checks).toEqual([{ name: "test", run: "npm run test", timeout_sec: 900 }]);
+    expect(loadConfig(dir).checks).toEqual([{ name: "test", run: "npm run test", timeout_sec: 900, retries: 1 }]);
     expect(loadConfig(dir).github.status_labels).toBe(false);
     expect(loadConfig(dir).trust).toEqual({ authors: ["alice"], everyone: false });
     // The starter config leaves the models to the recommended defaults, so they improve with updates.

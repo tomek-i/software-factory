@@ -293,7 +293,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | Key | Purpose |
 |---|---|
 | `project` | `name` and `default_branch` (default `main`), the branch the factory builds from and reads its config from |
-| `checks` | Commands that must all pass before reviews start |
+| `checks` | Commands that must all pass before reviews start: `name`, `run` (a shell command run in the worktree), `timeout_sec` (default 900) and `retries` (how often a failed check runs again before the gate fails, default 1; see [Quality gate](docs/pipeline.md#quality-gate)) |
 | `app` | How to start the app for screenshots and videos: `start` (a shell command run in the worktree; unset means no capture), `url` (must contain `{port}`, which is filled in; default `http://localhost:{port}`), `port_env` (the variable that carries the port, default `PORT`), `ready_timeout_sec` (how long `url` may take to answer, default 180), `narrate` (`auto`, `off` or a path to narrate.mjs, see [Narrated walkthrough](docs/pipeline.md#narrated-walkthrough)) and `env` (names of variables to pass from your environment to the app, which otherwise gets only a minimal one; tokens are never passed) |
 | `gates` | `always` / `auto` / `human` per gate (see [Pipeline](#pipeline) for the defaults) |
 | `hard_rules` | Paths and triggers that always escalate to a human (see [Hard rules](docs/pipeline.md#hard-rules)) |
