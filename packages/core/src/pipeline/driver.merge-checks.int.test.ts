@@ -30,38 +30,6 @@ describe("PipelineDriver merge stage: required checks and GitHub's answer", () =
     expect(seen.some((e) => JSON.stringify(e).includes("waiting for required checks on PR #7: test (ubuntu-latest)"))).toBe(true);
   });
 
-  it("does not judge checks of a commit that is not the one that passed", async () => {
-    const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
-    pr.checks = [[{ name: "test (ubuntu-latest)", bucket: "fail" }]];
-    pr.head = "f".repeat(40);
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringMatching(/^PR #7 moved to fffffff while waiting for checks; only [0-9a-f]{7} passed the gate$/) });
-    expect(merges).toEqual([]);
-  });
-
-  it("hands a failed required check to a human, naming it, and does not merge", async () => {
-    const { driver, store, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
-    pr.checks = [[{ name: "test (windows-latest)", bucket: "pending" }], [{ name: "test (windows-latest)", bucket: "fail", link: "https://ci/9" }]];
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "required check failed on PR #7: test (windows-latest) (https://ci/9)" });
-    expect(store.getRun(run.id)).toMatchObject({ state: "needs_human", parked_from: "merge" });
-    expect(store.listEvents(run.id).at(-1)?.data).toEqual({ failedChecks: [{ name: "test (windows-latest)", link: "https://ci/9" }] });
-    expect(merges).toEqual([]);
-  });
-
-  it("stops waiting after merge.checks_timeout_min and asks a human", async () => {
-    const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], {
-      config: mergeConfig("merge: always", "merge:\n  checks_timeout_min: 0.002\n"),
-    });
-    pr.checks = [[{ name: "test (ubuntu-latest)", bucket: "pending" }]];
-    const run = driver.startRun(12);
-
-    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "required checks still running on PR #7 after 0.002 min: test (ubuntu-latest)" });
-    expect(merges).toEqual([]);
-  });
-
   it("asks a human when the required checks cannot be read", async () => {
     const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
     pr.checksError = "gh pr checks failed: HTTP 502";

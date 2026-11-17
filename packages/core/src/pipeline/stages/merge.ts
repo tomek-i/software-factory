@@ -250,6 +250,55 @@ async function mergePullRequest(
 /** `result`: stop with it. `passed`: every required check is done and none failed; their names. `required`: the names of all of them. */
 type ChecksOutcome = { result: StepResult } | { passed: string[]; required: string[] };
 
+/** What one look at the PR's required checks says: go on, stop for a human, or look again later. */
+export type ChecksVerdict =
+  | { kind: "passed"; passed: string[]; required: string[] }
+  | { kind: "escalate"; reason: string; failedChecks?: { name: string; link?: string }[] }
+  | { kind: "wait"; pending: string[] };
+
+export interface ChecksMoment {
+  number: number;
+  /** The commit that passed the gate. */
+  head: string;
+  /** The PR's head on GitHub; only asked for when there are checks to judge. */
+  prHead: () => string;
+  now: number;
+  deadline: number;
+  /** Until then, no required checks may only mean GitHub has not created them yet. */
+  graceUntil: number;
+  minutes: number;
+}
+
+/** Judge the required checks gh reported, at one moment of the wait. No I/O but `prHead`. */
+export function judgeChecks(checks: RequiredCheck[], at: ChecksMoment): ChecksVerdict {
+  const { number, head } = at;
+  if (checks.length === 0 && at.now >= at.graceUntil) return { kind: "passed", passed: [], required: [] };
+  // gh reads the checks of the PR's current head: a commit pushed meanwhile is not ours to judge.
+  const prHead = checks.length ? at.prHead() : head;
+  if (prHead !== head) {
+    return { kind: "escalate", reason: `PR #${number} moved to ${prHead.slice(0, 7)} while waiting for checks; only ${head.slice(0, 7)} passed the gate` };
+  }
+  const describe = (c: RequiredCheck) => (c.link ? `${c.name} (${c.link})` : c.name);
+  const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
+  if (failed.length) {
+    // A plain escalation for now. This is where a builder "fix" round or recovery actions for a
+    // failed check would hook in.
+    return {
+      kind: "escalate",
+      reason: `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`,
+      failedChecks: failed.map((c) => ({ name: c.name, ...(c.link ? { link: c.link } : {}) })),
+    };
+  }
+  const pending = checks.filter((c) => c.bucket === "pending").map((c) => c.name);
+  if (checks.length && pending.length === 0) {
+    return { kind: "passed", passed: checks.map((c) => (c.bucket === "skipping" ? `${c.name} (skipped)` : c.name)), required: checks.map((c) => c.name) };
+  }
+  if (at.now >= at.deadline) {
+    return { kind: "escalate", reason: `required checks still running on PR #${number} after ${at.minutes} min: ${pending.length ? pending.join(", ") : "none reported yet"}` };
+  }
+  return { kind: "wait", pending };
+}
+
 /**
  * Wait until the checks that branch protection requires on the PR have passed, so nobody approves
  * a commit CI is about to fail, and a merge is not refused only because CI is still running. A failed
@@ -264,31 +313,16 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
   // Right after a push, GitHub has not created the new commit's checks yet, so "none required"
   // may only mean "none yet". A repo without required checks just waits this long once.
   const graceUntil = justPushed ? started + (ctx.deps.checksGraceMs ?? 60_000) : started;
-  const describe = (c: RequiredCheck) => (c.link ? `${c.name} (${c.link})` : c.name);
   let told = false;
   for (;;) {
     const checks = github.requiredChecks(number);
-    if (checks.length === 0 && Date.now() >= graceUntil) return { passed: [], required: [] };
-    // gh reads the checks of the PR's current head: a commit pushed meanwhile is not ours to judge.
-    const prHead = checks.length ? github.pullRequestState(number).head : head;
-    if (prHead !== head) {
-      return { result: ctx.escalate(run, `PR #${number} moved to ${prHead.slice(0, 7)} while waiting for checks; only ${head.slice(0, 7)} passed the gate`) };
+    const verdict = judgeChecks(checks, { number, head, prHead: () => github.pullRequestState(number).head, now: Date.now(), deadline, graceUntil, minutes });
+    if (verdict.kind === "passed") return { passed: verdict.passed, required: verdict.required };
+    if (verdict.kind === "escalate") {
+      return { result: ctx.escalate(run, verdict.reason, verdict.failedChecks ? { failedChecks: verdict.failedChecks } : undefined) };
     }
-    const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
-    if (failed.length) {
-      // A plain escalation for now. This is where a builder "fix" round or recovery actions for a
-      // failed check would hook in.
-      const reason = `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`;
-      return { result: ctx.escalate(run, reason, { failedChecks: failed.map((c) => ({ name: c.name, ...(c.link ? { link: c.link } : {}) })) }) };
-    }
-    const pending = checks.filter((c) => c.bucket === "pending");
-    if (checks.length && pending.length === 0) {
-      return { passed: checks.map((c) => (c.bucket === "skipping" ? `${c.name} (skipped)` : c.name)), required: checks.map((c) => c.name) };
-    }
-    const names = pending.length ? pending.map((c) => c.name).join(", ") : "none reported yet";
-    if (Date.now() >= deadline) return { result: ctx.escalate(run, `required checks still running on PR #${number} after ${minutes} min: ${names}`) };
-    if (!told && pending.length) {
-      ctx.info(run, `waiting for required checks on PR #${number}: ${names}`);
+    if (!told && verdict.pending.length) {
+      ctx.info(run, `waiting for required checks on PR #${number}: ${verdict.pending.join(", ")}`);
       told = true;
     }
     await pause(ctx.deps.checksPollMs ?? 30_000, ctx.signal);
