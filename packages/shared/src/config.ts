@@ -11,7 +11,11 @@ export const checkSchema = z.object({
   retries: z.number().int().min(0).max(5).default(1),
 });
 
-export const HARD_RULE_TRIGGERS = ["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"] as const;
+/** What the merge stage does about open review threads and failed optional checks (`merge.open_feedback`). */
+export const OPEN_FEEDBACK_MODES = ["ask", "fix", "ignore"] as const;
+export type OpenFeedbackMode = (typeof OPEN_FEEDBACK_MODES)[number];
+
+export const HARD_RULE_TRIGGERS =["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"] as const;
 
 /** Paths that always escalate to a human. Config can add to these but not remove them. */
 export const DEFAULT_PROTECTED_PATHS = [
@@ -224,6 +228,12 @@ export const factoryConfigSchema = z.object({
       method: z.enum(["merge", "squash", "rebase"]).default("merge"),
       // How long the merge stage waits for checks that branch protection requires, before asking a human.
       checks_timeout_min: z.number().positive().default(30),
+      // Unresolved review threads and failed checks branch protection does not require, read right
+      // before the merge: `ask` waits for a human, `fix` sends them to the builder (only threads of
+      // trusted authors and `comment_bots`; others still ask), `ignore` merges anyway.
+      open_feedback: z.enum(OPEN_FEEDBACK_MODES).default("ask"),
+      // Apps whose review threads `fix` may hand to the builder without a human, as GitHub shows them.
+      comment_bots: z.array(z.string().min(1)).default(["github-advanced-security[bot]"]),
     })
     .prefault({}),
   github: z

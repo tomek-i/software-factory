@@ -78,6 +78,15 @@ loops:
   max_critic_rounds: 2
   max_resyncs: 3        # merge attempts that conflicted with the default branch or failed its checks
 
+# Right before merging, the factory reads the PR's unresolved review threads (not its own, not
+# outdated) and failed checks that branch protection does not require. open_feedback:
+# ask (wait for you) | fix (send them to the builder; threads only from trusted authors and
+# comment_bots, anyone else's still wait for you) | ignore (merge anyway).
+merge:
+  method: merge         # merge | squash | rebase
+  open_feedback: ask
+  comment_bots: ["github-advanced-security[bot]"]
+
 reviews:
   always: [code, security, docs]
   ui: [ux, ui]          # only when the change touches the UI

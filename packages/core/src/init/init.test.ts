@@ -137,6 +137,12 @@ describe("renderConfig", () => {
     expect(everyAgent(parseConfig(`version: 1\n${uncommented}\n`))).toEqual(defaults);
     expect(everyAgent(parseConfig(text))).toEqual(defaults);
   });
+
+  it("spells out the merge settings as their defaults, so open feedback waits for a human", () => {
+    const text = renderConfig(detectProject(tempDir()));
+    expect(text).toMatch(/^merge:\n {2}method: merge.*\n {2}open_feedback: ask\n/m);
+    expect(parseConfig(text).merge).toEqual(parseConfig("version: 1\n").merge);
+  });
 });
 
 describe("initRepo", () => {
