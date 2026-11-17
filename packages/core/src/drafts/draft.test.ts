@@ -21,7 +21,19 @@ describe("parseDraft", () => {
   it("parses a single issue with its flags and sections", () => {
     const parsed = parseDraft(draft(block("Add CSV export", "UI: yes\nRISK: medium")));
     expect(parsed).toMatchObject({ decision: "PROCEED", summary: ["one issue"], reasons: [], subIssues: [] });
-    expect(parsed.issue).toEqual({ title: "Add CSV export", ui: true, risk: "MEDIUM", dependsOn: [], body: SECTIONS.trim() });
+    expect(parsed.issue).toEqual({ title: "Add CSV export", ui: true, risk: "MEDIUM", labels: [], dependsOn: [], body: SECTIONS.trim() });
+  });
+
+  it("reads optional labels on the issue and the sub-issues, each label once", () => {
+    const parsed = parseDraft(
+      draft(
+        block("P", "UI: YES\nRISK: LOW\nLABELS: ui, enhancement, ui") +
+          block("A", "UI: NO\nRISK: LOW\nLABELS: good first issue", true) +
+          block("B", "UI: NO\nRISK: LOW\nLABELS:", true),
+      ),
+    );
+    expect(parsed.issue.labels).toEqual(["ui", "enhancement"]);
+    expect(parsed.subIssues.map((s) => s.labels)).toEqual([["good first issue"], []]);
   });
 
   it("parses a parent with sub-issues, their order and the reasons to escalate", () => {
@@ -69,10 +81,10 @@ describe("parseDraft", () => {
   });
 
   it("lists every problem of every issue", () => {
-    const bad = "=== ISSUE ===\nTITLE:\nUI: maybe\nRISK: LOW\nRISK: HIGH\nLABELS: bug\n\n## Why\nx\n## What\ny\n## What\nz\n## Acceptance criteria\nit works\n";
+    const bad = "=== ISSUE ===\nTITLE:\nUI: maybe\nRISK: LOW\nRISK: HIGH\nASSIGNEES: bob\n\n## Why\nx\n## What\ny\n## What\nz\n## Acceptance criteria\nit works\n";
     expect(problems(draft(bad))).toEqual([
       "issue: header RISK appears more than once",
-      "issue: unknown header LABELS (allowed: TITLE, UI, RISK)",
+      "issue: unknown header ASSIGNEES (allowed: TITLE, UI, RISK, LABELS)",
       "issue: TITLE is missing",
       "issue: UI must be YES or NO",
       "issue: section ## What appears more than once",
@@ -92,7 +104,7 @@ describe("parseDraft", () => {
       "sub-issue 2: DEPENDS_ON x is not an earlier sub-issue (1 to 1)",
     ]);
     expect(problems(draft(block("P", "UI: NO\nRISK: LOW\nDEPENDS_ON: 1")))).toEqual([
-      "issue: unknown header DEPENDS_ON (allowed: TITLE, UI, RISK)",
+      "issue: unknown header DEPENDS_ON (allowed: TITLE, UI, RISK, LABELS)",
     ]);
   });
 
@@ -134,6 +146,15 @@ describe("formatDraft", () => {
     const text = formatDraft(parsed);
     expect(text).toContain("## Reasons\n- the export format is a guess\n");
     expect(text).toContain("=== SUB-ISSUE ===\nTITLE: Docs\nUI: NO\nRISK: LOW\nDEPENDS_ON: 2, 1\n\n## Why");
+    expect(parseDraft(text)).toEqual(parsed);
+  });
+
+  it("writes labels only where there are some, and parses back the same", () => {
+    const parsed = parseDraft(draft(block("P", "UI: YES\nRISK: LOW\nLABELS: ui, enhancement") + block("A", "UI: NO\nRISK: LOW", true) + block("B", "UI: NO\nRISK: LOW\nLABELS: tests\nDEPENDS_ON: 1", true)));
+    const text = formatDraft(parsed);
+    expect(text).toContain("=== ISSUE ===\nTITLE: P\nUI: YES\nRISK: LOW\nLABELS: ui, enhancement\n\n");
+    expect(text).toContain("=== SUB-ISSUE ===\nTITLE: A\nUI: NO\nRISK: LOW\n\n");
+    expect(text).toContain("=== SUB-ISSUE ===\nTITLE: B\nUI: NO\nRISK: LOW\nLABELS: tests\nDEPENDS_ON: 1\n\n");
     expect(parseDraft(text)).toEqual(parsed);
   });
 

@@ -11,6 +11,12 @@ import { createServer, type ServerOptions } from "./server.js";
 // Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
+/** The fake GitHub's labels, with a status label the issue writer must never be offered. */
+const REPO_LABELS = [
+  { name: "ui", description: "Visible changes" },
+  { name: "bug", description: "" },
+  { name: "factory", description: "Queued in the software factory" },
+];
 const TOKEN = "a".repeat(64);
 const HOST = "127.0.0.1:4180";
 const HEADERS = { host: HOST, "x-factory-token": TOKEN };
@@ -35,13 +41,14 @@ function setup(steps: FakeStep[], gate = "human", options: Partial<ServerOptions
   const project = store.upsertProject({ name: "demo", repo_path: root, github_repo: "o/r" });
   const ctx: ProjectContext = { root, store, project, config: loadConfig(root) };
 
-  const created: { number: number; title: string; body: string }[] = [];
+  const created: { number: number; title: string; body: string; labels?: string[] }[] = [];
   const links: [number, number][] = [];
   const github: IssueWriterPort = {
-    createIssue: ({ title, body }) => {
-      created.push({ number: 20 + created.length, title, body });
+    createIssue: ({ title, body, labels }) => {
+      created.push({ number: 20 + created.length, title, body, labels });
       return created.at(-1)!.number;
     },
+    listLabels: () => REPO_LABELS,
     addSubIssue: (parent, child) => links.push([parent, child]),
   };
   const run: CommandRunner = (cmd, args, options) => {

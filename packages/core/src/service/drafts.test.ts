@@ -5,6 +5,7 @@ import { setup } from "../../test/driver-setup.js";
 import { GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
 import { loadConfig } from "../config/load.js";
 import { DRAFTS_DIR } from "../drafts/writer.js";
+import { FactoryEvents } from "../events.js";
 import type { IssueWriterPort } from "../github/port.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { approveDraft, discardPendingDraft, draftIssue, ensureDraftsIgnored, pendingDrafts, saveDraft } from "./drafts.js";
@@ -14,6 +15,12 @@ import type { ServiceContext } from "./runs.js";
 // Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
+/** The fake GitHub's labels, with a status label the issue writer must never be offered. */
+const REPO_LABELS = [
+  { name: "ui", description: "Visible changes" },
+  { name: "bug", description: "" },
+  { name: "factory", description: "Queued in the software factory" },
+];
 const SECTIONS = "## Why\nBecause.\n\n## What\nDo it.\n\n## Acceptance criteria\n- [ ] it works\n\n## Scope\nThis.\n\n## Out of scope\nThat.\n";
 const SINGLE = `DECISION: PROCEED\n\n## Summary\n- drafted\n\n=== ISSUE ===\nTITLE: Add CSV export\nUI: NO\nRISK: LOW\n\n${SECTIONS}`;
 
@@ -21,12 +28,13 @@ const SINGLE = `DECISION: PROCEED\n\n## Summary\n- drafted\n\n=== ISSUE ===\nTIT
 function context(steps: FakeStep[], gate: string) {
   const s = setup(steps, { config: `version: 1\ntrust:\n  authors: [alice]\ngates:\n  issue_writer: ${gate}\n` });
   const ctx: ServiceContext = { store: s.store, project: s.project, config: loadConfig(s.root) };
-  const created: { number: number; title: string; body: string }[] = [];
+  const created: { number: number; title: string; body: string; labels?: string[] }[] = [];
   const github: IssueWriterPort = {
-    createIssue: ({ title, body }) => {
-      created.push({ number: 20 + created.length, title, body });
+    createIssue: ({ title, body, labels }) => {
+      created.push({ number: 20 + created.length, title, body, labels });
       return created.at(-1)!.number;
     },
+    listLabels: () => REPO_LABELS,
     addSubIssue: () => undefined,
   };
   // `gh issue view` answers for the issues the fake GitHub created; git runs for real.
@@ -73,6 +81,37 @@ describe("drafts", () => {
     expect(approveDraft(ctx, outcome.id, { ...deps, queue: true })).toMatchObject({ issue: { number: 20, title: "Add CSV export" }, queued: [20] });
     expect(created.map((c) => c.title)).toEqual(["Add CSV export"]);
     expect(ctx.store.getIssue(ctx.project.id, 20)!.queued_at).not.toBeNull();
+  });
+
+  it("offers the repository's labels without the status labels, and opens the issue with the ones picked", async () => {
+    const labelled = SINGLE.replace("RISK: LOW", "RISK: LOW\nLABELS: ui");
+    const { ctx, created, deps, fake } = context([{ role: "issue_writer", output: labelled }], "always");
+
+    const outcome = await draftIssue(ctx, "export the table as CSV", deps);
+    const task = fake.calls()[0]!.stdin;
+    expect(task).toContain('"name": "bug"');
+    expect(task).not.toContain('"name": "factory"');
+    approveDraft(ctx, outcome.id, deps);
+    expect(created[0]!.labels).toEqual(["ui"]);
+  });
+
+  it("drafts without labels, and says why, when the repository's labels cannot be read", async () => {
+    const { ctx, deps, fake } = context([{ role: "issue_writer", output: SINGLE }], "always");
+    deps.github.listLabels = () => {
+      throw new Error("gh label list failed: HTTP 502");
+    };
+    const events = new FactoryEvents();
+    const seen: string[] = [];
+    events.on((e) => {
+      if (e.type === "info") seen.push(`${e.runId}: ${e.message}`);
+    });
+    let started = "";
+
+    const outcome = await draftIssue(ctx, "export the table as CSV", { ...deps, events, onStart: (id) => (started = id) });
+
+    expect(outcome.kind).toBe("ready");
+    expect(fake.calls()[0]!.stdin).toContain("The repository's labels could not be read. Leave LABELS out.");
+    expect(seen).toEqual([`${started}: Could not read the repository's labels, so the draft gets none: gh label list failed: HTTP 502`]);
   });
 
   it("says what to do when the issue writer's draft is invalid, and discards it", async () => {
