@@ -338,12 +338,22 @@ factory config reset --all                  # everything except project, checks,
 ## Development
 
 ```sh
-pnpm test        # vitest
+pnpm test:unit   # the fast loop: unit tests only, in seconds
+pnpm test        # every test, unit and integration (what CI and the quality gate run)
+pnpm test:integration # integration tests only: minutes
 pnpm typecheck   # tsc, including tests
 pnpm lint        # eslint
 pnpm build       # tsc -b, the web app with Vite, then the npm package's bundle (apps/cli/dist)
 pnpm factory status # run the CLI from source, on this repo
 ```
+
+Unit and integration tests:
+
+- They are two Vitest projects in `vitest.config.ts`, `unit` and `integration`, and the file name decides which.
+- Integration tests are named `*.int.test.ts`: they start processes (real git repos, the fake `claude`, apps, Chromium) and take minutes.
+- Every other `*.test.ts` file is a unit test and must start no process.
+  The unit project fails a test that tries, with a message to rename the file.
+- Integration tests get a long default timeout (`GIT_TEST_TIMEOUT`), because git and processes are slow on Windows and on a busy machine.
 
 The web app:
 
@@ -366,7 +376,7 @@ Narrate tests:
 - They use narrate's silent mock voice, so they cost nothing:
 
   ```sh
-  FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.test.ts
+  FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.int.test.ts
   ```
 
 - The quality gate runs `pnpm test` with your environment, so leave the flag unset in the shell that runs the factory.

@@ -1,6 +1,6 @@
 /**
  * Shared setup for the `factory run` / approve / resume command tests. They are split over several
- * `runs*.test.ts` files so Vitest runs them in parallel: each test drives real git and fake `claude`.
+ * `runs*.int.test.ts` files so Vitest runs them in parallel: each test drives real git and fake `claude`.
  */
 import { join } from "node:path";
 import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort, type PullRequestState } from "@factory/core";

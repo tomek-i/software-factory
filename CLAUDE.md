@@ -113,8 +113,9 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 
 - Vitest. Agents are the fake `claude` (`packages/core/test/fake-claude.mjs`, driven by `fakeClaude` in `packages/core/test/helpers.ts`), and GitHub is a fake `GithubPort` or a fake `CommandRunner`. Never spend real usage or call real GitHub.
 - Shared setups: `packages/core/test/driver-setup.ts` for the driver, `apps/cli/test/runs-setup.ts` for the CLI run commands.
-- Driver tests live next to the source as `packages/core/src/pipeline/driver.<area>.test.ts`. Put new ones in their own file so they run in parallel.
-- Run the targeted tests while working (`pnpm vitest run <file>`) and the full suite once at the end, with `pnpm lint` and `pnpm typecheck`.
+- Two Vitest projects in `vitest.config.ts`: `unit` and `integration`. A test that starts a process (real git, the fake `claude`, an app, Chromium) is integration and is named `*.int.test.ts`; the unit project fails any other file that starts one (`packages/core/test/no-child-processes.ts`). Integration tests default to `GIT_TEST_TIMEOUT`.
+- Driver tests live next to the source as `packages/core/src/pipeline/driver.<area>.int.test.ts`. Put new ones in their own file so they run in parallel.
+- While working, run `pnpm test:unit` (seconds) and the targeted integration files (`pnpm vitest run <file>`); run the full suite (`pnpm test`) once at the end, with `pnpm lint` and `pnpm typecheck`.
 - Every test file gets its own temp `FACTORY_DATA_DIR` (`packages/core/test/setup-data-dir.ts`), so `factory init` in a test never adds to the user's project list.
 - `FACTORY_REQUIRE_BROWSER=1` makes the real-browser tests fail rather than skip without Chromium; `FACTORY_TEST_NARRATE=1` runs the real narrate plugin tests. See [Development](README.md#development).
 - `packages/core/test/claude-md.test.ts` checks that every path, symbol and link in this file exists.
