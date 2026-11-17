@@ -8,6 +8,19 @@ import { gitEvidence, type GitEvidence, type Worktree } from "../../git/worktree
 import type { PullRequestState, RequiredCheck } from "../../github/port.js";
 import type { Run } from "../../store/store.js";
 import { acceptanceReasons, latestAcceptanceRecord, tickMetCriteria } from "../acceptance.js";
+import {
+  acknowledgedBy,
+  feedbackData,
+  feedbackFile,
+  feedbackKeys,
+  feedbackReasons,
+  feedbackReport,
+  hasFeedback,
+  readOpenFeedback,
+  untrustedReason,
+  type Acknowledged,
+  type OpenFeedback,
+} from "../feedback.js";
 import { gateFingerprint, resyncFingerprint } from "../fingerprint.js";
 import { resolveGate, type GateInput } from "../gates.js";
 import { changeReport, freshBase } from "../hard-rules.js";
@@ -16,9 +29,11 @@ import type { StageContext, StepResult } from "./context.js";
 
 /**
  * Merge the run's PR: bring the branch up to date with the default branch, run the quality gate
- * again if that changed it, wait for the PR's required checks, decide the merge gate, then read the
- * checks once more and merge exactly the commit that passed. A conflict or a failing gate goes back
- * to the builder, which costs a re-sync round (loops.max_resyncs), not a review round.
+ * again if that changed it, wait for the PR's required checks, look at its open review threads and
+ * failed optional checks, decide the merge gate, then read the checks and the open feedback once
+ * more and merge exactly the commit that passed. A conflict, a failing gate or open feedback in
+ * `merge.open_feedback: fix` goes back to the builder, which costs a re-sync round
+ * (loops.max_resyncs), not a review round.
  */
 export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
   const { github, config } = ctx.deps;
@@ -46,6 +61,36 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
       `still cannot merge after round ${round}`,
       (why, stall) => ctx.escalate(run, why, stall),
     );
+
+  const feedbackPath = join(dir, feedbackFile(round));
+  // Open feedback from an earlier attempt would tell the builder about the wrong problems.
+  rmSync(feedbackPath, { force: true });
+  /**
+   * The PR's open review threads and failed optional checks, per `merge.open_feedback`: a round for
+   * the builder (`result`), or the reasons a human has to decide on (none when nothing is open). What
+   * the human approval covering `head` saw no longer counts: that human chose to merge anyway.
+   */
+  const lookAtFeedback = (required: string[]): FeedbackOutcome => {
+    const mode = config.merge.open_feedback;
+    if (mode === "ignore") return { reasons: [] };
+    let open: OpenFeedback;
+    try {
+      open = readOpenFeedback(github, number, required, acknowledgedFeedback(ctx, run, worktree, head));
+    } catch (err) {
+      return { result: ctx.escalate(run, `could not read the review threads and checks of PR #${number}: ${(err as Error).message}`) };
+    }
+    if (!hasFeedback(open)) return { reasons: [] };
+    // For the builder, whether it gets them now or a human sends the run back with them.
+    mkdirSync(resyncDir, { recursive: true });
+    writeFileSync(feedbackPath, feedbackReport(config, number, open));
+    const data = { openFeedback: feedbackData(open) };
+    const untrusted = mode === "fix" ? untrustedReason(config, open) : undefined;
+    if (mode === "fix" && !untrusted) {
+      const why = `open feedback on PR #${number}: ${feedbackReasons(open).join("; ")}`;
+      return { result: backToBuild(why, data, resyncFingerprint({ feedback: feedbackKeys(open) })) };
+    }
+    return { reasons: [...feedbackReasons(open), ...(untrusted ? [untrusted] : [])], data };
+  };
 
   const conflicts = resync(ctx, worktree, resyncDir);
   if (conflicts) return backToBuild(`merging ${ctx.defaultBranch} into the branch conflicts in ${conflicts.join(", ")}`, { conflicts }, resyncFingerprint({ conflicts }));
@@ -83,8 +128,11 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
   }
   if ("result" in checks) return checks.result;
   const checksNote = checks.passed.length ? [`required checks passed on ${head.slice(0, 7)}: ${checks.passed.join(", ")}`] : [];
+  const feedback = lookAtFeedback(checks.required);
+  if ("result" in feedback) return feedback.result;
 
-  if (!approvalCovers(ctx, run, worktree, head)) {
+  // Open feedback needs a decision even when an earlier approval covers this commit.
+  if (feedback.reasons.length || !approvalCovers(ctx, run, worktree, head)) {
     let hits: string[];
     try {
       hits = ctx.hardRuleHits(run, worktree, head);
@@ -94,24 +142,38 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
     const mode = config.gates.merge;
     const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
     let agentDecision: GateInput["agentDecision"];
-    // Hard rules need a human whatever the approver says, so it is only asked when it can decide.
-    if (mode === "auto" && (run.unsafe || hits.length === 0)) {
+    // Hard rules and open feedback need a human whatever the approver says, so it is only asked when it can decide.
+    if (mode === "auto" && (run.unsafe || hits.length === 0) && feedback.reasons.length === 0) {
       const turn = await approverTurn(ctx, run, worktree, head);
       if (turn.status !== "ok") return ctx.agentTrouble(run, "approver", turn);
       agentDecision = { decision: turn.verdict.header.DECISION, reasons: bullets(section(turn.verdict.body, "reasons")) };
     }
-    const gate = resolveGate({ mode, agentDecision, hardRuleHits: hits, unsafe: run.unsafe });
+    const gate = resolveGate({ mode, agentDecision, hardRuleHits: hits, unsafe: run.unsafe, forceHumanReasons: feedback.reasons });
     if (gate.outcome === "wait_human") {
       const since = approvalSince(ctx, run);
       // The criteria the acceptance lens could not check are for whoever approves the merge.
       const toCheck = acceptanceReasons(latestAcceptanceRecord(dir)?.record);
-      return ctx.waitForHuman(run, "merge", [...gate.reasons, ...lifted, ...(since ? [since] : []), ...checksNote, ...toCheck], { commit: head });
+      return ctx.waitForHuman(run, "merge", [...gate.reasons, ...lifted, ...(since ? [since] : []), ...checksNote, ...toCheck], { commit: head, ...feedback.data });
     }
     ctx.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted, ...checksNote].join("; "), head);
   }
-  // The checks are read again right before the merge (no second grace period): a commit pushed or a
-  // check re-run while the gate was decided must still be caught.
-  return await mergePullRequest(ctx, run, number, head, git);
+  // The checks and the open feedback are read again right before the merge (no second grace period):
+  // a commit pushed, a check re-run or a comment posted while the gate was decided must still be caught.
+  return await mergePullRequest(ctx, run, number, head, git, lookAtFeedback);
+}
+
+/** `result`: stop with it. `reasons`: what a human has to decide on, none when nothing is open; `data` for the parked move. */
+type FeedbackOutcome = { result: StepResult } | { reasons: string[]; data?: Record<string, unknown> };
+
+/**
+ * The open feedback the human approval that still covers `head` was parked with ("merge anyway").
+ * A new commit from the builder, or a new thread or failed check, is not covered.
+ */
+function acknowledgedFeedback(ctx: StageContext, run: Run, worktree: Worktree, head: string): Acknowledged {
+  if (!approvalCovers(ctx, run, worktree, head)) return { threads: [], checks: [] };
+  const events = ctx.deps.store.listEvents(run.id);
+  const approval = events.findLastIndex((e) => e.from_state === "needs_human" && e.to_state === "merge" && (e.data as { gate?: unknown } | null)?.gate === "merge");
+  return acknowledgedBy(events, approval);
 }
 
 /**
@@ -136,17 +198,37 @@ function approvalSince(ctx: StageContext, run: Run): string | undefined {
 }
 
 /** Merge exactly `head`, which passed the quality gate and is what GitHub has, then move on to learn. */
-async function mergePullRequest(ctx: StageContext, run: Run, number: number, head: string, git: GitEvidence): Promise<StepResult> {
+async function mergePullRequest(
+  ctx: StageContext,
+  run: Run,
+  number: number,
+  head: string,
+  git: GitEvidence,
+  lookAtFeedback: (required: string[]) => FeedbackOutcome,
+): Promise<StepResult> {
   const { github, config } = ctx.deps;
   const problems: string[] = [];
   if (!passedOn(ctx, ctx.runDir(run), run.round, head)) problems.push(`no passing quality gate on ${head.slice(0, 7)}`);
   if (!git.isClean()) problems.push("the worktree has uncommitted changes");
   if (!git.isPushed()) problems.push(`${head.slice(0, 7)} is not pushed`);
   if (problems.length) return ctx.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
+  let required: string[];
   try {
     if (github.pullRequestState(number).draft) github.markReady(number);
     const waited = await awaitRequiredChecks(ctx, run, number, head, false);
     if ("result" in waited) return waited.result;
+    required = waited.required;
+  } catch (err) {
+    return ctx.escalate(run, `could not merge PR #${number}: ${(err as Error).message}`);
+  }
+  // Bots post late and people comment after an approval: what is open now still counts.
+  const feedback = lookAtFeedback(required);
+  if ("result" in feedback) return feedback.result;
+  if (feedback.reasons.length) {
+    const gate = resolveGate({ mode: config.gates.merge, hardRuleHits: [], unsafe: run.unsafe, forceHumanReasons: feedback.reasons });
+    return ctx.waitForHuman(run, "merge", gate.reasons, { commit: head, ...feedback.data });
+  }
+  try {
     // The last moment to notice a cancel (or a lost lease) before something that cannot be undone.
     if (ctx.load(run.id).state !== run.state) return undefined;
     if (ctx.signal?.aborted) return { kind: "stopped", state: run.state, reason: "this worker lost the run before merging" };
@@ -165,8 +247,8 @@ async function mergePullRequest(ctx: StageContext, run: Run, number: number, hea
   return undefined;
 }
 
-/** `result`: stop with it. `passed`: every required check is done and none failed; their names. */
-type ChecksOutcome = { result: StepResult } | { passed: string[] };
+/** `result`: stop with it. `passed`: every required check is done and none failed; their names. `required`: the names of all of them. */
+type ChecksOutcome = { result: StepResult } | { passed: string[]; required: string[] };
 
 /**
  * Wait until the checks that branch protection requires on the PR have passed, so nobody approves
@@ -186,7 +268,7 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
   let told = false;
   for (;;) {
     const checks = github.requiredChecks(number);
-    if (checks.length === 0 && Date.now() >= graceUntil) return { passed: [] };
+    if (checks.length === 0 && Date.now() >= graceUntil) return { passed: [], required: [] };
     // gh reads the checks of the PR's current head: a commit pushed meanwhile is not ours to judge.
     const prHead = checks.length ? github.pullRequestState(number).head : head;
     if (prHead !== head) {
@@ -200,7 +282,9 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
       return { result: ctx.escalate(run, reason, { failedChecks: failed.map((c) => ({ name: c.name, ...(c.link ? { link: c.link } : {}) })) }) };
     }
     const pending = checks.filter((c) => c.bucket === "pending");
-    if (checks.length && pending.length === 0) return { passed: checks.map((c) => (c.bucket === "skipping" ? `${c.name} (skipped)` : c.name)) };
+    if (checks.length && pending.length === 0) {
+      return { passed: checks.map((c) => (c.bucket === "skipping" ? `${c.name} (skipped)` : c.name)), required: checks.map((c) => c.name) };
+    }
     const names = pending.length ? pending.map((c) => c.name).join(", ") : "none reported yet";
     if (Date.now() >= deadline) return { result: ctx.escalate(run, `required checks still running on PR #${number} after ${minutes} min: ${names}`) };
     if (!told && pending.length) {

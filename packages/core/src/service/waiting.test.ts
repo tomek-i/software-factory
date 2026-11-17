@@ -85,6 +85,32 @@ describe("waitingOn", () => {
     });
   });
 
+  it("gives the open review threads and failed optional checks the merge gate waits on, as one plain line each", () => {
+    const { store, project, run } = parkedRun("merge", "waiting at merge gate: unresolved review thread by bob", {
+      commit: HEAD,
+      openFeedback: {
+        threads: [
+          { id: "T1", author: "bob", path: "src/a.ts", line: 3, url: "https://github.com/o/r/pull/7#discussion_r1", excerpt: "rename \u001b[31mthis\u001b[0m" },
+          { id: "T2", author: "carol", url: "https://github.com/o/r/pull/7#discussion_r2", excerpt: "" },
+        ],
+        checks: [
+          { name: "CodeQL", bucket: "fail", summary: "2 new alerts", link: "https://github.com/o/r/runs/3" },
+          { name: "e2e", bucket: "cancel" },
+        ],
+      },
+    });
+    expect(waitingOn(store, project, run).failure).toEqual({
+      kind: "feedback",
+      source: "round-2/resync/feedback.md",
+      items: [
+        { name: "review thread by bob", summary: "rename [31mthis [0m", file: "src/a.ts", line: 3, link: "https://github.com/o/r/pull/7#discussion_r1" },
+        { name: "review thread by carol", link: "https://github.com/o/r/pull/7#discussion_r2" },
+        { name: "CodeQL", summary: "failed: 2 new alerts", link: "https://github.com/o/r/runs/3" },
+        { name: "e2e", summary: "cancelled" },
+      ],
+    });
+  });
+
   it("looks only at a run waiting for a human, and at the move that parked it", () => {
     const { store, project, run } = parkedRun("gate", "build iteration cap reached (5)");
     // A later note on the parked run (e.g. a dismissal) is not what parked it.

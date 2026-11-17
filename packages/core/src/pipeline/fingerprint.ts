@@ -80,12 +80,14 @@ export function findingsFingerprint(findings: Finding[]): string {
 }
 
 /**
- * Fingerprint of a failed re-sync in the merge stage. The kind comes first, so a conflict and a
- * gate failure never match each other: `conflict:` with the conflicting files in any order, or
- * `gate:` with the quality gate's fingerprint after the merge.
+ * Fingerprint of why the merge stage sent the run back to the builder. The kind comes first, so a
+ * conflict, a gate failure and open feedback never match each other: `conflict:` with the
+ * conflicting files in any order, `gate:` with the quality gate's fingerprint after the merge, or
+ * `feedback:` with the open review threads and failed checks (`feedbackKeys`) in any order.
  */
-export function resyncFingerprint(failure: { conflicts: string[] } | { gate: string }): string {
+export function resyncFingerprint(failure: { conflicts: string[] } | { gate: string } | { feedback: string[] }): string {
   if ("conflicts" in failure) return `conflict:${hash([...new Set(failure.conflicts.map((f) => f.replace(/\\/g, "/")))].sort())}`;
+  if ("feedback" in failure) return `feedback:${hash([...new Set(failure.feedback)].sort())}`;
   return `gate:${failure.gate}`;
 }
 

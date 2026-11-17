@@ -137,4 +137,12 @@ describe("resyncFingerprint", () => {
     expect(gate).toBe("gate:abc");
     expect(conflict).not.toBe(gate);
   });
+
+  it("matches the same open feedback in any order, and never a conflict with the same names", () => {
+    const feedback = resyncFingerprint({ feedback: ["thread:T1", "check:CodeQL"] });
+    expect(feedback).toMatch(/^feedback:/);
+    expect(feedback).toBe(resyncFingerprint({ feedback: ["check:CodeQL", "thread:T1"] }));
+    expect(feedback).not.toBe(resyncFingerprint({ feedback: ["thread:T1"] }));
+    expect(feedback).not.toBe(resyncFingerprint({ conflicts: ["check:CodeQL", "thread:T1"] }));
+  });
 });

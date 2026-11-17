@@ -75,9 +75,9 @@ export interface Evidence {
    */
   gateFingerprint?(): string;
   /**
-   * Fingerprint of why the merge stage could not bring in the default branch (resyncFingerprint):
-   * the files that conflicted, or the quality gate's failure after the merge. Without it a failed
-   * re-sync still loops, but stalls cannot be detected.
+   * Fingerprint of why the merge stage sent the run back (resyncFingerprint): the files that
+   * conflicted, the quality gate's failure after the merge, or the open feedback on the PR. Without
+   * it the run still loops, but stalls cannot be detected.
    */
   resyncFingerprint?(): string;
   /** The run's pull request as GitHub sees it now. */
@@ -189,7 +189,7 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
     if (pr.number !== run.pr_number) return [`PR #${pr.number} is not the run's PR (#${run.pr_number ?? "none"})`];
     return pr.state === "merged" ? [] : [`PR #${pr.number} is ${pr.state}, not merged`];
   },
-  // A failed re-sync (conflict, failing re-gate) is no review finding, so it has its own cap.
+  // A failed re-sync (conflict, failing re-gate) or open feedback on the PR is no review finding, so it has its own cap.
   "merge->build": ({ run, config }) => capProblem(run.resync_rounds, config.loops.max_resyncs, "re-sync round"),
 };
 
@@ -198,7 +198,7 @@ type Edge = `${RunState}->${RunState}`;
 /** A loop edge that sends work back to the builder, and how to tell one failure from another. */
 interface LoopSpec {
   /** Names the repeated failure, e.g. "quality gate failed the same way in rounds 2 and 3". */
-  describe: (rounds: string) => string;
+  describe: (rounds: string, fingerprint: string) => string;
   /** Output file of a round, relative to the run folder; the fingerprint tells which kind of failure it was. */
   file: (round: number, fingerprint: string) => string;
   /** The round that just failed (the move bumps the counter). */
@@ -220,8 +220,12 @@ const LOOPS: Partial<Record<Edge, LoopSpec>> = {
     fingerprint: (evidence) => findingsFingerprint(evidence.verdict("verify").findings),
   },
   "merge->build": {
-    describe: (rounds) => `bringing in the default branch failed the same way in rounds ${rounds}`,
-    file: (round, fingerprint) => `round-${round}/resync/${fingerprint.startsWith("conflict:") ? "conflicts.md" : "checks.md"}`,
+    describe: (rounds, fingerprint) =>
+      fingerprint.startsWith("feedback:")
+        ? `the same review threads and failed checks were still open on the PR in rounds ${rounds}`
+        : `bringing in the default branch failed the same way in rounds ${rounds}`,
+    file: (round, fingerprint) =>
+      `round-${round}/resync/${fingerprint.startsWith("conflict:") ? "conflicts.md" : fingerprint.startsWith("feedback:") ? "feedback.md" : "checks.md"}`,
     round: (run) => run.round,
     fingerprint: (evidence) => evidence.resyncFingerprint?.(),
   },
@@ -282,7 +286,7 @@ function stallOf(events: RunEvent[], edge: Edge, spec: LoopSpec, current: LoopFa
     fingerprint: current.fingerprint,
     rounds,
     files,
-    reason: `stalled: ${spec.describe(`${rounds[0]} and ${rounds[1]}`)} (see ${files[0]} and ${files[1]})`,
+    reason: `stalled: ${spec.describe(`${rounds[0]} and ${rounds[1]}`, current.fingerprint)} (see ${files[0]} and ${files[1]})`,
   };
 }
 
