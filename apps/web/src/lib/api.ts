@@ -70,7 +70,7 @@ export interface FailureItem {
 }
 
 export interface WaitingFailure {
-  kind: "checks" | "quality_gate" | "findings";
+  kind: "checks" | "quality_gate" | "findings" | "feedback";
   items: FailureItem[];
   /** The run file it comes from. */
   source?: string;

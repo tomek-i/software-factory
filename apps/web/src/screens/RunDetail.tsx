@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
+import { OpenFeedback } from "../components/OpenFeedback";
 import { RunActions } from "../components/RunActions";
 import { StateBadge } from "../components/StateBadge";
 import { Badge } from "../components/ui/badge";
@@ -169,6 +170,7 @@ export function RunDetail() {
             </CardHeader>
             <CardContent className="space-y-3">
               {run.reason ? <p className="whitespace-pre-wrap text-sm">{run.reason}</p> : <p className="text-sm text-muted-foreground">No reason recorded.</p>}
+              <OpenFeedback run={run} />
               <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} />
             </CardContent>
           </Card>

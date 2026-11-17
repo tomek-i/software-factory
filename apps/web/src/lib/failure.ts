@@ -25,6 +25,8 @@ const HEADINGS: Record<WaitingFailure["kind"], string> = {
   checks: "Fix the required checks that failed on the pull request",
   quality_gate: "Fix what failed the quality gate",
   findings: "Fix the findings the verifier confirmed",
+  // Their text is from GitHub; the builder also gets it in full from the run folder, framed as data.
+  feedback: "Deal with the open review threads and failed checks on the pull request",
 };
 
 function where(item: { file?: string; line?: number }): string {

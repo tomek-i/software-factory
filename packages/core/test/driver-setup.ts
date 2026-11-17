@@ -7,7 +7,7 @@ import { createAgentRunner } from "../src/agents/runner.js";
 import type { CapturePort } from "../src/capture/capture.js";
 import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
-import type { CodeScanningAlert, DismissReason, GithubPort, MergeMethod, PullRequestReview, RequiredCheck } from "../src/github/port.js";
+import type { CodeScanningAlert, DismissReason, GithubPort, MergeMethod, PullRequestCheck, PullRequestReview, RequiredCheck, ReviewThread } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
@@ -128,6 +128,10 @@ export function setup(
     alerts?: CodeScanningAlert[];
     /** What the required checks become once no alert is left (GitHub updates the check in place). */
     checksWhenClear?: RequiredCheck[];
+    /** Every check on the PR's head, required or not: what each look returns, in turn; the last one repeats. None by default. */
+    allChecks?: PullRequestCheck[][];
+    /** Open review threads (neither resolved nor outdated): what each look returns, in turn; the last one repeats. None by default. */
+    threads?: ReviewThread[][];
   } = {
     state: "open",
     draft: true,
@@ -135,6 +139,8 @@ export function setup(
   let views = 0;
   const merges: { number: number; head: string; method?: MergeMethod }[] = [];
   let checkViews = 0;
+  let allCheckViews = 0;
+  let threadViews = 0;
   const dismissals: { alert: number; reason: DismissReason; comment: string }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body, id: 100 + comments.length, edits: 0 }),
@@ -189,6 +195,14 @@ export function setup(
       if (pr.checksWhenClear && pr.alerts?.length === 0) return pr.checksWhenClear;
       const all = pr.checks ?? [[]];
       return all[Math.min(checkViews++, all.length - 1)]!;
+    },
+    pullRequestChecks: () => {
+      const all = pr.allChecks ?? [[]];
+      return all[Math.min(allCheckViews++, all.length - 1)]!;
+    },
+    unresolvedReviewThreads: () => {
+      const all = pr.threads ?? [[]];
+      return all[Math.min(threadViews++, all.length - 1)]!;
     },
     codeScanningAlerts: () => [...(pr.alerts ?? [])],
     dismissCodeScanningAlert: (alert, reason, comment) => {

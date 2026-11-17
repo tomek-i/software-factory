@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { feedbackDataOf, feedbackFile, oneLine } from "../pipeline/feedback.js";
 import { bullets, readValid, runDirOf, section } from "../pipeline/shared.js";
 import type { Project, Run, RunEvent, Store } from "../store/store.js";
 
@@ -14,10 +15,11 @@ export interface FailureItem {
 
 /**
  * Something concrete a run waits on, which a human may hand to the builder: failed required checks
- * on the PR, a failed quality gate, or blocking findings the verifier confirmed.
+ * on the PR, a failed quality gate, blocking findings the verifier confirmed, or the PR's open
+ * feedback (unresolved review threads and failed optional checks; their text is from GitHub).
  */
 export interface WaitingFailure {
-  kind: "checks" | "quality_gate" | "findings";
+  kind: "checks" | "quality_gate" | "findings" | "feedback";
   items: FailureItem[];
   /** The run file it comes from, relative to the run folder; none for checks on GitHub. */
   source?: string;
@@ -57,6 +59,38 @@ function failureOf(dir: string, run: Run, parked: RunEvent): WaitingFailure | un
       typeof c?.name === "string" ? [{ name: c.name, ...(typeof c.link === "string" ? { link: c.link } : {}) }] : [],
     );
     if (items.length) return { kind: "checks", items };
+  }
+  const feedback = parked.from_state === "merge" ? feedbackDataOf(data) : undefined;
+  if (feedback) {
+    const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    // Written from GitHub by anyone and shown in a terminal too: one line each, no control characters.
+    const items: FailureItem[] = [
+      ...feedback.threads.flatMap((t) =>
+        str(t?.author) && str(t?.url)
+          ? [
+              {
+                name: `review thread by ${oneLine(t.author, 60)}`,
+                ...(str(t.excerpt) ? { summary: oneLine(t.excerpt) } : {}),
+                ...(str(t.path) ? { file: oneLine(t.path!, 200) } : {}),
+                ...(typeof t.line === "number" ? { line: t.line } : {}),
+                link: t.url,
+              },
+            ]
+          : [],
+      ),
+      ...feedback.checks.flatMap((c) =>
+        str(c?.name)
+          ? [
+              {
+                name: oneLine(c.name, 100),
+                summary: `${c.bucket === "cancel" ? "cancelled" : "failed"}${str(c.summary) ? `: ${oneLine(c.summary!)}` : ""}`,
+                ...(str(c.link) ? { link: c.link } : {}),
+              },
+            ]
+          : [],
+      ),
+    ];
+    if (items.length) return { kind: "feedback", items, source: feedbackFile(run.round) };
   }
   // The gate stage's checks, or the merge stage's re-run of them after merging the default branch.
   const checks = parked.from_state === "gate" ? `round-${run.round}/checks.md` : parked.from_state === "merge" ? `round-${run.round}/resync/checks.md` : undefined;

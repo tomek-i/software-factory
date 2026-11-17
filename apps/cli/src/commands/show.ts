@@ -7,7 +7,7 @@ function fileList(files: string[], style: Style): string {
   return files.length ? files.map((f) => `  ${style.detail(f)}`).join("\n") : "  (none)";
 }
 
-function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOverview, style: Style): string {
+function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFeedback }: RunOverview, style: Style): string {
   const lines = [`Run ${style.detail(run.id)}`, `  state:   ${style.state(run.state)}`];
   if (run.waiting_gate) lines.push(`  waiting: ${style.attention(`${run.waiting_gate} gate`)}`);
   // Times merging the default branch sent the run back to the builder, apart from review rounds (loops.max_resyncs).
@@ -17,6 +17,17 @@ function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOv
     `  branch:  ${run.branch ? style.detail(run.branch) : "-"}`,
     `  PR:      ${run.pr_number ? style.detail(`#${run.pr_number}`) : "-"}`,
   );
+  // Before anything else: this is what the merge gate asks about.
+  if (openFeedback?.length) {
+    lines.push("", style.title(`Open on PR #${run.pr_number}`));
+    for (const item of openFeedback) {
+      const where = item.file ? ` at ${item.file}${item.line ? `:${item.line}` : ""}` : "";
+      lines.push(`  - ${item.name}${where}${item.summary ? `: ${item.summary}` : ""}${item.link ? ` ${style.detail(`(${item.link})`)}` : ""}`);
+    }
+    lines.push(
+      style.hint(`Merge anyway with \`factory approve ${run.id}\`, or send it to the builder with \`factory resume ${run.id} --to build -m "fix the open review threads and checks"\`.`),
+    );
+  }
 
   if (!hasRunDir) {
     lines.push("", `No files yet: ${style.detail(runDir)} does not exist.`);

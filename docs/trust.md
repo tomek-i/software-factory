@@ -28,6 +28,7 @@ trust:
 - On an issue the factory's gh account wrote, refine puts its spec in the issue body (see [Refine](pipeline.md#refine)).
   - A later triage reads that agent-written section with the rest of the issue, at the issue's trust.
   - Only the factory's own issues are edited, so an untrusted author's text never becomes part of a trusted issue this way.
+- Review threads on a run's PR are judged by who started them: with `merge.open_feedback: fix`, only trusted authors' threads and those of the apps in `merge.comment_bots` go to the builder without you (see [Open review threads and failed checks](pipeline.md#open-review-threads-and-failed-checks)).
 - The trust list is read from the default branch, so a branch cannot change it (see [What steers the agents](runs.md#what-steers-the-agents)).
 - An imported snapshot can queue issues and mark them as opened by the factory (see [Moving between machines](moving-between-machines.md)).
 

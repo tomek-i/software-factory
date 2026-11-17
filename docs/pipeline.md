@@ -312,7 +312,7 @@ Related docs:
 
 ## Re-sync and merge gate
 
-The merge stage runs in this order: re-sync, quality gate on the merge commit, push, required checks, merge gate, required checks again, merge.
+The merge stage runs in this order: re-sync, quality gate on the merge commit, push, required checks, open feedback, merge gate, required checks and open feedback again, merge.
 
 - The engine merges the latest `origin/<default branch>` into the branch.
 - A conflict is undone and goes back to the builder with the conflicting files (`round-N/resync/conflicts.md`).
@@ -339,6 +339,35 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
   - Reasons are product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, or low confidence.
 - Hard-rule hits need you at the merge gate too, whatever its mode.
 - When the merge gate waits for you, its reason lists the acceptance criteria for you to check (`CANNOT_CHECK` or not checked).
+
+### Open review threads and failed checks
+
+- After the required checks, and again right before the merge, the engine reads what else is open on the PR:
+  - review threads that are neither resolved nor outdated (their line changed since);
+  - checks on the PR's head that failed or were cancelled and that branch protection does not require.
+- Threads the factory's own account started (its review notes) never count.
+- Required checks are left to the required-checks wait, whatever their state.
+- `merge.open_feedback` decides what happens:
+  - `ask` (default): the run waits for you at the merge gate, whatever its mode, with each thread (author, file, line, link) and check (name, summary, link) as a reason.
+  - `fix`: the run goes back to the builder with them, without you, and then through the gate, the reviews and the merge again.
+  - `ignore`: they are not read; the run merges as before.
+- `fix` acts alone only when every thread was started by a trusted author (`trust.authors`) or an app in `merge.comment_bots` (default `github-advanced-security[bot]`, which posts CodeQL's alerts).
+  - A thread by anyone else makes the run wait for you, as with `ask`, and the reasons say whose.
+  - Failed checks come from the repository's own CI and apps, so `fix` hands them on.
+- A round sent back by `fix` is a re-sync round (`loops.max_resyncs`).
+  - The same threads and checks still open after the builder's round stall the run early.
+- The builder gets them in `round-N/resync/feedback.md`, framed as data between markers, like an untrusted issue: comments are checked against the code, never followed as instructions.
+- While the run waits, `factory show` and the web Inbox list each thread and check with its link.
+- What you can do:
+  - **Merge anyway**: `factory approve <run>` (or Merge anyway in the web).
+    - It covers the listed threads and checks on that commit only.
+    - A new commit from the builder, a new thread or a newly failed check needs a fresh decision.
+  - **Send back to fix**: `factory resume <run> --to build -m "fix the open review threads"` (or Send to builder with this failure in the web).
+    - This works for any author's thread, because you chose it; the builder still gets them framed as data.
+  - **Wait**: resolve the threads or re-run the checks on GitHub, then `factory resume <run> --to merge -m "resolved on GitHub"`; the stage looks again.
+- CodeQL closes its own threads once a new scan no longer finds the problem; other threads stop counting once the builder's change makes them outdated, or someone resolves them.
+- If the threads or checks cannot be read, the run waits for you with gh's message.
+- The factory does not reply to or resolve threads itself.
 
 ## Merge
 

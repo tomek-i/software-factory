@@ -50,10 +50,14 @@ export function RunActions({ run }: { run: RunRow }) {
   const gate = !!run.waitingGate;
   const canResume = run.resumeTargets.length > 0;
   const toBuilder = run.failure && run.resumeTargets.includes("build") ? run.failure : undefined;
+  // Approving the merge gate past open review threads or failed checks merges despite them, for this commit only.
+  const approveLabel = run.failure?.kind === "feedback" ? "Merge anyway" : "Approve";
   // A reason is the service's rule for reject and resume; say so before asking it.
   const needsReason = mode === "reject" || mode === "resume";
   const open = (m: Mode) => {
     act.reset();
+    // A message prefilled for another action (the builder's failure text) must not become this one's note.
+    setMessage("");
     if (m === "resume") {
       setTo(firstTarget ?? "");
       setResetLoops(!!run.capReached);
@@ -86,7 +90,7 @@ export function RunActions({ run }: { run: RunRow }) {
         {gate && (
           <>
             <Button size="sm" onClick={() => open("approve")}>
-              <Check aria-hidden /> Approve
+              <Check aria-hidden /> {approveLabel}
             </Button>
             <Button size="sm" variant="outline" onClick={() => open("reject")}>
               <X aria-hidden /> Reject
@@ -117,7 +121,7 @@ export function RunActions({ run }: { run: RunRow }) {
 
   if (mode === "checks") return <FailedChecks run={run} onBack={() => setMode(undefined)} onSendToBuilder={toBuilder ? sendToBuilder : undefined} />;
 
-  const submitLabel = { approve: "Approve", reject: "Reject", resume: gate ? "Send back" : "Resume", cancel: "Cancel run" }[mode];
+  const submitLabel = { approve: approveLabel, reject: "Reject", resume: gate ? "Send back" : "Resume", cancel: "Cancel run" }[mode];
   const help = to ? TARGET_HELP[to] : undefined;
   return (
     <form className="space-y-2" onSubmit={submit} aria-label={submitLabel}>

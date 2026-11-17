@@ -6,6 +6,7 @@ import { refutedFindings, runDirOf } from "../pipeline/driver.js";
 import type { Project, Run, Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
 import { findRun } from "./runs.js";
+import { waitingOn, type FailureItem } from "./waiting.js";
 
 /** Verdict files the overview summarises, with the header that says the most about each. */
 const VERDICTS: { kind: VerdictKind; key: string; path: (files: string[]) => string | undefined }[] = [
@@ -116,6 +117,11 @@ export interface RunOverview {
   files: string[];
   /** In the order to show them. */
   sections: OverviewSection[];
+  /**
+   * The unresolved review threads and failed optional checks the merge gate waits on, so they are
+   * seen before anyone approves. Their text comes from GitHub: show it as text only.
+   */
+  openFeedback?: FailureItem[];
 }
 
 function sectionsOf(runDir: string, files: string[]): OverviewSection[] {
@@ -189,7 +195,16 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
   const files = listRunFiles(runDir);
   const issueTitle = run.issue_number ? store.getIssue(project.id, run.issue_number)?.title : undefined;
   const hasRunDir = existsSync(runDir);
-  return { run, issueTitle, runDir, hasRunDir, files, sections: hasRunDir ? sectionsOf(runDir, files) : [] };
+  const failure = waitingOn(store, project, run).failure;
+  return {
+    run,
+    issueTitle,
+    runDir,
+    hasRunDir,
+    files,
+    sections: hasRunDir ? sectionsOf(runDir, files) : [],
+    ...(failure?.kind === "feedback" ? { openFeedback: failure.items } : {}),
+  };
 }
 
 /** One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk. */

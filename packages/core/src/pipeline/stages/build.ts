@@ -6,6 +6,7 @@ import { runTurn } from "../../agents/turn.js";
 import { scanSecrets } from "../../gate/gate.js";
 import { branchName, createWorktree, gitEvidence, type GitEvidence, type Worktree } from "../../git/worktrees.js";
 import type { Issue, Run } from "../../store/store.js";
+import { feedbackFile } from "../feedback.js";
 import { DEFAULT_PORT_BASE, LONG_SUMMARY_BULLET, longSummaryBullets, prBody, readValid, runEvidence, section } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
 
@@ -110,6 +111,9 @@ function builderFollowUp(ctx: StageContext, run: Run, outputFile: string): strin
   // The merge stage clears conflicts.md before each re-sync, so one that exists is from the attempt that sent the run back.
   const conflicts = back === "merge" && existsSync(join(roundDir, "resync", "conflicts.md"));
   const resynced = back === "merge" && !conflicts ? readValid("checks", join(roundDir, "resync", "checks.md"), (v) => (v.header.GATE === "FAIL" ? [] : ["passed"])) : undefined;
+  // Likewise the open feedback on the PR: cleared at the start of every merge attempt, written only when there is some.
+  const feedbackPath = join(ctx.runDir(run), feedbackFile(run.round));
+  const feedback = back === "merge" && !conflicts && !resynced && existsSync(feedbackPath);
   if (checks) {
     parts.push(`The quality gate failed in round ${run.round}. Its report:`, "", readFileSync(join(roundDir, "checks.md"), "utf8").trim(), "");
     // The engine pushes after checking the commits; the builder cannot (see permissionProfile).
@@ -138,6 +142,12 @@ function builderFollowUp(ctx: StageContext, run: Run, outputFile: string): strin
       readFileSync(join(roundDir, "resync", "checks.md"), "utf8").trim(),
       "",
       "The merge commit is on your branch. Fix the cause, rerun what failed, commit, then write the output file again.",
+    );
+  } else if (feedback) {
+    parts.push(
+      readFileSync(feedbackPath, "utf8").trim(),
+      "",
+      "Fix what is real (with a test where it fits), run the quick checks and the tests that cover your fixes, commit (do not push), then write the output file again. In its summary, say for each point what you changed, or why it needs no change.",
     );
   }
   // Only decisions made since the builder last ran were meant for it (not, say, the triage approval).

@@ -50,6 +50,8 @@ export const github: GithubPort = {
   },
   markReady: () => undefined,
   requiredChecks: () => [],
+  pullRequestChecks: () => [],
+  unresolvedReviewThreads: () => [],
   codeScanningAlerts: () => [],
   dismissCodeScanningAlert: () => undefined,
   hasReview: () => false,
