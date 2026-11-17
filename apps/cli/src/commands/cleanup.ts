@@ -17,7 +17,10 @@ export function runCleanup(cwd: string, options: { dryRun?: boolean; now?: boole
       if (lines.length === 0 && skipped.length === 0) return "Nothing to clean up.";
       const parts = [];
       if (lines.length) parts.push(lines.join("\n"));
-      if (skipped.length) parts.push(["Left alone:", ...skipped.map((s) => `  ${s.runId}: ${s.why}`)].join("\n"));
+      if (skipped.length) {
+        const hint = !options.now && skipped.some((s) => s.recent) ? [style.hint("`factory cleanup --now` cleans up the runs that just finished.")] : [];
+        parts.push(["Left alone:", ...skipped.map((s) => `  ${s.runId}: ${s.why}`), ...hint].join("\n"));
+      }
       if (options.dryRun) parts.push(style.detail("Nothing was removed (--dry-run)."));
       return parts.join("\n\n");
     },

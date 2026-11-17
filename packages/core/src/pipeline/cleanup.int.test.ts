@@ -338,7 +338,7 @@ describe("cleanupFinishedRuns", () => {
     // Just finished: its worker may still be stopping.
     expect(sweep(later(run, 60_000))).toEqual([]);
     expect(existsSync(worktree.path)).toBe(true);
-    expect(skipped).toEqual([[run.id, "finished 60s ago; cleaned up 2 minutes after it finished, or now with --now"]]);
+    expect(skipped).toEqual([[run.id, "finished 60s ago; cleaned up 2 minutes after it finished"]]);
     expect(sweep(later(run, 3 * 60_000))).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}, remote branch ${BRANCH}`]);
     expect(remoteHas()).toBe(false);
     expect(sweep(later(run, 4 * 60_000))).toEqual([]);

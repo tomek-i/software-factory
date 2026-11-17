@@ -47,7 +47,7 @@ describe("factory cleanup", () => {
     store.close();
 
     const left = runCleanup(dir);
-    expect(left).toMatch(/^Left alone:\n {2}\S+: finished \d+s ago; cleaned up 2 minutes after it finished, or now with --now$/);
+    expect(left).toMatch(/^Left alone:\n {2}\S+: finished \d+s ago; cleaned up 2 minutes after it finished\n`factory cleanup --now` cleans up the runs that just finished\.$/);
     expect(left).toContain(`  ${id}: finished`);
     expect(existsSync(worktree)).toBe(true);
     expect(runCleanup(dir, { now: true, dryRun: true })).toMatch(/would remove worktree[\s\S]*Nothing was removed \(--dry-run\)\.$/);

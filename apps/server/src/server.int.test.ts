@@ -610,7 +610,7 @@ describe("runs", () => {
     it("cleans up the project's finished runs and lists the ones it left alone", async () => {
       const { run, app, key } = finished();
       const res = await call(app, "POST", `/api/projects/${key}/cleanup`, {});
-      expect(res.json()).toEqual({ lines: [], skipped: [{ runId: run.id, why: expect.stringMatching(/^finished \d+s ago; cleaned up 2 minutes after it finished, or now with --now$/) }] });
+      expect(res.json()).toEqual({ lines: [], skipped: [{ runId: run.id, why: expect.stringMatching(/^finished \d+s ago; cleaned up 2 minutes after it finished$/), recent: true }] });
     });
   });
 

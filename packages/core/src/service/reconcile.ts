@@ -63,7 +63,7 @@ export function sweepFinishedRuns(
   store: Store,
   project: Project,
   config: FactoryConfig,
-  deps: { run?: CommandRunner; dryRun?: boolean; recheckKept?: boolean; graceMs?: number; onSkipped?: (runId: string, why: string) => void },
+  deps: { run?: CommandRunner; dryRun?: boolean; recheckKept?: boolean; graceMs?: number; onSkipped?: (runId: string, why: string, recent: boolean) => void },
 ): string[] {
   try {
     return cleanupFinishedRuns(store, project, {
@@ -83,7 +83,8 @@ export function sweepFinishedRuns(
 /** What `factory cleanup` and the web app's cleanup did: removed and kept (`lines`), and the runs it left alone. */
 export interface CleanupReport {
   lines: string[];
-  skipped: { runId: string; why: string }[];
+  /** `recent`: left alone only because it just finished; cleaning up with `now` removes it. */
+  skipped: { runId: string; why: string; recent: boolean }[];
 }
 
 /**
@@ -98,7 +99,7 @@ export function cleanupRuns(store: Store, project: Project, config: FactoryConfi
     dryRun: options.dryRun,
     recheckKept: true,
     graceMs: options.now ? 0 : undefined,
-    onSkipped: (runId, why) => skipped.push({ runId, why }),
+    onSkipped: (runId, why, recent) => skipped.push({ runId, why, recent }),
   });
   return { lines, skipped };
 }

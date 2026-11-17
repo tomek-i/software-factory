@@ -690,6 +690,23 @@ describe("run details", () => {
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
   });
 
+  it("shows a finished run's leftover worktree and branch, and cleans them up", async () => {
+    server.runs = [runRow({ state: "cancelled", waitingGate: null, reason: "not needed" })];
+    const detail = server.detail;
+    server.detail = (run) => ({ ...detail(run), leftover: { worktree: ".worktrees/run-1", branch: "factory/12-add", kept: "the branch has commits that are not on the remote" } });
+    server.answers.set("/run-1/cleanup", { lines: ["run-1: kept: the branch has commits that are not on the remote"] });
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    expect(await screen.findByText(".worktrees/run-1")).toBeTruthy();
+    expect(screen.getByText("factory/12-add")).toBeTruthy();
+    expect(screen.getByText("Kept on purpose: the branch has commits that are not on the remote")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Clean up/ }));
+
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cleanup", body: { state: "cancelled" } }]));
+    expect(within(await screen.findByRole("status")).getByText("run-1: kept: the branch has commits that are not on the remote")).toBeTruthy();
+  });
+
   it("lists each acceptance criterion with its status and evidence, wrapping long paths", async () => {
     const evidence = "packages/core/src/pipeline/driver.acceptance.test.ts:123";
     server.runs = [runRow({ state: "build", waitingGate: null })];
@@ -867,6 +884,29 @@ describe("runs", () => {
 
     expect(await screen.findByText("Editing feature.txt")).toBeTruthy();
     expect(screen.queryByText("triage approved")).toBeNull();
+  });
+
+  it("cleans up finished runs, lists the ones left alone, and cleans those up on request", async () => {
+    server.runs = [runRow({ state: "done", waitingGate: null })];
+    server.answers.set("/p1/cleanup", { lines: ["run-0: removed worktree, local branch factory/3-x"], skipped: [{ runId: "run-1", why: "finished 40s ago; cleaned up 2 minutes after it finished", recent: true }] });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    // Finished runs are under All.
+    expect(screen.queryByRole("button", { name: /Clean up finished runs/ })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: /Clean up finished runs/ }));
+
+    const status = await screen.findByRole("status");
+    expect(within(status).getByText("run-0: removed worktree, local branch factory/3-x")).toBeTruthy();
+    expect(status.textContent).toContain("run-1: finished 40s ago; cleaned up 2 minutes after it finished");
+    await user.click(screen.getByRole("button", { name: "Also clean up the runs that just finished" }));
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        { path: "/api/projects/p1/cleanup", body: { now: false } },
+        { path: "/api/projects/p1/cleanup", body: { now: true } },
+      ]),
+    );
   });
 });
 

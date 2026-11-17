@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router";
+import { CleanupRuns } from "../components/Cleanup";
 import { StateBadge } from "../components/StateBadge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -29,6 +30,7 @@ export function Runs() {
           ))}
         </div>
       </div>
+      {view === "all" && <CleanupRuns project={project} />}
       {runs.error && <p className="text-sm text-destructive">{runs.error.message}</p>}
       {runs.data?.length === 0 && (
         <p className="text-sm text-muted-foreground">{view === "active" ? "No runs going on. Queue issues in the Backlog." : "No runs yet."}</p>

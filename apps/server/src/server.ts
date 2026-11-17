@@ -488,7 +488,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const report = cleanupRuns(store, project, config, { run: options.run, now: flag(req.body, "now") });
     changed(req.params.key);
     const redact = (text: string) => redactPaths(text, { home: homedir(), roots: [project.repo_path] });
-    return { lines: report.lines.map(redact), skipped: report.skipped.map((s) => ({ runId: s.runId, why: redact(s.why) })) };
+    return { lines: report.lines.map(redact), skipped: report.skipped.map((s) => ({ ...s, why: redact(s.why) })) };
   });
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });
