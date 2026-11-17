@@ -227,7 +227,7 @@ describe("drafts from the web", () => {
     const { base, post, start, done, fake } = setup([{ output: SINGLE, sleepMs: 60_000 }, { output: SINGLE }]);
     const first = await start("a slow idea");
     // Stopped before it claimed the slow step, the first agent would leave that step to the second.
-    await vi.waitFor(() => expect(fake.calls()).toHaveLength(1), { timeout: GIT_TEST_TIMEOUT });
+    await vi.waitFor(() => expect(existsSync(`${fake.env.FAKE_CLAUDE_SCENARIO}.claimed-0`)).toBe(true), { timeout: GIT_TEST_TIMEOUT });
 
     expect(await post(base, { idea: "another idea" })).toEqual({
       status: 409,

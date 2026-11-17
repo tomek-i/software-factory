@@ -30,6 +30,17 @@ describe("PipelineDriver merge stage: required checks and GitHub's answer", () =
     expect(seen.some((e) => JSON.stringify(e).includes("waiting for required checks on PR #7: test (ubuntu-latest)"))).toBe(true);
   });
 
+  // judgeChecks decides on a moved head (stages/merge.test.ts); this checks the stage asks GitHub for it.
+  it("does not judge checks of a commit that is not the one that passed", async () => {
+    const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
+    pr.checks = [[{ name: "test (ubuntu-latest)", bucket: "fail" }]];
+    pr.head = "f".repeat(40);
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringMatching(/^PR #7 moved to fffffff while waiting for checks; only [0-9a-f]{7} passed the gate$/) });
+    expect(merges).toEqual([]);
+  });
+
   it("asks a human when the required checks cannot be read", async () => {
     const { driver, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
     pr.checksError = "gh pr checks failed: HTTP 502";
