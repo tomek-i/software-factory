@@ -31,7 +31,12 @@ function githubOwner(before: string): string | undefined {
   let start = before.length;
   while (start > 0 && before[start - 1] !== "/" && !/\s/.test(before[start - 1]!)) start--;
   if (start === before.length) return undefined;
-  if (before[start - 1] === "/" && before.slice(0, start - 1).endsWith("github.com")) return before.slice(start);
+  if (before[start - 1] === "/") {
+    const hostEnd = start - 1;
+    const hostStart = before.lastIndexOf("/", hostEnd - 1) + 1;
+    const host = before.slice(hostStart, hostEnd);
+    if (host === "github.com") return before.slice(start);
+  }
   const at = before.indexOf("github.com:", start);
   return at === -1 ? undefined : before.slice(at + "github.com:".length) || undefined;
 }
