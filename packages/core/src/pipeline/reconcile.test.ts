@@ -34,6 +34,8 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, re
     requiredChecks: () => [],
     codeScanningAlerts: () => [],
     dismissCodeScanningAlert: () => undefined,
+    hasReview: () => false,
+    createReview: () => undefined,
     pullRequestState: (number) => {
       asked.push(number);
       const pr = prs[number];

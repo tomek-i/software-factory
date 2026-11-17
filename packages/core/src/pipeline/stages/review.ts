@@ -4,12 +4,14 @@ import { isBlocking, isTrustedIssue, parseCriteria, parseVerdict, type ParsedVer
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn, type TurnResult } from "../../agents/turn.js";
 import { gitEvidence, type Worktree } from "../../git/worktrees.js";
+import { factoryComment } from "../../github/port.js";
 import type { Issue, Run } from "../../store/store.js";
+import { redactPaths } from "../../util/redact.js";
 import { acceptanceCount, acceptanceReviewText, extractCriteria, matchAnswers, readAcceptanceRecord, writeAcceptanceRecord, type Criterion } from "../acceptance.js";
 import { resolveGate } from "../gates.js";
 import { changeReport, freshBase } from "../hard-rules.js";
-import { blockingFindings, reviewNotes, verifyProblems, type BlockingFinding, type LensReview } from "../reviews.js";
-import { readReview, readValid, reviewPath, runEvidence, verdictPath } from "../shared.js";
+import { blockingFindings, diffLines, reviewNotes, verifyProblems, type BlockingFinding, type LensReview, type ReviewNotes } from "../reviews.js";
+import { quietMentions, readReview, readValid, reviewPath, runEvidence, verdictPath } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
 
 /**
@@ -97,6 +99,7 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
   const lifted = run.unsafe && hits.length ? [`hard rules lifted by --unsafe: ${hits.join("; ")}`] : [];
   const held = run.unsafe ? [] : hits.map((h) => `hard rule: ${h}`);
 
+  const reviewed = { round, commit, worktree, changeFile };
   let verified: ParsedVerdict<"verify"> | undefined;
   const outcome = [summary];
   if (reviews.some(({ verdict }) => verdict.header.VERDICT === "CHANGES")) {
@@ -124,7 +127,7 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
         "reviews",
         `reviews still have confirmed findings after round ${round}`,
         (reason, data) => {
-          publishReviewNotes(ctx, run, reviews, found);
+          publishReviewNotes(ctx, run, reviews, found, reviewed);
           return ctx.waitForHuman(run, "review", [summary, reason, ...held, ...lifted], data);
         },
       );
@@ -132,7 +135,7 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
     outcome.push(`the verifier refuted all ${blocking.length} blocking findings`);
     ctx.info(run, outcome.at(-1)!);
   }
-  publishReviewNotes(ctx, run, reviews, verified);
+  publishReviewNotes(ctx, run, reviews, verified, reviewed);
   const mode = ctx.deps.config.gates.review;
   const gate = resolveGate({ mode, agentDecision: { decision: "PROCEED" }, hardRuleHits: hits, unsafe: run.unsafe });
   if (gate.outcome === "wait_human") return ctx.waitForHuman(run, "review", [...outcome, ...gate.reasons, ...lifted]);
@@ -190,12 +193,46 @@ function verifyTurn(
   });
 }
 
+/** The reviewed round, for posting its notes. */
+interface ReviewedRound {
+  round: number;
+  commit: string;
+  worktree: Worktree;
+  changeFile: string;
+}
+
 /**
- * Rewrite the PR description with what the reviews leave for the human: minor findings and nits,
- * and the blocking findings the verifier refuted. Built from build.md each time, so it never stacks.
+ * Leave what the reviews leave for the human on the PR, as one review (event COMMENT) on the
+ * reviewed commit: a note about a line of the change on that line, the rest in the review's body.
+ * Posted once per round and commit: a marker at the start of the body says whether a resumed or
+ * restarted run already did. GitHub refuses the whole review when a line is not in the diff, so a
+ * refused review is posted again with every note in the body. A convenience: a failure is logged.
  */
-function publishReviewNotes(ctx: StageContext, run: Run, reviews: LensReview[], verified: ParsedVerdict<"verify"> | undefined): void {
-  ctx.updatePrDescription(run, reviewNotes(reviews, verified));
+function publishReviewNotes(ctx: StageContext, run: Run, reviews: LensReview[], verified: ParsedVerdict<"verify"> | undefined, reviewed: ReviewedRound): void {
+  // The description has this round's acceptance checklist.
+  ctx.updatePrDescription(run);
+  if (run.pr_number === null) return;
+  const { round, commit, worktree, changeFile } = reviewed;
+  const pr = run.pr_number;
+  try {
+    const notes = reviewNotes(reviews, verified, diffLines(readFileSync(changeFile, "utf8")));
+    if (!notes) return;
+    const kind = `review-round-${round}-${commit.slice(0, 12)}`;
+    const marker = factoryComment(run.id, kind, "").split("\n")[0]!;
+    if (ctx.deps.github.hasReview(pr, marker)) return;
+    const clean = (text: string) => redactPaths(quietMentions(text), { roots: [ctx.deps.project.repo_path, worktree.path] });
+    const post = ({ body, comments }: ReviewNotes) =>
+      ctx.deps.github.createReview(pr, { commit, body: factoryComment(run.id, kind, clean(body)), comments: comments.map((c) => ({ ...c, body: clean(c.body) })) });
+    try {
+      post(notes);
+    } catch (err) {
+      if (!notes.comments.length || !/\b422\b|unprocessable|validation failed/i.test((err as Error).message)) throw err;
+      post(reviewNotes(reviews, verified)!);
+    }
+  } catch (err) {
+    // The review files hold the same and `factory show` lists them.
+    ctx.info(run, `could not post the review notes on PR #${pr}: ${(err as Error).message}`);
+  }
 }
 
 async function reviewTurn(

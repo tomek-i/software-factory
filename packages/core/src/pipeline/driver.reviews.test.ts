@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { factoryConfigSchema } from "@factory/shared";
 import { buildStep, review, reviewConfig, setup, TRIAGE } from "../../test/driver-setup.js";
 import { GIT_TEST_TIMEOUT, reviewsPass } from "../../test/helpers.js";
 import { absoluteRule } from "../agents/prompts.js";
 import { runDirOf } from "./driver.js";
+import { RunMachine } from "./transitions.js";
 
 // Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
 vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
@@ -56,17 +58,65 @@ describe("PipelineDriver", () => {
       expect(store.getRun(run.id)!.state).toBe("needs_human");
     });
 
-    it("never holds the run for minor findings, and lists them in the PR description", async () => {
+    it("never holds the run for minor findings, and leaves them as a review on the PR, not in its description", async () => {
       const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
-      const { driver, fake, edits } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
+      const { driver, fake, edits, prs, reviews, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
       const run = driver.startRun(12);
       expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; gate is set to human" });
       expect(fake.calls().some((c) => c.role === "verifier")).toBe(false);
-      expect(edits).toHaveLength(1);
-      expect(edits[0]!.number).toBe(7);
-      expect(edits[0]!.body).toBe(
-        "## What\n- done\n\n## Review notes\nLeft for you to judge.\n\n**code**\n- minor: it says fixed (feature.txt:1)\n\nCloses #12\n",
-      );
+      expect(edits.length).toBeGreaterThan(0);
+      expect(edits.every((e) => !e.body.includes("Review notes"))).toBe(true);
+      expect(prs[0]!.body).not.toContain("Review notes");
+      const commit = /^COMMIT: (\w+)$/m.exec(readFileSync(join(runDirOf(root, run.id), "round-1", "checks.md"), "utf8"))![1]!;
+      expect(reviews).toEqual([
+        {
+          number: 7,
+          commit,
+          body: `<!-- factory:${run.id}:review-round-1-${commit.slice(0, 12)} -->\nReview notes, left for you to judge. A note about a line of the change is on that line.\n`,
+          comments: [{ path: "feature.txt", line: 1, body: "**code** · minor: it says fixed" }],
+        },
+      ]);
+    });
+
+    it("posts a round's review once, even when the round runs again", async () => {
+      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
+      const { driver, store, reviews } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+      expect(reviews).toHaveLength(1);
+
+      // The review is already written, so the reviewer does not run again; the stage does.
+      new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "review", { comment: "again" });
+      expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; gate is set to human" });
+      expect(reviews).toHaveLength(1);
+    });
+
+    it("quotes mentions and removes local paths, and puts every note in the body when GitHub refuses a line", async () => {
+      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
+      const findings = [
+        { id: "code-1", severity: "minor", file: "feature.txt", line: 1, claim: "ask @bob about /home/alice/notes.txt", evidence: "line 1" },
+        { id: "code-2", severity: "nit", claim: "cc @org/team", evidence: "none" },
+      ];
+      const output = `VERDICT: PASS\n\n## Summary\n- reviewed\n\n## Findings\n\`\`\`json\n${JSON.stringify(findings)}\n\`\`\`\n`;
+      const { driver, reviews, reviewErrors, seen } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output }], { config });
+      reviewErrors.push("gh api -X failed: Validation Failed (HTTP 422)");
+      const run = driver.startRun(12);
+      await driver.drive(run.id);
+
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]!.comments).toEqual([]);
+      expect(reviews[0]!.body).toContain("**code**\n- minor: ask `@bob` about ~/notes.txt (feature.txt:1)\n- nit: cc `@org/team`\n");
+      expect(seen.some((e) => e.type === "info" && e.message.includes("could not post"))).toBe(false);
+    });
+
+    it("logs a review it could not post and carries on", async () => {
+      const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
+      const { driver, reviews, reviewErrors, seen } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("PASS", "minor") }], { config });
+      reviewErrors.push("gh api -X failed: HTTP 502");
+      const run = driver.startRun(12);
+      expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; gate is set to human" });
+      expect(reviews).toEqual([]);
+      expect(seen).toContainEqual(expect.objectContaining({ type: "info", message: "could not post the review notes on PR #7: gh api -X failed: HTTP 502" }));
     });
   });
 });

@@ -156,10 +156,14 @@ Related docs:
   - With acceptance criteria it adds `acceptance PASS (8/8 met, 1 for you to check)`.
 - The draft PR's description gets an **Acceptance criteria** checklist: each criterion with its status and evidence, and the count.
   - It is rebuilt every round, never stacked.
-- The draft PR's description gets a **Review notes** section, for you to judge:
+- The factory leaves the review notes on the draft PR as a review (a comment, not an approval), for you to judge:
   - the minor findings and nits per lens;
   - the refuted findings, with the verifier's reason;
   - any confirmed findings still open when the run stopped at a stall or the cap.
+- A note about a line of the change is an inline comment on that line, starting with the lens and severity, e.g. `**code** · minor: ...`. You can reply to it and resolve it.
+- A note without a place, or about a line outside the diff, goes in the review's body with its place as text.
+- One review per round, on the reviewed commit. A marker in its body keeps a resumed or restarted run from posting it twice.
+- Mentions are quoted and local paths removed. The PR description holds no review notes.
 - `factory show <run>` lists each review's summary and blocking findings, and the verifier's confirmed findings.
 - `factory show <run>` and the web Run details list each acceptance criterion with its status and evidence.
 
@@ -282,7 +286,7 @@ Related docs:
 - Screenshots and videos are attached to the run's PR, or go to a draft release when that fails.
 - The details are in [Media hosting](media.md).
 - They live in the run folder (`round-N/capture/`) and on GitHub.
-- The PR description gets a `## Screenshots` section with a before/after table, the video and the new errors, above the review notes.
+- The PR description gets a `## Screenshots` section with a before/after table, the video and the new errors.
 
 ### Nothing here fails the run
 

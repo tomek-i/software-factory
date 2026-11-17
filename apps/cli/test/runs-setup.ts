@@ -52,6 +52,8 @@ export const github: GithubPort = {
   requiredChecks: () => [],
   codeScanningAlerts: () => [],
   dismissCodeScanningAlert: () => undefined,
+  hasReview: () => false,
+  createReview: () => undefined,
   mergePullRequest: (number, head) => {
     merged.push({ number, head });
     prStates.set(number, { number, state: "merged", draft: false, head, mergeCommit: "e".repeat(40) });

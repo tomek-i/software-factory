@@ -58,7 +58,7 @@ describe("PipelineDriver", () => {
       });
 
       it("treats the review as clear when every blocking finding is refuted, and notes them in the PR", async () => {
-        const { driver, store, edits } = setup(
+        const { driver, store, reviews } = setup(
           [{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: review("CHANGES", "major") }, { role: "verifier", output: refuted }],
           { config: codeOnly },
         );
@@ -69,9 +69,10 @@ describe("PipelineDriver", () => {
             "waiting at review gate: reviews: code CHANGES (1 blocking); the verifier refuted all 1 blocking findings; gate is set to human",
         });
         expect(store.listEvents(run.id).some((e) => e.from_state === "review" && e.to_state === "build")).toBe(false);
-        expect(edits.at(-1)!.body).toContain(
-          "**Refuted by the verifier**\n- code major: it says fixed (feature.txt:1)\n  Refuted: the check accepts exactly that",
-        );
+        expect(reviews).toHaveLength(1);
+        expect(reviews[0]!.comments).toEqual([
+          { path: "feature.txt", line: 1, body: "**code** · major (refuted by the verifier): it says fixed\n\nRefuted: the check accepts exactly that" },
+        ]);
         expect(approveTarget(store.getRun(run.id)!, "build")).toBe("capture");
       });
 
@@ -129,7 +130,7 @@ describe("PipelineDriver", () => {
       });
 
       it("stops at the review gate when the verifier confirms the same findings two rounds in a row", async () => {
-        const { driver, store, edits } = setup(
+        const { driver, store, reviews } = setup(
           [
             { output: TRIAGE() },
             buildStep("fixed"),
@@ -153,7 +154,10 @@ describe("PipelineDriver", () => {
         // A human may approve it as is, and the PR lists what is still open.
         expect(approveTarget(parked, "build")).toBe("capture");
         expect(store.listEvents(run.id).at(-1)!.data).toMatchObject({ stalled: "reviews", rounds: [1, 2] });
-        expect(edits.at(-1)!.body).toContain("**Confirmed by the verifier, not fixed**\n- major: it says fixed (feature.txt:1)");
+        // Only the round that stopped is posted: a round that loops back to the builder leaves no review.
+        expect(reviews).toHaveLength(1);
+        expect(reviews[0]!.body).toContain(":review-round-2-");
+        expect(reviews[0]!.comments).toEqual([{ path: "feature.txt", line: 1, body: "**code** · major (confirmed by the verifier, not fixed): it says fixed" }]);
       });
 
       it("stops at the review round cap, naming the hard rules, and tells the builder the findings when a human sends it back", async () => {

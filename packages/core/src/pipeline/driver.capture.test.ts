@@ -58,9 +58,9 @@ describe("PipelineDriver > capture", () => {
     }
   });
 
-  it("plans with the capture agent, captures, uploads the media and puts the table in the PR, keeping the review notes", async () => {
+  it("plans with the capture agent, captures, uploads the media and puts the table in the PR, without review notes", async () => {
     const capture = fakeCapture();
-    const { driver, store, root, edits, fake, seen } = setup(steps(), { config: captureConfig(), capture: capture.port });
+    const { driver, store, root, edits, reviews, fake, seen } = setup(steps(), { config: captureConfig(), capture: capture.port });
     const run = driver.startRun(12);
 
     expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
@@ -99,9 +99,9 @@ describe("PipelineDriver > capture", () => {
     expect(body).toContain("- home at 1440px: `console error: boom`");
     expect(body).toContain("- only maintainers signed in to GitHub can see this media (a draft release): `the factory's browser is not signed in to GitHub: run 'factory login github'`");
     expect(readFileSync(join(dir, "round-1", "capture-report.md"), "utf8")).toContain("- media uploaded (4 files) to the draft release, visible to maintainers only: the factory's browser is not signed in to GitHub");
-    expect(body).toContain("## Review notes");
-    expect(body).toContain("- minor: it says fixed (feature.txt:1)");
-    expect(body.indexOf("## Screenshots")).toBeLessThan(body.indexOf("## Review notes"));
+    // The minor finding is a review on the PR; capture does not put it back in the description.
+    expect(body).not.toContain("Review notes");
+    expect(reviews).toHaveLength(1);
     expect(infos(seen).some((m) => m.startsWith("capture: captured 2 page(s)"))).toBe(true);
     // Remembers the release, so rejecting or cancelling the run can delete it.
     expect(readFileSync(join(dir, MEDIA_MARKER), "utf8")).toBe(`factory-media-${run.id}\n`);

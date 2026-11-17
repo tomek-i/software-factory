@@ -13,8 +13,7 @@ import type { Issue, Project, Run, RunPatch, Store } from "../../store/store.js"
 import { runCommand, type CommandRunner } from "../../util/exec.js";
 import { diffHardRuleHits } from "../hard-rules.js";
 import { acceptanceChecklist, readAcceptanceRecord } from "../acceptance.js";
-import { reviewNotes } from "../reviews.js";
-import { latestSpecRound, prBody, readReview, readValid, refined, runDirOf, specFile } from "../shared.js";
+import { latestSpecRound, prBody, readValid, refined, runDirOf, specFile } from "../shared.js";
 import { RunMachine, TransitionError, type Evidence } from "../transitions.js";
 
 export interface DriverDeps {
@@ -210,27 +209,20 @@ export class StageContext {
   }
 
   /**
-   * Rewrite the PR description from this round's files: build.md, the review notes (worked out from
-   * the round's reviews and verify.md unless given) and the capture stage's screenshots, once it ran.
+   * Rewrite the PR description from this round's files: build.md, the acceptance checklist and the
+   * capture stage's screenshots, once it ran. The review notes are a review on the PR, not part of it.
    */
-  updatePrDescription(run: Run, notes?: string): void {
+  updatePrDescription(run: Run): void {
     if (run.pr_number === null) return;
     try {
       const dir = this.runDir(run);
       const roundDir = join(dir, `round-${run.round}`);
       const build = parseVerdict("build", readFileSync(join(dir, "build.md"), "utf8"));
-      if (notes === undefined) {
-        const reviews = this.reviewLenses(run).flatMap((lens) => {
-          const verdict = readReview(roundDir, lens);
-          return verdict ? [{ lens, verdict }] : [];
-        });
-        notes = reviewNotes(reviews, readValid("verify", join(roundDir, "verify.md"), () => []));
-      }
-      // The acceptance checklist first, then what the reviews leave to judge; rebuilt every time.
-      notes = [acceptanceChecklist(readAcceptanceRecord(roundDir)), notes].filter(Boolean).join("\n\n") || undefined;
+      // The acceptance checklist, rebuilt every time; the review notes are a review on the PR.
+      const checklist = acceptanceChecklist(readAcceptanceRecord(roundDir));
       const screenshotsFile = join(roundDir, "capture", "screenshots.md");
       const screenshots = existsSync(screenshotsFile) ? readFileSync(screenshotsFile, "utf8") : undefined;
-      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, notes, screenshots));
+      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, checklist, screenshots));
     } catch (err) {
       // A convenience; the review and capture files hold the same and `factory show` lists them.
       this.info(run, `could not update the description of PR #${run.pr_number}: ${(err as Error).message}`);

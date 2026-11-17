@@ -139,7 +139,7 @@ describe("PipelineDriver acceptance lens", () => {
   });
 
   it("does not block on a NOT_MET criterion the verifier refutes, and notes the refutation", async () => {
-    const { driver, store, edits } = setup(
+    const { driver, store, edits, reviews } = setup(
       [
         { output: TRIAGE() },
         buildStep("fixed"),
@@ -158,7 +158,10 @@ describe("PipelineDriver acceptance lens", () => {
     expect(store.listEvents(run.id).some((e) => e.from_state === "review" && e.to_state === "build")).toBe(false);
     const body = edits.at(-1)!.body;
     expect(body).toContain("- [ ] AC-1: feature.txt says fixed\n  not met: feature.txt still says broken");
-    expect(body).toContain("- acceptance major: AC-1 is not met: feature.txt says fixed\n  Refuted: feature.txt says fixed");
+    // The refutation is a review note: on the PR as a review, not in the description.
+    expect(body).not.toContain("Refuted");
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]!.body).toContain("- acceptance major: AC-1 is not met: feature.txt says fixed\n  Refuted: feature.txt says fixed");
   });
 
   it("treats malformed output like any other invalid review", async () => {
