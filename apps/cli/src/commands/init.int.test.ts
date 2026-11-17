@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -48,6 +48,29 @@ describe("runInit", () => {
 
     expect(output).toContain("+ Synced acme/shop: 1 open, 0 closed since last sync, 0 queued.");
     expect(output).not.toContain("factory sync");
+  });
+
+  it("passes --name and --labels through to the config", () => {
+    const dir = repo(true);
+
+    const output = runInit(dir, fakeGh(), undefined, { name: "Shop", labels: true });
+
+    expect(output).toContain("+ Created factory labels on acme/shop");
+    const config = readFileSync(join(dir, ".factory", "config.yaml"), "utf8");
+    expect(config).toContain('name: "Shop"');
+    expect(config).toContain("status_labels: true");
+  });
+
+  it("writes and syncs nothing on --dry-run", () => {
+    const dir = repo(true);
+
+    const output = runInit(dir, fakeGh(), undefined, { dryRun: true, sync: true });
+
+    expect(output).toMatch(/^Dry run in .*: nothing was written/);
+    expect(output).toContain("+ Would write .factory/config.yaml");
+    expect(output).toContain("+ Would sync issues from GitHub");
+    expect(output).toContain("Next: run it again without --dry-run to apply.");
+    expect(existsSync(join(dir, ".factory"))).toBe(false);
   });
 
   it("still initialises when --sync fails, and says so", () => {

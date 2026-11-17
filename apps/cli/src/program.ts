@@ -56,9 +56,12 @@ export function buildProgram(): Command {
   program
     .command("init")
     .description("set up the factory in the current git repository")
+    .option("--name <name>", "project name to set in .factory/config.yaml, instead of the detected one")
+    .option("--labels", "turn GitHub status labels on and create them")
     .option("--sync", "pull issues from GitHub afterwards, as `factory sync` does")
-    .action((options: { sync?: boolean }) => {
-      console.log(runInit(process.cwd(), undefined, styleFor(process.stdout), { sync: options.sync }));
+    .option("--dry-run", "list what would be written or created, change nothing")
+    .action((options: { name?: string; labels?: boolean; sync?: boolean; dryRun?: boolean }) => {
+      console.log(runInit(process.cwd(), undefined, styleFor(process.stdout), options));
     });
 
   const config = program.command("config").description("manage .factory/config.yaml");

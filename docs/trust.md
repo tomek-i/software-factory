@@ -42,4 +42,5 @@ trust:
 - `github.label_prefix` sets the prefix (default `factory`).
 - They are display-only and never read as input.
 - Work is picked locally, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
-- Run `factory init` again after enabling them to create the labels.
+- `factory init --labels` turns them on and creates the labels.
+  If you enable them by hand instead, run `factory init` again to create the labels.

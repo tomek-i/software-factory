@@ -262,4 +262,122 @@ describe("initRepo", () => {
     expect(gh.calls).toEqual([]);
     expect(result.steps.at(-1)).toMatchObject({ status: "warning" });
   });
+
+  describe("--name", () => {
+    it("names a new project instead of the detected name", () => {
+      const dir = gitRepo();
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "detected" }));
+
+      initRepo({ cwd: dir, name: "Shop" });
+
+      expect(loadConfig(dir).project.name).toBe("Shop");
+      const store = new Store(join(dir, ".factory", "factory.db"));
+      expect(store.listProjects()).toMatchObject([{ name: "Shop" }]);
+      store.close();
+    });
+
+    it("renames an existing project, keeping the rest of the config byte for byte", () => {
+      const dir = gitRepo();
+      const registryFile = join(tempDir(), "projects.json");
+      initRepo({ cwd: dir, registryFile });
+      const configFile = join(dir, ".factory", "config.yaml");
+      const before = readFileSync(configFile, "utf8");
+      const oldName = loadConfig(dir).project.name!;
+
+      const result = initRepo({ cwd: dir, registryFile, name: "Renamed" });
+
+      expect(readFileSync(configFile, "utf8")).toBe(before.replace(JSON.stringify(oldName), '"Renamed"'));
+      expect(result.steps).toContainEqual({ status: "done", message: 'Set project.name to "Renamed" in .factory/config.yaml' });
+      expect(result.steps).toContainEqual({ status: "done", message: "Updated its name in the factory's project list" });
+      expect(listRegistered({ file: registryFile })[0]).toMatchObject({ name: "Renamed" });
+    });
+
+    it("refuses an empty name", () => {
+      expect(() => initRepo({ cwd: gitRepo(), name: " " })).toThrow(InitError);
+    });
+
+    it("writes nothing when the existing config has no name to set", () => {
+      const dir = gitRepo();
+      initRepo({ cwd: dir });
+      const configFile = join(dir, ".factory", "config.yaml");
+      writeFileSync(configFile, "version: 1\n");
+
+      expect(() => initRepo({ cwd: dir, name: "Shop" })).toThrow(/project\.name: not in the file/);
+      expect(readFileSync(configFile, "utf8")).toBe("version: 1\n");
+    });
+  });
+
+  describe("--labels", () => {
+    it("turns status labels on in a new config and creates them", () => {
+      const dir = gitRepo("https://github.com/acme/shop.git");
+      const gh = withFakeGh();
+
+      const result = initRepo({ cwd: dir, run: gh.run, labels: true });
+
+      expect(loadConfig(dir).github.status_labels).toBe(true);
+      expect(gh.calls.filter((c) => c[0] === "label")).toHaveLength(5);
+      expect(result.steps.at(-1)).toEqual({ status: "done", message: "Created factory labels on acme/shop" });
+    });
+
+    it("turns them on in an existing config", () => {
+      const dir = gitRepo("https://github.com/acme/shop.git");
+      initRepo({ cwd: dir, run: withFakeGh().run });
+      const gh = withFakeGh();
+
+      const result = initRepo({ cwd: dir, run: gh.run, labels: true });
+
+      expect(readFileSync(join(dir, ".factory", "config.yaml"), "utf8")).toContain("  status_labels: true\n");
+      expect(result.steps).toContainEqual({ status: "done", message: "Set github.status_labels to true in .factory/config.yaml" });
+      expect(gh.calls.filter((c) => c[0] === "label")).toHaveLength(5);
+    });
+
+    it("leaves a config that already has them on unchanged", () => {
+      const dir = gitRepo();
+      withStatusLabels(dir);
+
+      const result = initRepo({ cwd: dir, labels: true });
+
+      expect(result.steps[0]).toMatchObject({ status: "skipped", message: expect.stringContaining("left unchanged") });
+    });
+  });
+
+  describe("--dry-run", () => {
+    it("writes nothing in a new repo and says what it would do", () => {
+      const dir = gitRepo("https://github.com/acme/shop.git");
+      writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
+      const registryFile = join(tempDir(), "projects.json");
+      const gh = withFakeGh();
+
+      const result = initRepo({ cwd: dir, run: gh.run, registryFile, labels: true, dryRun: true });
+
+      expect(existsSync(join(dir, ".factory"))).toBe(false);
+      expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n");
+      expect(existsSync(registryFile)).toBe(false);
+      expect(gh.calls.filter((c) => c[0] === "label")).toEqual([]);
+      expect(result.steps.map((s) => s.message)).toEqual([
+        "Would write .factory/config.yaml (checks: none - add them by hand)",
+        "Would write .factory/lessons.md",
+        "Would add .factory/runs/, .factory/factory.db*, .worktrees/, .factory/drafts/ to .gitignore",
+        "Would register project in .factory/factory.db",
+        "Would add it to the factory's project list",
+        "Would create factory labels on acme/shop",
+      ]);
+    });
+
+    it("writes nothing in a set-up repo, and reports the changes it would make", () => {
+      const dir = gitRepo();
+      const registryFile = join(tempDir(), "projects.json");
+      initRepo({ cwd: dir, registryFile });
+      const configFile = join(dir, ".factory", "config.yaml");
+      const before = readFileSync(configFile, "utf8");
+
+      const result = initRepo({ cwd: dir, registryFile, name: "Renamed", dryRun: true });
+
+      expect(readFileSync(configFile, "utf8")).toBe(before);
+      expect(listRegistered({ file: registryFile })[0]!.name).not.toBe("Renamed");
+      expect(result.steps).toContainEqual({ status: "done", message: 'Would set project.name to "Renamed" in .factory/config.yaml' });
+      expect(result.steps).toContainEqual({ status: "done", message: "Would update its name in the factory's project list" });
+      expect(result.steps).toContainEqual({ status: "skipped", message: ".gitignore already ignores factory state" });
+    });
+  });
 });
