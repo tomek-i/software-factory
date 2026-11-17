@@ -36,6 +36,25 @@ describe("factory cleanup", () => {
     expect(runCleanup(dir)).toBe("Nothing to clean up.");
   });
 
+  it("lists a run that just finished as left alone, and cleans it up with --now", async () => {
+    const { run, queue, dir, root } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
+    queue();
+    await run();
+    const [id] = readdirSync(join(root, ".factory", "runs")) as [string];
+    const worktree = join(root, ".worktrees", id);
+    const store = new Store(join(root, ".factory", "factory.db"));
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).cancel(id, "not needed");
+    store.close();
+
+    const left = runCleanup(dir);
+    expect(left).toMatch(/^Left alone:\n {2}\S+: finished \d+s ago; cleaned up 2 minutes after it finished, or now with --now$/);
+    expect(left).toContain(`  ${id}: finished`);
+    expect(existsSync(worktree)).toBe(true);
+    expect(runCleanup(dir, { now: true, dryRun: true })).toMatch(/would remove worktree[\s\S]*Nothing was removed \(--dry-run\)\.$/);
+    expect(runCleanup(dir, { now: true })).toMatch(new RegExp(`^${id}: removed worktree, local branch factory/12-`));
+    expect(existsSync(worktree)).toBe(false);
+  });
+
   it("cleans up a run merged by hand on GitHub as soon as factory sync finishes it", async () => {
     const { run, queue, dir, root } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
     queue();
