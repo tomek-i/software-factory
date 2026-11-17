@@ -22,6 +22,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `pipeline/stages/<stage>.ts`: one module per stage (`triage` with intake, `refine`, `critic`, `build`, `gate`, `review` with the verifier, `capture`, `pr`, `merge` with re-sync and approver, `learn`), each a function `(ctx, run) => StepResult`
 - `pipeline/stages/context.ts`: `StageContext`, what every stage gets (store, project, config, ports, run machine, the abort signal, and helpers such as `move`, `waitForHuman`, `escalate`, `loopBack`, `agentBase`); `DriverDeps`, `DriveOutcome`
 - `pipeline/shared.ts`: helpers that need no driver: `approveTarget`, `nextAfterTriage`, `runDirOf`, `prBody`, `verdictPath`, `runEvidence`, spec rounds, `readValid`, `section`; `pipeline/reviews.ts`: blocking findings, what the verifier must judge, review notes
+- `pipeline/acceptance.ts`: the acceptance lens's criteria (`extractCriteria`), its result file, the PR checklist, and `tickMetCriteria`, which ticks the met ones on GitHub after the merge
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub

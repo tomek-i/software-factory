@@ -38,6 +38,13 @@ function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOv
         break;
       case "capture":
         lines.push(style.title(section.path), ...summary(section.summary));
+        break;
+      case "acceptance":
+        lines.push(`${style.title(section.path)} (acceptance criteria: ${section.count})`);
+        for (const c of section.criteria) {
+          lines.push(`  ${c.id} ${style.verdict(c.status)}: ${c.text}`);
+          if (c.evidence) lines.push(`    ${c.evidence}`);
+        }
     }
   }
 

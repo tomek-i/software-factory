@@ -75,6 +75,18 @@ describe("factory show <run>", () => {
     expect(runShow(dir, "16", "learn")).toContain("Run lint first.");
   });
 
+  it("lists each acceptance criterion with its status and evidence", () => {
+    const criteria = [
+      { id: "AC-1", source: "issue", text: "shows a run", status: "MET", evidence: "show.test.ts" },
+      { id: "AC-2", source: "issue", text: "looks right on a phone", status: "NOT_CHECKED" },
+    ];
+    const { dir } = setup({ "round-1/checks.md": checks("PASS", "round one"), "round-1/acceptance.json": JSON.stringify({ criteria }) });
+
+    expect(runShow(dir, "16")).toContain(
+      "round-1/acceptance.json (acceptance criteria: 1/1 met, 1 for you to check)\n  AC-1 MET: shows a run\n    show.test.ts\n  AC-2 NOT_CHECKED: looks right on a phone\n",
+    );
+  });
+
   it("lists the latest capture report with its summary, and shows it as `capture`", () => {
     const report = (what: string) => `# Capture\n\n## Summary\n- ${what}\n- no new browser errors\n\n## Pages\n| a |\n`;
     const { dir } = setup({

@@ -415,6 +415,24 @@ describe("runs", () => {
       expect(body.run).not.toHaveProperty("worktree_path");
     });
 
+    it("shows the acceptance criteria per criterion, without a local path", async () => {
+      const { ctx, worktree, dir, app, base } = detailed();
+      mkdirSync(join(dir, "round-1"), { recursive: true });
+      writeFileSync(join(dir, "round-1", "checks.md"), `GATE: PASS\nCOMMIT: ${"a".repeat(40)}\n`);
+      const criteria = [{ id: "AC-1", source: "issue", text: "shows a run", status: "MET", evidence: `${join(worktree, "src", "x.test.ts")}` }];
+      writeFileSync(join(dir, "round-1", "acceptance.json"), JSON.stringify({ criteria }));
+
+      const res = await call(app, "GET", base);
+
+      expect(res.json().sections).toContainEqual({
+        kind: "acceptance",
+        path: "round-1/acceptance.json",
+        count: "1/1 met",
+        criteria: [{ ...criteria[0], evidence: join("src", "x.test.ts") }],
+      });
+      expect(res.body).not.toContain(JSON.stringify(ctx.root).slice(1, -1));
+    });
+
     it("serves one run file as redacted text, and only from inside the run folder", async () => {
       const { ctx, app, base } = detailed();
 

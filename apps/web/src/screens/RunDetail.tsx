@@ -7,7 +7,7 @@ import { StateBadge } from "../components/StateBadge";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
-import { api, type OverviewSection, type RunRow } from "../lib/api";
+import { api, type AcceptanceCriterion, type OverviewSection, type RunRow } from "../lib/api";
 import { ago, money } from "../lib/utils";
 
 /** Where a run's detail view lives: the Inbox and Runs screens link here. */
@@ -19,7 +19,39 @@ export const githubUrl = (url: string | null) => (url && url.startsWith("https:/
 // Everything below comes from agents that read untrusted issue text: it is rendered as React text
 // (escaped), never as HTML or markdown.
 
+const CRITERION_STATUS: Record<AcceptanceCriterion["status"], { label: string; className: string }> = {
+  MET: { label: "met", className: "text-emerald-700 dark:text-emerald-300" },
+  NOT_MET: { label: "not met", className: "text-destructive" },
+  CANNOT_CHECK: { label: "for you to check", className: "text-amber-700 dark:text-amber-300" },
+  NOT_CHECKED: { label: "not checked", className: "text-amber-700 dark:text-amber-300" },
+};
+
+/** The acceptance lens's result, one line per criterion with its status and evidence. */
+function AcceptanceSection({ section }: { section: Extract<OverviewSection, { kind: "acceptance" }> }) {
+  return (
+    <div className="space-y-1 border-t pt-3 first:border-t-0 first:pt-0">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <code className="font-mono text-xs text-muted-foreground">{section.path}</code>
+        <span className="font-medium">Acceptance criteria: {section.count}</span>
+      </div>
+      {section.criteria.length > 0 && (
+        <ul className="space-y-1 pl-1 text-sm">
+          {section.criteria.map((c) => (
+            <li key={c.id} className="whitespace-pre-wrap">
+              <span className="mr-1.5 font-mono text-xs text-muted-foreground">{c.id}</span>
+              <span className={`mr-1.5 font-mono text-xs ${CRITERION_STATUS[c.status].className}`}>{CRITERION_STATUS[c.status].label}</span>
+              {c.text}
+              {c.evidence && <span className="block pl-4 text-xs text-muted-foreground">{c.evidence}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function Section({ section }: { section: OverviewSection }) {
+  if (section.kind === "acceptance") return <AcceptanceSection section={section} />;
   return (
     <div className="space-y-1 border-t pt-3 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-2 text-sm">

@@ -80,6 +80,7 @@ loops:
 reviews:
   always: [code, security, docs]
   ui: [ux, ui]          # only when the change touches the UI
+  # The acceptance lens always runs: it checks the issue's acceptance criteria one by one.
 
 # Model and effort per agent. Left out, every agent uses the recommended model below, and a better
 # recommendation reaches this project with the next factory update. To change one, uncomment

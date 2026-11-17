@@ -31,7 +31,11 @@ const protectedPath = z
     message: "use a repo-relative glob with forward slashes and only *, ** and ? (no {a,b}, [abc], leading / or backslashes)",
   });
 
-export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui"] as const;
+/**
+ * `acceptance` checks the issue's and the spec's acceptance criteria one by one. The engine runs it in
+ * every review round whatever `reviews.always` and `reviews.ui` say (see `reviewLenses` in core).
+ */
+export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui", "acceptance"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
 
 export const AGENT_ROLES = [

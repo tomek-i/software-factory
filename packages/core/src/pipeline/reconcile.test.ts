@@ -1,20 +1,29 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, type RunState } from "@factory/shared";
 import type { GithubPort, PullRequestState } from "../github/port.js";
 import { Store, type StatePatch } from "../store/store.js";
+import { tempDir } from "../../test/helpers.js";
+import { writeAcceptanceRecord } from "./acceptance.js";
 import { reconcilePullRequests } from "./reconcile.js";
+import { runDirOf } from "./shared.js";
 
 const MERGE = "c".repeat(40);
 
-function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>) {
+function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, repoPath = "/repo") {
   const store = new Store(":memory:");
   const config = factoryConfigSchema.parse({ version: 1 });
-  const project = store.upsertProject({ name: "demo", repo_path: "/repo", github_repo: "o/r" });
+  const project = store.upsertProject({ name: "demo", repo_path: repoPath, github_repo: "o/r" });
+  const issueEdits: { number: number; body: string }[] = [];
   const asked: number[] = [];
   const github: GithubPort = {
     commentOnIssue: () => undefined,
     findComment: () => undefined,
     editComment: () => undefined,
+    commentBody: () => "",
+    ownIssueBody: () => "## Acceptance criteria\n- [ ] done\n",
+    editIssueBody: (number, body) => issueEdits.push({ number, body }),
     findPullRequest: () => undefined,
     createDraftPullRequest: () => 1,
     createPullRequest: () => 1,
@@ -36,7 +45,7 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>) {
     store.writeState(run.id, state, patch);
     return run.id;
   };
-  return { store, config, project, github, asked, make, reconcile: () => reconcilePullRequests(store, project, github, config) };
+  return { store, config, project, github, asked, make, issueEdits, reconcile: () => reconcilePullRequests(store, project, github, config) };
 }
 
 describe("reconcilePullRequests", () => {
@@ -78,6 +87,24 @@ describe("reconcilePullRequests", () => {
     const merged = make(2, "needs_human", { pr_number: 2 });
     expect(reconcile().sort()).toEqual([`${merged}: PR #2 merged -> done`, `warning: could not check PR #1 of ${broken}: gh: not logged in`]);
     expect(store.getRun(broken)!.state).toBe("needs_human");
+  });
+
+  it("ticks the MET acceptance criteria of a merged run, and none of a closed one", () => {
+    const root = tempDir();
+    const { make, reconcile, issueEdits } = setup(
+      { 1: { state: "merged", draft: false, head: "h", mergeCommit: MERGE }, 2: { state: "closed", draft: false, head: "h" } },
+      root,
+    );
+    const merged = make(1, "needs_human", { pr_number: 1 });
+    const closed = make(2, "needs_human", { pr_number: 2 });
+    for (const id of [merged, closed]) {
+      const roundDir = join(runDirOf(root, id), "round-1");
+      mkdirSync(roundDir, { recursive: true });
+      writeAcceptanceRecord(roundDir, [{ id: "AC-1", source: "issue", text: "done", status: "MET", evidence: "a.ts:1" }]);
+    }
+
+    expect(reconcile()).toContain(`${merged}: ticked 1 acceptance criterion in the body of issue #1`);
+    expect(issueEdits).toEqual([{ number: 1, body: "## Acceptance criteria\n- [x] done\n" }]);
   });
 
   it("skips a run another worker is driving", () => {

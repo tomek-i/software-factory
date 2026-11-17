@@ -7,6 +7,7 @@ import { runQualityGate } from "../../gate/gate.js";
 import { gitEvidence, type GitEvidence, type Worktree } from "../../git/worktrees.js";
 import type { PullRequestState, RequiredCheck } from "../../github/port.js";
 import type { Run } from "../../store/store.js";
+import { acceptanceReasons, latestAcceptanceRecord, tickMetCriteria } from "../acceptance.js";
 import { resolveGate, type GateInput } from "../gates.js";
 import { changeReport, freshBase } from "../hard-rules.js";
 import { bullets, pause, readValid, reviewPath, runEvidence, section, verdictPath } from "../shared.js";
@@ -76,7 +77,11 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
       agentDecision = { decision: turn.verdict.header.DECISION, reasons: bullets(section(turn.verdict.body, "reasons")) };
     }
     const gate = resolveGate({ mode, agentDecision, hardRuleHits: hits, unsafe: run.unsafe });
-    if (gate.outcome === "wait_human") return ctx.waitForHuman(run, "merge", [...gate.reasons, ...lifted], { commit: head });
+    if (gate.outcome === "wait_human") {
+      // The criteria the acceptance lens could not check are for whoever approves the merge.
+      const toCheck = acceptanceReasons(latestAcceptanceRecord(dir)?.record);
+      return ctx.waitForHuman(run, "merge", [...gate.reasons, ...lifted, ...toCheck], { commit: head });
+    }
     ctx.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted].join("; "), head);
   }
   return await mergePullRequest(ctx, run, number, head, git, justPushed);
@@ -108,6 +113,7 @@ async function mergePullRequest(ctx: StageContext, run: Run, number: number, hea
     ...runEvidence(ctx.runDir(run), run.round, git),
     pullRequest: () => merged,
   });
+  tickAfterMerge(ctx, run);
   return undefined;
 }
 
@@ -157,7 +163,14 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
 function closedOnGithub(ctx: StageContext, run: Run, pr: PullRequestState): StepResult {
   const done = ctx.machine.closeByPullRequest(run.id, pr, ctx.deps.owner);
   ctx.deps.events?.emit({ type: "run:state", runId: run.id, from: run.state, to: done.state, reason: ctx.lastReason(run.id) });
+  if (pr.state === "merged") tickAfterMerge(ctx, run);
   return undefined;
+}
+
+/** Only once the PR is merged: tick the criteria the acceptance lens found MET on GitHub. */
+function tickAfterMerge(ctx: StageContext, run: Run): void {
+  if (run.issue_number === null) return;
+  for (const note of tickMetCriteria(ctx.deps.github, ctx.runDir(run), run.issue_number)) ctx.info(run, note);
 }
 
 /**
@@ -234,6 +247,7 @@ async function approverTurn(ctx: StageContext, run: Run, worktree: Worktree, hea
     join(roundDir, "checks.md"),
     join(roundDir, "resync", "checks.md"),
     ...REVIEW_LENSES.map((lens) => reviewPath(roundDir, lens)),
+    join(roundDir, "acceptance.json"),
     join(roundDir, "verify.md"),
   ].filter((path) => existsSync(path));
   const files = writeRoleFiles(dir, "approver", rolePrompt("approver", ctx.deps.read), permissionProfile("approver", { runDirFromCwd: relative(worktree.path, dir), outputFile }));
