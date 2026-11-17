@@ -67,6 +67,8 @@ export async function draftIssue(
     signal?: AbortSignal;
     /** Told the draft's id as soon as its folder exists, while the issue writer still works. */
     onStart?: (id: string) => void;
+    /** The idea was given with --queue: the hint to approve it carries that on, as the draft does not keep it. */
+    queue?: boolean;
   },
 ): Promise<DraftOutcome> {
   const root = ctx.project.repo_path;
@@ -108,7 +110,7 @@ export async function draftIssue(
         "The issue writer's draft was rejected twice:",
         ...turn.problems.map((p) => `- ${p}`),
         existsSync(file)
-          ? `Fix ${fileRef} and create it with \`factory new --approve ${id}\`, or drop it with ${drop}.`
+          ? `Fix ${fileRef} and create it with \`factory new --approve ${id}${deps.queue ? " --queue" : ""}\`, or drop it with ${drop}.`
           : `The last attempt wrote no draft file. Drop it with ${drop} and try again.`,
       ].join("\n"),
     );
@@ -140,7 +142,8 @@ export function approveDraft(ctx: ServiceContext, ref: string, deps: DraftDeps =
     }
     if (err instanceof DraftError) throw new ServiceError(err.message);
     // What was created is recorded in the store, so approving again only does the rest.
-    throw new ServiceError(`${(err as Error).message}\nApprove it again to finish; issues recorded as created are not created again.`);
+    // Queuing comes with each approval, so a retry without it would leave the issues unqueued.
+    throw new ServiceError(`${(err as Error).message}\nApprove it again${deps.queue ? " with --queue" : ""} to finish; issues recorded as created are not created again.`);
   }
 }
 
