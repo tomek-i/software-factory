@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  asWorker,
   DEFAULT_MAX_RUNS,
   listRegistered,
   openRegisteredProject,
@@ -83,7 +84,11 @@ export function openInBrowser(url: string): void {
  * project's queue as `factory work` does. The scheduler and the routes share one context per project.
  * Resolves once stopped, like `factory work`.
  */
-export async function startServe(options: ServeOptions, deps: ServeDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+export function startServe(options: ServeOptions, deps: ServeDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+  return asWorker(() => serve(options, deps));
+}
+
+async function serve(options: ServeOptions, deps: ServeDeps): Promise<{ message: string; interrupted: boolean }> {
   // A `factory stop` sent while it is still starting up counts.
   const startedAt = Date.now();
   const print = deps.print ?? console.log;

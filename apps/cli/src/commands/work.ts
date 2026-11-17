@@ -1,4 +1,5 @@
 import {
+  asWorker,
   DEFAULT_MAX_RUNS,
   listRegistered,
   openRegisteredProject,
@@ -6,6 +7,7 @@ import {
   reportLines,
   requestStop,
   Scheduler,
+  ServiceError,
   type CommandRunner,
   type GithubPort,
   type Project,
@@ -53,6 +55,15 @@ export function refuseRunningOnAnyProject(projects: () => RegistryEntry[] = list
  * Resolves with the last line to print; `interrupted` says the runs were stopped mid-way.
  */
 export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+  try {
+    return await asWorker(() => work(options, deps));
+  } catch (err) {
+    // e.g. refused while `factory upgrade` runs
+    throw err instanceof ServiceError ? new CliError(err.message) : err;
+  }
+}
+
+async function work(options: { maxRuns?: number }, deps: WorkDeps): Promise<{ message: string; interrupted: boolean }> {
   // A `factory stop` sent while it is still starting up (reconciling below) counts.
   const startedAt = Date.now();
   const print = deps.print ?? console.log;
