@@ -32,6 +32,8 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, re
     markReady: () => undefined,
     mergePullRequest: () => undefined,
     requiredChecks: () => [],
+    pullRequestChecks: () => [],
+    unresolvedReviewThreads: () => [],
     codeScanningAlerts: () => [],
     dismissCodeScanningAlert: () => undefined,
     hasReview: () => false,

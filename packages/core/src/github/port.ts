@@ -67,6 +67,14 @@ export interface GithubPort {
   mergePullRequest(number: number, head: string, method?: MergeMethod): void;
   /** The status checks branch protection requires on the PR's head; empty when none are required. */
   requiredChecks(number: number): RequiredCheck[];
+  /** Every status check on the PR's head, required or not, with its summary; empty when there are none. */
+  pullRequestChecks(number: number): PullRequestCheck[];
+  /**
+   * The PR's review threads that are neither resolved nor outdated (their line changed since), each
+   * with its first comment. Throws when the PR has more threads than one page holds, rather than
+   * judge it on part of them.
+   */
+  unresolvedReviewThreads(number: number): ReviewThread[];
   /**
    * Open code scanning alerts on the PR's head ref (`refs/pull/<n>/head`; its merge ref lists none in
    * practice). Empty when the repository has no code scanning.
@@ -120,6 +128,26 @@ export interface RequiredCheck {
   link?: string;
 }
 
+export interface PullRequestCheck extends RequiredCheck {
+  /** What the check reported in a line, e.g. "2 new alerts including 2 high severity". */
+  summary?: string;
+}
+
+/** An open review thread on a PR, as its first comment started it. Its text is untrusted data. */
+export interface ReviewThread {
+  /** GitHub's node id of the thread. */
+  id: string;
+  /** Who started it; a GitHub App as `<name>[bot]`, as the REST API and the web show it. */
+  author: string;
+  /** Started by the account the factory runs as, e.g. its own review notes. */
+  own: boolean;
+  path?: string;
+  line?: number;
+  body: string;
+  /** The thread's first comment on GitHub. */
+  url: string;
+}
+
 export interface RepoLabel {
   name: string;
   description: string;
@@ -141,7 +169,9 @@ export interface IssueWriterPort {
 }
 
 const PR_REVIEWS = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){nodes{body viewerDidAuthor}}}}}";
-const OWN_ISSUE_BODY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){body viewerDidAuthor}}}";
+const REVIEW_THREADS =
+  "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved isOutdated path line comments(first:1){nodes{author{__typename login} body url viewerDidAuthor}}}}}}}";
+const OWN_ISSUE_BODY ="query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){body viewerDidAuthor}}}";
 
 const ADD_SUB_ISSUE = "mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}";
 
@@ -180,6 +210,31 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     }
     if (typeof issue.id !== "string" || !issue.id) throw new GithubError(`gh issue view returned no id for #${number}`);
     return issue.id;
+  };
+  /** `gh pr checks` with `flags`, read field by field; `description` becomes the check's summary. */
+  const prChecks = (number: number, flags: string[]): PullRequestCheck[] => {
+    // A commit with no checks at all, or none that are required, is an error to gh, not an empty list.
+    // (Without --json gh also exits 1 for a failed check and 8 for a pending one, so stdout is read whatever the code.)
+    const result = run("gh", ["pr", "checks", String(number), "-R", repo, ...flags], { cwd: project.repo_path });
+    if (result.code !== 0 && /no (required )?checks reported/i.test(result.stderr)) return [];
+    let checks: unknown;
+    try {
+      checks = JSON.parse(result.stdout);
+      if (!Array.isArray(checks)) throw new Error("not a list");
+    } catch {
+      throw new GithubError(`gh pr checks failed: ${result.stderr.trim() || result.stdout.slice(0, 200) || "unknown error"}`);
+    }
+    return checks.map((c: { name?: unknown; bucket?: unknown; link?: unknown; description?: unknown }) => {
+      if (typeof c.name !== "string" || !CHECK_BUCKETS.includes(c.bucket as RequiredCheck["bucket"])) {
+        throw new GithubError(`gh pr checks returned unexpected output: ${JSON.stringify(c).slice(0, 200)}`);
+      }
+      return {
+        name: c.name,
+        bucket: c.bucket as RequiredCheck["bucket"],
+        ...(typeof c.link === "string" && c.link ? { link: c.link } : {}),
+        ...(typeof c.description === "string" && c.description.trim() ? { summary: c.description.trim() } : {}),
+      };
+    });
   };
   return {
     createIssue({ title, body, labels = [] }) {
@@ -343,23 +398,25 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       gh(args);
     },
     requiredChecks(number) {
-      const args = ["pr", "checks", String(number), "-R", repo, "--required", "--json", "name,bucket,link"];
-      // A commit with no checks at all, or none that are required, is an error to gh, not an empty list.
-      // (Without --json gh also exits 1 for a failed check and 8 for a pending one, so stdout is read whatever the code.)
-      const result = run("gh", args, { cwd: project.repo_path });
-      if (result.code !== 0 && /no (required )?checks reported/i.test(result.stderr)) return [];
-      let checks: unknown;
+      return prChecks(number, ["--required", "--json", "name,bucket,link"]);
+    },
+    pullRequestChecks(number) {
+      return prChecks(number, ["--json", "name,bucket,link,description"]);
+    },
+    unresolvedReviewThreads(number) {
+      const [owner, name] = repo.split("/");
+      const out = gh(["api", "graphql", "-f", `query=${REVIEW_THREADS}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `n=${number}`]);
+      let threads: { pageInfo?: { hasNextPage?: unknown }; nodes?: unknown } | undefined;
       try {
-        checks = JSON.parse(result.stdout);
-        if (!Array.isArray(checks)) throw new Error("not a list");
+        threads = (JSON.parse(out) as { data?: { repository?: { pullRequest?: { reviewThreads?: typeof threads } } } }).data?.repository?.pullRequest?.reviewThreads;
+        if (!Array.isArray(threads?.nodes)) throw new Error("no threads");
       } catch {
-        throw new GithubError(`gh pr checks failed: ${result.stderr.trim() || result.stdout.slice(0, 200) || "unknown error"}`);
+        throw new GithubError(`gh api graphql returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       }
-      return checks.map((c: { name?: unknown; bucket?: unknown; link?: unknown }) => {
-        if (typeof c.name !== "string" || !CHECK_BUCKETS.includes(c.bucket as RequiredCheck["bucket"])) {
-          throw new GithubError(`gh pr checks returned unexpected output: ${JSON.stringify(c).slice(0, 200)}`);
-        }
-        return { name: c.name, bucket: c.bucket as RequiredCheck["bucket"], ...(typeof c.link === "string" && c.link ? { link: c.link } : {}) };
+      if (threads!.pageInfo?.hasNextPage === true) throw new GithubError(`PR #${number} has more than 100 review threads; resolve some on GitHub`);
+      return (threads!.nodes as Record<string, unknown>[]).flatMap((t) => {
+        if (t.isResolved === true || t.isOutdated === true) return [];
+        return [parseThread(t)];
       });
     },
     codeScanningAlerts(number) {
@@ -422,6 +479,29 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       // From a file: the comments can exceed the Windows command-line limit.
       withBodyFile(JSON.stringify(payload), (file) => gh(["api", "-X", "POST", `repos/${repo}/pulls/${number}/reviews`, "--input", file, "--silent"]));
     },
+  };
+}
+
+/** One review thread of GitHub's GraphQL API, checked field by field. */
+function parseThread(t: Record<string, unknown>): ReviewThread {
+  const first = ((t.comments as { nodes?: unknown } | undefined)?.nodes as Record<string, unknown>[] | undefined)?.[0];
+  const author = first?.author as { __typename?: unknown; login?: unknown } | null | undefined;
+  if (typeof t.id !== "string" || !first || typeof first.body !== "string" || typeof first.url !== "string") {
+    throw new GithubError(`gh api graphql returned an unexpected review thread: ${JSON.stringify(t).slice(0, 200)}`);
+  }
+  // GraphQL names an App without the "[bot]" the REST API, the web and `merge.comment_bots` use.
+  // A deleted account has no author; "ghost" is how GitHub shows it.
+  const login = typeof author?.login === "string" && author.login ? author.login : "ghost";
+  const name = author?.__typename === "Bot" && !login.endsWith("[bot]") ? `${login}[bot]` : login;
+  const line = t.line;
+  return {
+    id: t.id,
+    author: name,
+    own: first.viewerDidAuthor === true,
+    ...(typeof t.path === "string" && t.path ? { path: t.path } : {}),
+    ...(typeof line === "number" && Number.isInteger(line) && line > 0 ? { line } : {}),
+    body: first.body,
+    url: first.url,
   };
 }
 

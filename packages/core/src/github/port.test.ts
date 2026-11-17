@@ -125,6 +125,51 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).requiredChecks(42)).toThrow(/unexpected output/);
   });
 
+  it("lists every check on the PR's head with its summary, and none when nothing reported", () => {
+    const listed = [
+      { name: "CodeQL", bucket: "fail", link: "https://github.com/o/r/runs/3", description: " 2 new alerts including 2 high severity " },
+      { name: "lint", bucket: "pass", link: "", description: "" },
+    ];
+    const { calls, run } = fakeGh(JSON.stringify(listed), 1);
+    expect(ghPort(project, run).pullRequestChecks(42)).toEqual([
+      { name: "CodeQL", bucket: "fail", link: "https://github.com/o/r/runs/3", summary: "2 new alerts including 2 high severity" },
+      { name: "lint", bucket: "pass" },
+    ]);
+    expect(calls[0]).toEqual(["pr", "checks", "42", "-R", "o/r", "--json", "name,bucket,link,description"]);
+    const none: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no checks reported on the 'x' branch" });
+    expect(ghPort(project, none).pullRequestChecks(42)).toEqual([]);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).pullRequestChecks(42)).toThrow(/unexpected output/);
+  });
+
+  it("lists the review threads that are neither resolved nor outdated, naming apps as GitHub shows them", () => {
+    const comment = (login: string | null, typename: string, body: string, own = false) => ({
+      nodes: [{ author: login === null ? null : { __typename: typename, login }, body, url: `https://github.com/o/r/pull/42#discussion_r${body.length}`, viewerDidAuthor: own }],
+    });
+    const threads = {
+      pageInfo: { hasNextPage: false },
+      nodes: [
+        { id: "T1", isResolved: false, isOutdated: false, path: "src/a.ts", line: 37, comments: comment("github-advanced-security", "Bot", "Polynomial regular expression") },
+        { id: "T2", isResolved: true, isOutdated: false, path: "src/a.ts", line: 3, comments: comment("bob", "User", "resolved") },
+        { id: "T3", isResolved: false, isOutdated: true, path: "src/a.ts", line: null, comments: comment("bob", "User", "outdated") },
+        { id: "T4", isResolved: false, isOutdated: false, path: "README.md", line: null, comments: comment("factory-bot", "User", "a note", true) },
+        { id: "T5", isResolved: false, isOutdated: false, path: "x.ts", line: 1, comments: comment(null, "User", "gone") },
+      ],
+    };
+    const { calls, run } = fakeGh(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: threads } } } }));
+    expect(ghPort(project, run).unresolvedReviewThreads(42)).toEqual([
+      { id: "T1", author: "github-advanced-security[bot]", own: false, path: "src/a.ts", line: 37, body: "Polynomial regular expression", url: "https://github.com/o/r/pull/42#discussion_r29" },
+      { id: "T4", author: "factory-bot", own: true, path: "README.md", body: "a note", url: "https://github.com/o/r/pull/42#discussion_r6" },
+      { id: "T5", author: "ghost", own: false, path: "x.ts", line: 1, body: "gone", url: "https://github.com/o/r/pull/42#discussion_r4" },
+    ]);
+    expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*reviewThreads.*isOutdated/), "-f", "owner=o", "-f", "name=r", "-F", "n=42"]);
+
+    const more = fakeGh(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { ...threads, pageInfo: { hasNextPage: true } } } } } }));
+    expect(() => ghPort(project, more.run).unresolvedReviewThreads(42)).toThrow(/more than 100 review threads/);
+    expect(() => ghPort(project, fakeGh("{}").run).unresolvedReviewThreads(42)).toThrow(/unexpected output/);
+    const broken = { data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "T9", isResolved: false, isOutdated: false, comments: { nodes: [] } }] } } } } };
+    expect(() => ghPort(project, fakeGh(JSON.stringify(broken)).run).unresolvedReviewThreads(42)).toThrow(/unexpected review thread/);
+  });
+
   it("lists the open code scanning alerts on the PR's head ref, and none for a repo without code scanning", () => {
     const listed = [
       {
