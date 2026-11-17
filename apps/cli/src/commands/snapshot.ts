@@ -36,7 +36,10 @@ export function runExport(cwd: string, file: string | undefined, deps: SnapshotD
       }
       if (unqueued.length > 0) {
         const numbers = unqueued.map((n) => `#${n}`).join(" ");
-        warn(`Exported as not queued, so the other machine does not start ${unqueued.length === 1 ? "it" : "them"} again: ${numbers}, still being worked on here.`);
+        warn(
+          `Exported as not queued, as a run here is still working on ${unqueued.length === 1 ? "it" : "them"}: ${numbers}. ` +
+            "If the other machine already has one queued, unqueue it there; export again once the run here has finished.",
+        );
       }
       const json = `${JSON.stringify(snapshot, null, 2)}\n`;
       if (file === undefined) return json;

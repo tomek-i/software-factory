@@ -96,6 +96,10 @@ describe("exportSnapshot", () => {
     expect(unqueued).toEqual([2]);
     expect(snapshot.issues.find((i) => i.number === 2)).toMatchObject({ queued_at: null, queue_seq: null });
     expect(snapshot.issues.find((i) => i.number === 3)?.queued_at).not.toBeNull();
+    // A closed issue is never queued on import, so a stale queue time on one is not worth a warning.
+    store.db.prepare("UPDATE issues SET queued_at = '2026-01-01T00:00:00.000Z' WHERE project_id = ? AND number = 5").run(project.id);
+    store.createRun({ project_id: project.id, title: "Closed one", issue_number: 5 });
+    expect(exportSnapshot(store, project).unqueued).toEqual([2]);
     expect(snapshot.runs.map((r) => r.id)).toEqual([done.id]);
     expect(snapshot.runs[0]).toMatchObject({ state: "done", branch: "factory/1-fix-it", pr_number: 9, unsafe: false });
     expect(snapshot.run_events.every((e) => e.run_id === done.id)).toBe(true);

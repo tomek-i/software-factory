@@ -200,14 +200,22 @@ describe("Scheduler: starting queued issues", () => {
     laptop.queue(1, 2, 3);
     const done = laptop.store.createRun({ project_id: laptop.row.id, title: "Issue 1", issue_number: 1 });
     laptop.store.writeState(done.id, "done");
-    laptop.store.createRun({ project_id: laptop.row.id, title: "Issue 2", issue_number: 2 }); // still in intake there
+    const going = laptop.store.createRun({ project_id: laptop.row.id, title: "Issue 2", issue_number: 2 }); // still in intake there
     const desktop = project("shop");
-    importSnapshot(desktop.store, desktop.row, JSON.parse(JSON.stringify(exportSnapshot(laptop.store, laptop.row).snapshot)));
+    const carry = () => importSnapshot(desktop.store, desktop.row, JSON.parse(JSON.stringify(exportSnapshot(laptop.store, laptop.row).snapshot)));
+    carry();
     const t = scheduler([desktop]);
 
     t.s.tick();
 
     // #1 finished on the laptop, #2 is still going there: only #3 is left to do.
+    expect(t.issues()).toEqual([3]);
+
+    // Exported again once #2 finished: queued here with its run, so still not started again.
+    laptop.store.writeState(going.id, "done");
+    carry();
+    expect(desktop.store.getIssue(desktop.row.id, 2)?.queued_at).not.toBeNull();
+    t.s.tick();
     expect(t.issues()).toEqual([3]);
   });
 

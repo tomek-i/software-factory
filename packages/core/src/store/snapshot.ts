@@ -82,7 +82,7 @@ export function exportSnapshot(store: Store, project: Project, options: { now?: 
           .all(project.id) as (Omit<SnapshotIssue, "labels" | "created_by_factory"> & { labels: string; created_by_factory: number })[]
       ).map((i) => {
         const issue = { ...i, labels: JSON.parse(i.labels) as string[], created_by_factory: i.created_by_factory === 1 };
-        if (issue.queued_at === null || !busy.has(issue.number)) return issue;
+        if (issue.queued_at === null || issue.state !== "open" || !busy.has(issue.number)) return issue;
         unqueued.push(issue.number);
         return { ...issue, queued_at: null, queue_seq: null };
       }),

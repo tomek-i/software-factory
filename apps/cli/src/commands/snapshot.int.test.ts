@@ -55,7 +55,7 @@ describe("factory export", () => {
 
     expect(warnings).toEqual([
       expect.stringMatching(/^2 active runs not exported: finish or cancel them on this machine first \(/),
-      "Exported as not queued, so the other machine does not start it again: #12, still being worked on here.",
+      "Exported as not queued, as a run here is still working on it: #12. If the other machine already has one queued, unqueue it there; export again once the run here has finished.",
     ]);
     const snapshot = JSON.parse(out) as { issues: { number: number; queued_at: string | null }[] };
     expect(snapshot.issues.find((i) => i.number === 12)?.queued_at).toBeNull();
