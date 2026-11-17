@@ -332,22 +332,31 @@ describe("cleanupFinishedRuns", () => {
 
   it("cleans up runs that finished a while ago, once, with the merged head from the run's events", () => {
     const { root, store, project, run, worktree, remoteHas } = finishedRun("done", { commit: true, push: true });
-    const sweep = (now: Date) => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now });
+    const skipped: [string, string][] = [];
+    const sweep = (now: Date) =>
+      cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now, onSkipped: (id, why) => skipped.push([id, why]) });
     // Just finished: its worker may still be stopping.
     expect(sweep(later(run, 60_000))).toEqual([]);
     expect(existsSync(worktree.path)).toBe(true);
+    expect(skipped).toEqual([[run.id, "finished 60s ago; cleaned up 2 minutes after it finished, or now with --now"]]);
     expect(sweep(later(run, 3 * 60_000))).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}, remote branch ${BRANCH}`]);
     expect(remoteHas()).toBe(false);
     expect(sweep(later(run, 4 * 60_000))).toEqual([]);
+    // Cleaned up: not reported as left alone either.
+    expect(skipped).toHaveLength(1);
   });
 
   it("leaves a run alone while a worker still holds its lease", () => {
     const { root, store, project, run, worktree } = finishedRun("cancelled", { commit: true, push: true });
     const at = later(run, 3 * 60_000);
     expect(store.acquireLease(run.id, "worker", 10 * 60_000)).toBe(true);
-    const sweep = () => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now: at, graceMs: 0 });
+    const skipped: string[] = [];
+    // graceMs 0, as `factory cleanup --now`: a held lease still wins.
+    const sweep = () =>
+      cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now: at, graceMs: 0, onSkipped: (_id, why) => skipped.push(why) });
     expect(sweep()).toEqual([]);
     expect(existsSync(worktree.path)).toBe(true);
+    expect(skipped).toEqual(["a worker still holds it, and cleans it up once it has stopped"]);
     store.releaseLease(run.id, "worker");
     expect(sweep()).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}`]);
   });

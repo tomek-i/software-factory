@@ -303,6 +303,8 @@ export interface SweepOptions {
   graceMs?: number;
   /** Look again at runs kept on purpose, e.g. after their commits were pushed (`factory cleanup`). */
   recheckKept?: boolean;
+  /** Told about each finished run that still has its worktree and that this sweep left alone, and why. */
+  onSkipped?: (runId: string, why: string) => void;
 }
 
 function keptOnPurpose(runDir: string): boolean {
@@ -319,14 +321,23 @@ function keptOnPurpose(runDir: string): boolean {
  */
 export function cleanupFinishedRuns(store: Store, project: Project, options: SweepOptions): string[] {
   const now = options.now ?? new Date();
-  const cutoff = new Date(now.getTime() - (options.graceMs ?? CLEANUP_GRACE_MS)).toISOString();
+  const graceMs = options.graceMs ?? CLEANUP_GRACE_MS;
+  const cutoff = new Date(now.getTime() - graceMs).toISOString();
   const lines: string[] = [];
   for (const target of store.listRuns({ project_id: project.id })) {
-    if (!isTerminal(target.state) || !target.worktree_path || target.updated_at > cutoff) continue;
-    // A worker still holding the run (e.g. stuck in a git call after a cancel) cleans it up itself.
-    if (target.lease_expires_at !== null && target.lease_expires_at > now.toISOString()) continue;
+    if (!isTerminal(target.state) || !target.worktree_path) continue;
     const runDir = options.runDirOf(target.id);
     if (existsSync(join(runDir, CLEANUP_MARKER)) && !(options.recheckKept && keptOnPurpose(runDir))) continue;
+    // A worker still holding the run (e.g. stuck in a git call after a cancel) cleans it up itself.
+    if (target.lease_expires_at !== null && target.lease_expires_at > now.toISOString()) {
+      options.onSkipped?.(target.id, "a worker still holds it, and cleans it up once it has stopped");
+      continue;
+    }
+    if (target.updated_at > cutoff) {
+      const ago = Math.max(0, Math.round((now.getTime() - new Date(target.updated_at).getTime()) / 1000));
+      options.onSkipped?.(target.id, `finished ${ago}s ago; cleaned up ${Math.round(graceMs / 60_000)} minutes after it finished, or now with --now`);
+      continue;
+    }
     const result = cleanupFinishedRun(store, target, { root: project.repo_path, runDir, defaultBranch: options.defaultBranch, run: options.run, dryRun: options.dryRun });
     lines.push(...describeCleanup(target.id, result, options.dryRun));
   }

@@ -318,6 +318,22 @@ export function cancelRun(ctx: ServiceContext, ref: string, reason: string, deps
   return { run: store.getRun(target.id)!, stopped: running.length, media, cleaned, ...(closedPr !== undefined ? { closedPr } : {}) };
 }
 
+/**
+ * Remove a finished run's worktree and branches now, with the usual protections: work that would be
+ * lost is kept, with the reason. Refuses a run that has not finished, or that a worker still holds
+ * (it cleans up itself once it has stopped). Returns its lines.
+ */
+export function cleanupRunNow(ctx: ServiceContext, ref: string, run?: CommandRunner): string[] {
+  const { store, project, config } = ctx;
+  const target = findRun(store, project, ref);
+  if (!isTerminal(target.state)) throw new ServiceError(`Run ${target.id} has not finished (it is ${target.state}); cancel it first.`);
+  if (target.lease_expires_at !== null && target.lease_expires_at > new Date().toISOString()) {
+    throw new ServiceError(`A worker still holds run ${target.id}; it cleans up once it has stopped.`);
+  }
+  const lines = cleanUpNow(store, project, config, target.id, run);
+  return lines.length ? lines : [`${target.id}: nothing left to clean up`];
+}
+
 /** Close the PR of a run whose issue was closed on GitHub, if it is still open; its number when it did. */
 function closeStalePullRequest(ctx: ServiceContext, target: Run, deps: ServiceDeps): number | undefined {
   const { store, project } = ctx;

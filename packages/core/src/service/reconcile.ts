@@ -59,7 +59,12 @@ export function reconcileAndSweep(store: Store, project: Project, config: Factor
  * Remove the worktrees and branches of finished runs that still have them (see cleanupFinishedRuns):
  * runs whose PR was merged by hand, or that finished before cleanup existed. Never throws.
  */
-export function sweepFinishedRuns(store: Store, project: Project, config: FactoryConfig, deps: { run?: CommandRunner; dryRun?: boolean; recheckKept?: boolean }): string[] {
+export function sweepFinishedRuns(
+  store: Store,
+  project: Project,
+  config: FactoryConfig,
+  deps: { run?: CommandRunner; dryRun?: boolean; recheckKept?: boolean; graceMs?: number; onSkipped?: (runId: string, why: string) => void },
+): string[] {
   try {
     return cleanupFinishedRuns(store, project, {
       defaultBranch: config.project.default_branch,
@@ -67,10 +72,35 @@ export function sweepFinishedRuns(store: Store, project: Project, config: Factor
       run: deps.run,
       dryRun: deps.dryRun,
       recheckKept: deps.recheckKept,
+      graceMs: deps.graceMs,
+      onSkipped: deps.onSkipped,
     });
   } catch (err) {
     return [`warning: could not clean up finished runs: ${(err as Error).message.split("\n")[0]}`];
   }
+}
+
+/** What `factory cleanup` and the web app's cleanup did: removed and kept (`lines`), and the runs it left alone. */
+export interface CleanupReport {
+  lines: string[];
+  skipped: { runId: string; why: string }[];
+}
+
+/**
+ * Clean up every finished run that still has its worktree, as the sweep does, and also look again at
+ * runs kept because of unpushed work, in case it has been pushed since. `now` skips the wait after a
+ * run finished; a run a worker still holds is always left to it.
+ */
+export function cleanupRuns(store: Store, project: Project, config: FactoryConfig, options: { run?: CommandRunner; dryRun?: boolean; now?: boolean } = {}): CleanupReport {
+  const skipped: CleanupReport["skipped"] = [];
+  const lines = sweepFinishedRuns(store, project, config, {
+    run: options.run,
+    dryRun: options.dryRun,
+    recheckKept: true,
+    graceMs: options.now ? 0 : undefined,
+    onSkipped: (runId, why) => skipped.push({ runId, why }),
+  });
+  return { lines, skipped };
 }
 
 /** Clean up one run that just finished and that no worker drives. Returns its lines. */
