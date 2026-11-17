@@ -92,8 +92,18 @@ describe("parseGithubRemote", () => {
     ["git@github.com:acme/shop.git", "acme/shop"],
     ["https://github.com/acme/shop", "acme/shop"],
     ["https://gitlab.com/acme/shop.git", undefined],
+    ["ssh://git@github.com/acme/shop.git/", "acme/shop"],
+    ["  git@github.com:acme/shop\n", "acme/shop"],
+    ["https://github.com/acme", undefined],
+    ["https://github.com/acme/shop//", undefined],
   ])("%s -> %s", (url, expected) => {
     expect(parseGithubRemote(url)).toBe(expected);
+  });
+
+  it("parses a long hostile remote quickly", () => {
+    const started = Date.now();
+    expect(parseGithubRemote(`github.com/${"github.com:!".repeat(50_000)}`)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
 
