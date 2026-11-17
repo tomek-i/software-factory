@@ -1,7 +1,7 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { liveLeases, liveWorkers, runCommand, type CommandRunner, type LiveLease, type LiveWorker } from "@factory/core";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { liveLeases, liveWorkers, runCommand, ServiceError, takeUpgradeLock, type CommandRunner, type LiveLease, type LiveWorker } from "@factory/core";
 import { CliError } from "../context.js";
 import { CLI_FILE } from "../self.js";
 
@@ -12,6 +12,14 @@ export const PACKAGE = "@tomek-i/software-factory";
 export const RELEASES_URL = "https://github.com/tomek-i/software-factory/releases";
 
 export type PackageManager = "npm" | "pnpm" | "yarn";
+
+const MANAGERS: PackageManager[] = ["pnpm", "yarn", "npm"];
+
+export interface Installer {
+  manager: PackageManager;
+  /** Its global node_modules folder, where the package lands. */
+  modules: string;
+}
 
 export interface UpgradeDeps {
   /** The version running, as `factory --version` reports it. */
@@ -25,11 +33,13 @@ export interface UpgradeDeps {
   platform?: NodeJS.Platform;
   workers?: () => LiveWorker[];
   leases?: () => LiveLease[];
+  /** Takes the upgrade lock, which keeps workers from starting; returns its release. */
+  lock?: () => () => void;
 }
 
 const VERSION = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 const LOOKUP_TIMEOUT_MS = 60_000;
-const INSTALL_TIMEOUT_MS = 10 * 60_000;
+const FROM_CHECKOUT = "Update it in the checkout instead: `git pull`, then `pnpm build`.";
 
 /**
  * `factory upgrade`: install the latest published version with the package manager that installed
@@ -43,13 +53,9 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
   const bundled = deps.bundled ?? typeof __FACTORY_BUNDLE__ !== "undefined";
 
   // Checking is harmless from anywhere; only installing needs the published package.
-  if (!options.check && !(bundled && installedFromRegistry(cliFile))) {
-    throw new CliError(
-      [
-        "This factory runs from a source checkout (or a global link to one), not the published npm package.",
-        "Update it in the checkout instead: `git pull`, then `pnpm build`.",
-      ].join("\n"),
-    );
+  const installable = bundled && installedFromRegistry(cliFile);
+  if (!options.check && !installable) {
+    throw new CliError(["This factory runs from a source checkout (or a global link to one), not the published npm package.", FROM_CHECKOUT].join("\n"));
   }
 
   const latest = latestVersion(run, platform);
@@ -57,21 +63,64 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
   const available = `${latest} is available (you have ${deps.installed}). Release notes: ${RELEASES_URL}`;
   if (options.check) {
     print(available);
-    return "Install it with `factory upgrade`.";
+    return installable ? "Install it with `factory upgrade`." : `This factory runs from a source checkout. ${FROM_CHECKOUT}`;
   }
 
-  refuseWhileWorking((deps.workers ?? liveWorkers)(), (deps.leases ?? (() => leasesFromChild(run, cliFile)))());
+  const pkgDir = packageDir(cliFile);
+  const installer = detectPackageManager(run, pkgDir, platform);
+  if (!installer) {
+    // Installing with a guess would leave two copies, and the old one might stay first on PATH.
+    throw new CliError(
+      [
+        `Could not tell which package manager installed this factory: no global folder of npm, pnpm or yarn holds ${pkgDir}.`,
+        "Install it by hand with the one that did:",
+        ...(["npm", "pnpm", "yarn"] as const).map((m) => `  ${installHint(m, latest)}`),
+      ].join("\n"),
+    );
+  }
 
-  const manager = detectPackageManager(run, packageDir(cliFile), platform);
-  print(available);
-  print("Note: each project's database is migrated forward when this version first opens it, and an older factory can't read it afterwards.");
-  print(`Installing ${PACKAGE}@${latest} with ${manager}...`);
-  const [cmd, args] = packageManagerCommand(manager, installArgs(manager, latest), platform);
-  const result = run(cmd, args, { cwd: homedir(), timeoutMs: INSTALL_TIMEOUT_MS });
-  if (result.code !== 0) {
-    throw new CliError(`${manager} could not install ${PACKAGE}@${latest}:\n${(result.stderr || result.stdout).trim()}\nInstall it by hand: ${installHint(manager, latest)}`);
+  // Taken before the checks below: a worker that starts after them sees it and refuses.
+  const release = (deps.lock ?? takeLock)();
+  try {
+    refuseWhileWorking((deps.workers ?? liveWorkers)(), (deps.leases ?? (() => leasesFromChild(run, cliFile)))());
+
+    const { manager, modules } = installer;
+    print(available);
+    print("Note: each project's database is migrated forward when this version first opens it, and an older factory can't read it afterwards.");
+    print(`Installing ${PACKAGE}@${latest} with ${manager}...`);
+    const [cmd, args] = packageManagerCommand(manager, installArgs(manager, latest), platform);
+    // Its output goes to the terminal, and it gets no timeout: killing cmd on Windows would leave
+    // the package manager running, halfway through replacing the package.
+    const result = run(cmd, args, { cwd: homedir(), inherit: true });
+    if (result.code !== 0) {
+      throw new CliError(`${manager} could not install ${PACKAGE}@${latest} (exit code ${result.code}; its output is above).\nInstall it by hand: ${installHint(manager, latest)}`);
+    }
+    const now = installedVersion(modules);
+    if (now !== latest) {
+      throw new CliError(`${manager} finished, but ${join(modules, PACKAGE)} holds ${now === undefined ? "no readable package" : `version ${now}`} rather than ${latest}.\nInstall it by hand: ${installHint(manager, latest)}`);
+    }
+  } finally {
+    release();
   }
   return `Upgraded factory to ${latest}.`;
+}
+
+function takeLock(): () => void {
+  try {
+    return takeUpgradeLock();
+  } catch (err) {
+    throw err instanceof ServiceError ? new CliError(err.message) : err;
+  }
+}
+
+/** The version of the package in a global node_modules folder, or undefined when it can't be read. */
+function installedVersion(modules: string): string | undefined {
+  try {
+    const version = (JSON.parse(readFileSync(join(modules, PACKAGE, "package.json"), "utf8")) as { version?: unknown }).version;
+    return typeof version === "string" ? version : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The hidden `factory upgrade --list-leases`: the live leases as JSON, for leasesFromChild. */
@@ -122,24 +171,20 @@ export function compareVersions(a: string, b: string): number {
 
 /**
  * The package manager whose global folder holds the running package: the one to install the new
- * version with, or there would be two copies and the old one might stay first on PATH. npm when
- * none claims it.
+ * version with. Undefined when none does.
  */
-export function detectPackageManager(run: CommandRunner, pkgDir: string, platform: NodeJS.Platform = process.platform): PackageManager {
-  const roots: [PackageManager, string[]][] = [
-    ["pnpm", ["root", "-g"]],
-    ["yarn", ["global", "dir"]],
-    ["npm", ["root", "-g"]],
-  ];
-  for (const [manager, args] of roots) {
-    const [cmd, fullArgs] = packageManagerCommand(manager, args, platform);
-    const result = run(cmd, fullArgs, { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS });
+export function detectPackageManager(run: CommandRunner, pkgDir: string, platform: NodeJS.Platform = process.platform): Installer | undefined {
+  for (const manager of MANAGERS) {
+    const [cmd, args] = packageManagerCommand(manager, manager === "yarn" ? ["global", "dir"] : ["root", "-g"], platform);
+    const result = run(cmd, args, { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS });
     const root = result.stdout.trim().split(/\r?\n/).pop()?.trim();
     // Not installed, or no global folder yet.
     if (result.code !== 0 || !root) continue;
-    if (inside(canonical(root, platform), canonical(pkgDir, platform))) return manager;
+    // yarn names its global folder; the packages are in its node_modules.
+    const modules = manager === "yarn" ? join(root, "node_modules") : root;
+    if (inside(canonical(modules, platform), canonical(pkgDir, platform))) return { manager, modules };
   }
-  return "npm";
+  return undefined;
 }
 
 /**
@@ -180,7 +225,7 @@ function installedFromRegistry(cliFile: string): boolean {
 }
 
 function refuseWhileWorking(workers: LiveWorker[], leases: LiveLease[]): void {
-  const why = "Windows can't replace files a running factory has open, and swapping the engine under a run could break it.";
+  const why = "Windows can't replace files a running factory has open, and swapping the engine under a run could break it.\nThis checks only for workers and runs being driven: close other factory commands (such as `factory logs -f`) yourself.";
   if (workers.length > 0) {
     throw new CliError(
       [
@@ -212,7 +257,9 @@ function leasesFromChild(run: CommandRunner, cliFile: string): LiveLease[] {
   const result = run(process.execPath, [cliFile, "upgrade", "--list-leases"], { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS });
   try {
     if (result.code !== 0) throw new Error(result.stderr.trim() || `exit code ${result.code}`);
-    return JSON.parse(result.stdout) as LiveLease[];
+    const leases: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(leases)) throw new Error(`expected a list of runs, got: ${result.stdout.slice(0, 200)}`);
+    return leases as LiveLease[];
   } catch (err) {
     throw new CliError(`Could not check for runs in progress: ${(err as Error).message}`);
   }
