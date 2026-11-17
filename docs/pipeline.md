@@ -328,6 +328,7 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
 - If branch protection requires status checks, the stage waits for them before the merge gate (`gh pr checks --required`), looking every 30 seconds.
 - It reads them again right before the merge, on the same commit, so a check re-run or a commit pushed while the gate was decided is still caught.
 - A failed check, or one still running after `merge.checks_timeout_min` (default 30), stops for you with the check's name and link.
+- What to do about a failed check: [When a required check fails](runs.md#when-a-required-check-fails).
 - Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required.
 - That is because GitHub reports a new commit's checks only once CI picks it up.
 - `factory run` prints that it is waiting and for which checks.

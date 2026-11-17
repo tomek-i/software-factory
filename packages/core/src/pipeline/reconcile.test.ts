@@ -32,6 +32,8 @@ function setup(prs: Record<number, Omit<PullRequestState, "number"> | Error>, re
     markReady: () => undefined,
     mergePullRequest: () => undefined,
     requiredChecks: () => [],
+    codeScanningAlerts: () => [],
+    dismissCodeScanningAlert: () => undefined,
     pullRequestState: (number) => {
       asked.push(number);
       const pr = prs[number];

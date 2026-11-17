@@ -7,6 +7,7 @@ import {
   approveRun,
   cancelRun,
   continuation,
+  dismissAlert,
   ensureQueued,
   GithubError,
   reconcileAndSweep,
@@ -17,9 +18,13 @@ import {
   resumeTargets,
   runCost,
   runFile,
+  runChecks,
   runOverview,
+  sendBackTargets,
   ServiceError,
   syncIssues,
+  waitingOn,
+  type CodeScanningAlert,
   type CommandRunner,
   type GithubPort,
   type IssueWriterPort,
@@ -28,6 +33,7 @@ import {
   type ProjectContext,
   type Run,
   type SchedulerStatus,
+  type WaitingFailure,
 } from "@factory/core";
 import { isTerminal, isTrustedIssue } from "@factory/shared";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -82,8 +88,22 @@ export interface RunRow {
   updatedAt: string;
   /** Why it is where it is: the reason of its last move. */
   reason?: string;
-  /** Where a run parked for a human can be sent. */
+  /**
+   * Where a run parked for a human can be sent. At a gate only the working stages before it:
+   * approving, rejecting and cancelling have their own actions.
+   */
   resumeTargets: Run["state"][];
+  /** The loop cap that stopped it, e.g. "review round cap reached (3)": resumed without fresh loops, it stops again at once. */
+  capReached?: string;
+  /** What it waits on that the builder could fix, with the details known. */
+  failure?: WaitingFailure;
+}
+
+/** The required checks that failed on a run's PR, for the page that lets a human act on them. */
+export interface RunChecksView {
+  pr: number;
+  failed: { name: string; link?: string; alerts: CodeScanningAlert[] }[];
+  otherAlerts: CodeScanningAlert[];
 }
 
 /** One run in full, for its detail view: no absolute local path in it. */
@@ -139,8 +159,17 @@ function expectShown(run: Run, body: unknown): void {
   }
 }
 
+function flag(body: unknown, field: string): boolean {
+  const value = (body as Record<string, unknown> | null | undefined)?.[field];
+  if (value === undefined || value === null) return false;
+  if (typeof value !== "boolean") throw new BadRequest(`${field} must be true or false.`);
+  return value;
+}
+
 function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow {
   const events = ctx.store.listEvents(run.id);
+  const waiting = waitingOn(ctx.store, ctx.project, run);
+  const redact = redactorOf(ctx, run);
   return {
     project: key,
     projectName: ctx.project.name,
@@ -156,7 +185,21 @@ function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow 
     held: run.lease_expires_at !== null && run.lease_expires_at > now,
     updatedAt: run.updated_at,
     reason: events.at(-1)?.reason,
-    resumeTargets: run.state === "needs_human" ? resumeTargets(run) : [],
+    resumeTargets: run.state !== "needs_human" ? [] : run.waiting_gate ? sendBackTargets(run) : resumeTargets(run),
+    ...(waiting.capReached ? { capReached: waiting.capReached } : {}),
+    ...(waiting.failure ? { failure: redactFailure(waiting.failure, redact) } : {}),
+  };
+}
+
+function redactFailure(failure: WaitingFailure, redact: (text: string) => string): WaitingFailure {
+  return {
+    ...failure,
+    items: failure.items.map((item) => ({
+      ...item,
+      name: redact(item.name),
+      ...(item.summary === undefined ? {} : { summary: redact(item.summary) }),
+      ...(item.file === undefined ? {} : { file: redact(item.file) }),
+    })),
   };
 }
 
@@ -340,6 +383,14 @@ export function createServer(options: ServerOptions): FastifyInstance {
     };
   });
 
+  // Asks GitHub, so only when a person opens the run's failed checks.
+  app.get<RunParams>("/api/projects/:key/runs/:id/checks", async (req): Promise<RunChecksView> => {
+    const ctx = projects.byKey(req.params.key);
+    const run = runOf(ctx, req.params.id);
+    const checks = runChecks(ctx, run.id, { run: options.run, github: options.github?.(ctx.project) });
+    return { pr: checks.pr, failed: checks.failed, otherAlerts: checks.otherAlerts };
+  });
+
   // The file's path may hold `/` (`round-1/checks.md`); resolveInRunDir alone decides what is inside the run folder.
   app.get<{ Params: { key: string; id: string; "*": string } }>("/api/projects/:key/runs/:id/files/*", async (req) => {
     const ctx = projects.byKey(req.params.key);
@@ -371,8 +422,23 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return { run: rejected.run, gate: rejected.gate, media: rejected.media, cleaned: rejected.cleaned };
   });
   runAction("resume", (ctx, run, body) => {
-    const resumed = resumeRun(ctx, run.id, { to: text(body, "to") ?? "", message: text(body, "message") ?? "" }, options.run);
+    const resumed = resumeRun(ctx, run.id, { to: text(body, "to") ?? "", message: text(body, "message") ?? "", resetLoops: flag(body, "resetLoops") }, options.run);
     return { run: resumed.run, to: resumed.to, continuation: continuation(ctx.store, ctx.project, resumed.run, resumed.to) };
+  });
+  // A human's decision about a false positive; GitHub may then pass the check, and the run goes back to merge.
+  runAction("dismiss", (ctx, run, body) => {
+    const alert = (body as Record<string, unknown> | null)?.alert;
+    if (typeof alert !== "number" || !Number.isInteger(alert) || alert <= 0) throw new BadRequest("alert must be an alert number.");
+    const deps = { run: options.run, github: options.github?.(ctx.project) };
+    const dismissed = dismissAlert(ctx, run.id, { alert, reason: text(body, "reason") ?? "", comment: text(body, "comment") ?? "" }, deps);
+    return {
+      run: dismissed.run,
+      alert: dismissed.alert,
+      check: dismissed.check,
+      failing: dismissed.failing,
+      continued: dismissed.continued,
+      ...(dismissed.continued ? { continuation: continuation(ctx.store, ctx.project, dismissed.run, "merge") } : {}),
+    };
   });
   runAction("cancel", (ctx, run, body) => {
     const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", options.run);

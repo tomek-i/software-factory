@@ -27,6 +27,11 @@ Back to the [README](../README.md#running-an-issue) for the commands; the stages
 - So a local edit cannot change where an approved run goes.
 - `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would.
 - With `--no-run` they only record the decision.
+- `factory resume` works on any run waiting for you, at a gate too.
+  - It goes back to any stage up to where the run waits, or one step onward from there.
+  - At a gate, sending it back to build with `-m "what to fix"` is the alternative to approving or rejecting it.
+  - `--reset-loops` gives the build, review and spec loops a fresh budget.
+  - Use it when a loop cap stopped the run: without it, the run stops again at once.
 
 ## Naming a run
 
@@ -135,6 +140,25 @@ Stopping:
 - Run `factory run` again after the reset and it continues the same agent session.
 - A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
 - What the run left behind is described in [Run artifacts](run-artifacts.md).
+
+## When a required check fails
+
+- The merge stage stops for you when a check branch protection requires fails on the PR.
+- `factory checks <run>` lists the failed checks, and for code scanning checks (CodeQL or another SARIF tool) their open alerts on the PR's head: rule, severity, file and line, link.
+- A check counts as code scanning when the PR has open alerts from a tool of the check's name.
+- **A real problem**: send the run to the builder, e.g. `factory resume <run> --to build --reset-loops -m "CodeQL: Missing rate limiting at src/drafts.ts:296"`.
+- **A false positive**: `factory dismiss <run> <alert> --reason false-positive -m "why"`.
+  - The reasons are GitHub's: `false-positive`, `wont-fix` or `used-in-tests`.
+  - The message is required; GitHub takes at most 280 characters.
+  - Only an open alert of a failed required check on the run's own PR can be dismissed.
+  - It is your decision, recorded on the run; agents never dismiss alerts.
+  - GitHub then updates the check in place, without a new CI run.
+  - When no required check fails any more, the run goes back to merge, which checks everything again on the same commit.
+  - A merge approval you already gave still holds, since the commit did not change; without one, the merge gate decides as usual.
+  - While a check still fails (other alerts are open, or GitHub has not updated it yet), the run keeps waiting.
+  - Dismissing needs a `gh` login whose token may write code scanning alerts (the `security_events` scope, or Code scanning alerts: write).
+- **Any other failed required check** can't be accepted from the factory: branch protection would refuse the merge anyway.
+  - Only the builder path is offered for it.
 
 ## What steers the agents
 

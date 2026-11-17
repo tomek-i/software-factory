@@ -125,6 +125,8 @@ describe("issue commands", () => {
     markReady: () => undefined,
     mergePullRequest: () => undefined,
     requiredChecks: () => [],
+      codeScanningAlerts: () => [],
+      dismissCodeScanningAlert: () => undefined,
       pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
     };
 
