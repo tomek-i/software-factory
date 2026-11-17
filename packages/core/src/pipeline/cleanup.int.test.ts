@@ -60,6 +60,20 @@ describe("cleanupRun", () => {
     expect(existsSync(join(runDir, CLEANUP_PENDING))).toBe(false);
   });
 
+  it("does not try to delete a local branch that was deleted by hand", () => {
+    const { run, worktree, options, remoteHas } = finishedRun("done", { commit: true, push: true });
+    git(worktree.path, "checkout", "--quiet", "--detach");
+    git(options.root, "branch", "-D", BRANCH);
+    const calls: string[][] = [];
+    const recording: CommandRunner = (cmd, args, opts) => (calls.push(args), runCommand(cmd, args, opts));
+
+    const result = cleanupRun(run, { ...options, run: recording });
+
+    expect(result).toEqual({ removed: ["worktree", `remote branch ${BRANCH}`], warnings: [] });
+    expect(calls.filter((a) => a[0] === "branch")).toEqual([]);
+    expect(remoteHas()).toBe(false);
+  });
+
   it("leaves the remote alone when GitHub already deleted the merged branch", () => {
     const { root, run, options, localHas } = finishedRun("done", { commit: true, push: true });
     git(root, "push", "--quiet", "origin", "--delete", BRANCH);

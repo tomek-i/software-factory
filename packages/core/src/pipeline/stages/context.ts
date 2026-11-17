@@ -86,6 +86,9 @@ export class StageContext {
    * Called by the driver before each step. A step may reuse what it worked out (a file on the
    * default branch, where a commit left it); the next step asks again, so it sees what a fetch or
    * a new commit changed meanwhile.
+   * Today no stage reads a file from the default branch before a fetch of it in the same step (the
+   * merge stage's re-sync, a new worktree, capture's before shots). A stage that comes to do so
+   * would get the file as it was before the fetch: call `startStep` again after such a fetch.
    */
   startStep(): void {
     this.stepMemo.clear();
@@ -97,7 +100,11 @@ export class StageContext {
     return this.stepMemo.get(key) as T;
   }
 
-  /** Where `head` left the default branch (`freshBase`), once per step and commit. */
+  /**
+   * Where `head` left the default branch (`freshBase`), once per step and commit. In the review step
+   * the reviewers' turns run between the first use and the hard rules': they have no shell, the
+   * base lives in the engine's memory, and the hard rules then judge the same change the reviewers saw.
+   */
   freshBase(worktree: Worktree, head: string): string {
     return this.once(`base|${worktree.path}|${head}`, () => freshBase(worktree.path, this.defaultBranch, head, this.exec));
   }

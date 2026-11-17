@@ -20,7 +20,9 @@ export async function build(ctx: StageContext, run: Run): Promise<StepResult> {
   const files = writeRoleFiles(dir, "builder", rolePrompt("builder", ctx.deps.read), permissionProfile("builder", { runDirFromCwd: relative(worktree.path, dir) }));
   const session = ctx.deps.store.latestSession(run.id, "builder");
   // The facts the last hand-over was checked against. Only the push runs between that check and the
-  // move, and it changes none of them, so the guard reuses them.
+  // move, and it changes none of them, so the guard reuses them. A commit made meanwhile still shows,
+  // as the remote then differs from that HEAD; a tree dirtied meanwhile (something the builder left
+  // running) shows at the gate, which reads the worktree afresh.
   let handedOver: GitEvidence | undefined;
 
   const prompt = session
