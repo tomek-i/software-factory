@@ -1,11 +1,13 @@
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
   approveRun,
   cancelRun,
+  cleanupRunNow,
+  cleanupRuns,
   continuation,
   dismissAlert,
   ensureQueued,
@@ -124,6 +126,8 @@ export interface RunDetail {
   /** Every file in the run folder, sorted, `/`-separated. */
   files: string[];
   sections: OverviewSection[];
+  /** A finished run's worktree (relative to the repo) and branch that cleanup has not removed, and why it kept them. */
+  leftover?: { worktree: string; branch: string; kept?: string };
 }
 
 const WAITING: Run["state"][] = ["needs_human", "needs_info"];
@@ -391,6 +395,15 @@ export function createServer(options: ServerOptions): FastifyInstance {
       hasRunDir: overview.hasRunDir,
       files: overview.files,
       sections: overview.sections.map((s) => redactSection(s, redact)),
+      ...(overview.leftover
+        ? {
+            leftover: {
+              worktree: relative(ctx.project.repo_path, overview.leftover.worktree).split("\\").join("/"),
+              branch: overview.leftover.branch,
+              ...(overview.leftover.kept ? { kept: redact(overview.leftover.kept) } : {}),
+            },
+          }
+        : {}),
     };
   });
 
@@ -463,6 +476,19 @@ export function createServer(options: ServerOptions): FastifyInstance {
   runAction("cancel", (ctx, run, body) => {
     const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", { run: options.run, github: options.github?.(ctx.project) });
     return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned, ...(cancelled.closedPr !== undefined ? { closedPr: cancelled.closedPr } : {}) };
+  });
+
+  // The same protections as the automatic cleanup: work that would be lost is kept, with the reason.
+  runAction("cleanup", (ctx, run) => ({ lines: cleanupRunNow(ctx, run.id, options.run).map(redactorOf(ctx, run)) }));
+
+  // `factory cleanup` for one project: what it removed and kept, and the runs it left alone.
+  app.post<{ Params: { key: string }; Body: unknown }>("/api/projects/:key/cleanup", async (req) => {
+    const ctx = projects.byKey(req.params.key);
+    const { store, project, config } = ctx;
+    const report = cleanupRuns(store, project, config, { run: options.run, now: flag(req.body, "now") });
+    changed(req.params.key);
+    const redact = (text: string) => redactPaths(text, { home: homedir(), roots: [project.repo_path] });
+    return { lines: report.lines.map(redact), skipped: report.skipped.map((s) => ({ runId: s.runId, why: redact(s.why) })) };
   });
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });

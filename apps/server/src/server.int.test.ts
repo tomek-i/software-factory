@@ -581,6 +581,39 @@ describe("runs", () => {
     });
   });
 
+  describe("cleanup", () => {
+    /** A run that just finished, its worktree and branch not cleaned up yet. No git runs on these paths. */
+    function finished() {
+      const ctx = memoryProject();
+      const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Done run", issue_number: 12 });
+      ctx.store.updateRunFields(run.id, { worktree_path: join(ctx.root, ".worktrees", run.id), branch: "factory/12-done" });
+      ctx.store.writeState(run.id, "cancelled");
+      const { app } = server([ctx]);
+      return { ctx, run, app, key: projectKey(ctx.root), base: `/api/projects/${projectKey(ctx.root)}/runs/${run.id}` };
+    }
+
+    it("shows a finished run's leftover worktree, relative to the repo, and its branch", async () => {
+      const { run, app, base } = finished();
+      expect((await call(app, "GET", base)).json().leftover).toEqual({ worktree: `.worktrees/${run.id}`, branch: "factory/12-done" });
+    });
+
+    it("cleans up one run only once it has finished and no worker holds it", async () => {
+      const { ctx, run, app, base } = finished();
+      ctx.store.acquireLease(run.id, "worker", 60_000);
+      const held = await call(app, "POST", `${base}/cleanup`, { state: "cancelled" });
+      expect(held.statusCode).toBe(400);
+      expect(held.json()).toEqual({ error: `A worker still holds run ${run.id}; it cleans up once it has stopped.` });
+      // Shown in another state than it is in now: refused before anything runs.
+      expect((await call(app, "POST", `${base}/cleanup`, { state: "review" })).statusCode).toBe(409);
+    });
+
+    it("cleans up the project's finished runs and lists the ones it left alone", async () => {
+      const { run, app, key } = finished();
+      const res = await call(app, "POST", `/api/projects/${key}/cleanup`, {});
+      expect(res.json()).toEqual({ lines: [], skipped: [{ runId: run.id, why: expect.stringMatching(/^finished \d+s ago; cleaned up 2 minutes after it finished, or now with --now$/) }] });
+    });
+  });
+
   describe("merge gate", () => {
     const REVIEW_PASS = "VERDICT: PASS\n\n## Findings\n```json\n[{ \"id\": \"c-1\", \"severity\": \"nit\", \"claim\": \"rename x\", \"evidence\": \"e\" }]\n```\n";
     const CHECKS = `GATE: PASS\nCOMMIT: ${"a".repeat(40)}\n`;
