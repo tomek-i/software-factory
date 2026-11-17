@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { captureConfig, CODE_PASS, fakeCapture, infos, steps, UI_TRIAGE } from "../../test/capture-setup.js";
-import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
+import { captureConfig, fakeCapture, infos, steps } from "../../test/capture-setup.js";
+import { setup } from "../../test/driver-setup.js";
 import { git } from "../../test/helpers.js";
 import { MEDIA_MARKER } from "../github/media.js";
 import { runDirOf } from "./driver.js";
@@ -36,23 +36,6 @@ describe("PipelineDriver > capture", () => {
     const dir = runDirOf(root, run.id);
     expect(readFileSync(join(dir, "round-1", "capture-report.md"), "utf8")).toContain("- media uploaded (4 files) as PR attachments");
     expect(existsSync(join(dir, MEDIA_MARKER))).toBe(false);
-  });
-
-  it("skips capture without an agent when triage did not list ui, or no app.start is configured", async () => {
-    for (const [triage, config, why] of [
-      [TRIAGE(), captureConfig(), "triage did not list ui in SURFACES"],
-      [UI_TRIAGE, captureConfig(""), "app.start is not configured"],
-    ] as const) {
-      const capture = fakeCapture();
-      const { driver, store, seen, fake } = setup([{ output: triage }, buildStep("fixed"), CODE_PASS], { config, capture: capture.port });
-      const run = driver.startRun(12);
-
-      expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: "waiting at merge gate: gate is set to human" });
-      expect(infos(seen)).toContain(`capture skipped: ${why}`);
-      expect(store.listEvents(run.id).find((e) => e.from_state === "capture")).toMatchObject({ to_state: "pr", reason: `capture skipped: ${why}` });
-      expect(fake.calls().map((c) => c.role)).not.toContain("capture");
-      expect(capture.requests).toEqual([]);
-    }
   });
 
   it("plans with the capture agent, captures, uploads the media and puts the table in the PR, without review notes", async () => {

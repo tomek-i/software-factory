@@ -1,45 +1,29 @@
-import { factoryConfigSchema, parseVerdict, type GateMode } from "@factory/shared";
+import { parseVerdict, type GateMode } from "@factory/shared";
 import { describe, expect, it, vi } from "vitest";
 import { learned, LESSON } from "../../../test/driver-setup.js";
-import { tempDir } from "../../../test/helpers.js";
+import { stageSetup } from "../../../test/stage-setup.js";
 import type { AgentRunResult } from "../../agents/runner.js";
 import type { TurnResult } from "../../agents/turn.js";
-import type { CapturePort } from "../../capture/capture.js";
-import type { GithubPort } from "../../github/port.js";
-import { Store, type Run } from "../../store/store.js";
-import { StageContext, type DriverDeps } from "./context.js";
+import type { Run } from "../../store/store.js";
 import { learn } from "./learn.js";
 
 /**
- * The learn stage over an in-memory store and a temp run folder, with the learner's turn handed in:
- * no git, no agent process. The run's history is written with the same calls the pipeline makes
- * (waitForHuman, RunMachine.resume), so it has the shapes a real run leaves. Driving a whole run to
- * learn is covered by driver.learn*.int.test.ts.
+ * The learn stage with the learner's turn handed in. The run's history is written with the same
+ * calls the pipeline makes (waitForHuman, RunMachine.resume), so it has the shapes a real run
+ * leaves. Driving a whole run to learn is covered by driver.learn*.int.test.ts.
  */
 function learning(options: { merge?: GateMode; round?: number } = {}) {
-  const store = new Store(":memory:");
-  const project = store.upsertProject({ name: "demo", repo_path: tempDir(), github_repo: "o/r" });
-  store.upsertIssue(project.id, { number: 12, title: "Add the feature", body: "", state: "open", author: "alice", labels: [], url: "u", gh_updated_at: "2026-01-01T00:00:00Z" });
-  const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["alice"] }, gates: { merge: options.merge ?? "always" } });
-  const deps = { store, project, config, read: () => undefined, github: {} as GithubPort, capture: {} as CapturePort, owner: "test" } as unknown as DriverDeps;
-  const ctx = new StageContext(deps, () => undefined);
-  const run = store.createRun({ project_id: project.id, title: "Add the feature", issue_number: 12 });
-  // The driver holds the run's lease while a stage moves it.
-  store.acquireLease(run.id, "test", 60_000);
-  const at = (state: Run["state"]) => store.writeState(run.id, state, { round: options.round ?? 1 });
-  const current = () => store.getRun(run.id)!;
+  const { store, ctx, run, at, lastMove } = stageSetup({ gates: { merge: options.merge ?? "always" } });
   /** The run stops at `gate` with `reasons` (as the pipeline's gates do), and a human sends it on to `to`. */
   const humanAt = (from: Run["state"], gate: "review" | "merge", reasons: string[], to: Run["state"], comment: string) => {
-    at(from);
-    ctx.waitForHuman(current(), gate, reasons);
+    ctx.waitForHuman(at(from, options.round), gate, reasons);
     // The driver lets go of a parked run; the human's resume comes from outside it.
     store.releaseLease(run.id, "test");
     ctx.machine.resume(run.id, to, { comment });
     store.acquireLease(run.id, "test", 60_000);
   };
-  const toLearn = () => (at("learn"), current());
-  const lastMove = () => store.listEvents(run.id).at(-1)!;
-  return { store, ctx, run, at, humanAt, toLearn, lastMove };
+  const toLearn = () => at("learn", options.round);
+  return { store, ctx, run, humanAt, toLearn, lastMove };
 }
 
 const agent: AgentRunResult = { agentRunId: "a1", sessionId: "s1", outcome: { kind: "ok" }, exitCode: 0, logPath: "x.jsonl", resultText: "" };
