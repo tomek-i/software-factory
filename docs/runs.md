@@ -85,6 +85,7 @@ Stopping:
 - `factory stop` works through a `stop.json` in the factory's data folder, so it reaches workers in other terminals.
 - A worker obeys only a request made after it started.
 - Ctrl+C in the worker's terminal interrupts its runs like `factory stop --now` and exits.
+- A running worker keeps a file in `workers/` in the same folder, so `factory upgrade` knows not to replace the factory under it.
 
 ## Merging or closing on GitHub
 

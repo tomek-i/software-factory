@@ -150,7 +150,14 @@ npm i -g @tomek-i/software-factory   # puts `factory` on your PATH
 factory init
 ```
 
-- **Update** with `npm i -g @tomek-i/software-factory@latest`; **remove** with `npm rm -g @tomek-i/software-factory`.
+- **Update** with `factory upgrade`; `factory upgrade --check` only says whether a newer version is out.
+  - It installs with the package manager that installed the factory (npm, pnpm or yarn).
+  - It refuses while `factory work`, `factory serve` or a run is going on.
+    Windows can't replace files a running factory has open, and the engine must not change under a run.
+  - It refuses a copy built from a checkout: update that with `git pull` and `pnpm build`.
+  - Each project's database is migrated forward when the new version first opens it, so an older factory can't read it afterwards.
+  - By hand: `npm i -g @tomek-i/software-factory@latest`.
+- **Remove** with `npm rm -g @tomek-i/software-factory`.
 - **With pnpm:** `pnpm add -g @tomek-i/software-factory`.
   - It needs pnpm's global bin folder on your `PATH` (run `pnpm setup` once if it complains).
   - If pnpm reports that it skipped `better-sqlite3`'s build script, run `pnpm approve-builds -g` and approve it.
@@ -395,7 +402,7 @@ It runs from the **published npm package**, never from the code its runs change.
   - A run stops for you only on an escalation (a hard rule, an untrusted author, a loop cap) and at the merge gate.
   - The first run had every gate on `human`.
   - Note that on `human` the spec critic runs no agent; the gate only asks you to accept the spec triage already showed you.
-- **Update** with `npm i -g @tomek-i/software-factory@latest` after a release, when no run is in progress.
+- **Update** with `factory upgrade` after a release; it refuses while a run is in progress.
 - **Unreleased `main`:** to run code that is merged but not released yet, build a clone outside every repository and link it instead (PowerShell):
 
   ```powershell
