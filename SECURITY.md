@@ -20,6 +20,7 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - Only authors in `trust.authors` (and issues the factory wrote from your own idea) are treated as the spec.
 - Anyone else's issue or comment is handled as untrusted data. A run on it always waits for you before anything is built, and the spec reaches the builder marked as untrusted.
 - The factory only works on issues you start (`factory run`). Opening an issue does not start a run.
+- Review comments on a run's PR are untrusted data too. With `merge.open_feedback: fix` only threads by trusted authors and the apps in `merge.comment_bots` go to the builder without you; anyone else's always wait for you. Comments reach the builder framed as data ([Open review threads and failed checks](docs/pipeline.md#open-review-threads-and-failed-checks)).
 
 **What agents can do:**
 - Each role runs with its own permission allowlist (`--permission-mode dontAsk`). Most roles have no shell and can write only their own files in the run's folder.
@@ -31,9 +32,16 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - Config, prompts, checks, the trust list, lessons and the `CLAUDE.md` given to agents are read from the default branch on GitHub, never from the run's own branch.
 - Your checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN`, and a secret scan runs on every checked commit.
 
+**What an imported snapshot cannot do** ([Moving between machines](docs/moving-between-machines.md)):
+- Make an issue trusted: a "the factory opened it" mark from the file counts only once GitHub says the factory's own gh login opened the issue.
+- Supply an issue's text, author or link: an issue new to the database is filled in from GitHub, and fetched before a run uses it.
+- Send escapes to your terminal: `factory import` shows control characters from the file as `[U+001B]`, in `--dry-run` too.
+- `factory export` writes the file readable by you only, also when it overwrites one.
+
 **What always stops for you:**
 - Hard rules: protected paths, new dependencies or new dependency sources, any lockfile change, package-source config, `.env`, key and certificate files, and deletions the issue does not name. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
 - The merge gate, by default. The factory merges only the exact commit that passed the gate (`gh pr merge --match-head-commit`).
+- Unresolved review threads and failed checks on the PR, read again right before the merge, by default (`merge.open_feedback: ask`).
 
 **The web app** (`factory serve`):
 - It listens on 127.0.0.1 only, and refuses a request whose `Host` isn't its own address, so a web page can't reach it through DNS rebinding.

@@ -63,7 +63,8 @@ flowchart TD
     capture --> pr["PR"]
     pr --> resync["Re-sync"]
     resync -->|"conflict or failed re-check"| build
-    resync --> mergegate["Merge gate"]
+    resync --> checks["Required checks"]
+    checks --> mergegate["Merge gate"]
     mergegate --> merge["Merge"]
     merge --> learn["Learn"]
     learn --> done(["Done: merged"])
@@ -72,7 +73,7 @@ flowchart TD
     critic -->|"questions"| ask
     ask -->|"author answers"| triage
 
-    writer & triage & critic & gate & reviews & pr & mergegate -.-> you{{"Waits for you"}}
+    writer & triage & critic & gate & reviews & pr & checks & mergegate -.-> you{{"Waits for you"}}
     you -->|"factory reject"| rejected(["Rejected"])
     you -->|"factory cancel"| cancelled(["Cancelled"])
     triage -->|"REJECT"| rejected
@@ -87,14 +88,16 @@ flowchart TD
 Triage reads the issue, refine fills in what it leaves open, and a spec critic checks the spec against the code.
 A builder then works in its own worktree, and the quality gate runs your checks on its commit.
 Reviewers look at the change through several lenses at once, and a verifier checks the findings they raise.
-Capture shows a UI change in the PR, re-sync merges the default branch in, and the merge gate decides.
+One lens checks the issue's acceptance criteria one by one; the met ones are ticked on the issue once the PR is merged.
+Capture shows a UI change in the PR, re-sync merges the default branch in, the PR's required checks must pass, and then the merge gate decides.
+Unresolved review threads and failed checks that are not required stop the merge too, unless `merge.open_feedback` says otherwise.
 After the merge, a learner proposes lessons.
 Each stage is described in [docs/pipeline.md](docs/pipeline.md).
 
 Yellow hexagons are where the run stops for a person.
 Dotted lines show where it can wait for you: a gate in `human` mode, a hard-rule hit, a loop cap or a stall.
 
-- **Stages**: issue writer (only for `factory new`), triage, refine (only for an INCOMPLETE issue), spec critic, build, quality gate, parallel reviews, verifier, capture, PR, re-sync, merge gate, merge, learn.
+- **Stages**: issue writer (only for `factory new`), triage, refine (only for an INCOMPLETE issue), spec critic, build, quality gate, parallel reviews, verifier, capture, PR, re-sync, required checks, merge gate, merge, learn.
 - **Gates**: `issue_writer`, `triage`, `critic`, `review`, `pr` and `merge`. Each has a mode:
   - `always`: pass through.
   - `auto`: the agent decides, or escalates with reasons.
@@ -105,7 +108,8 @@ Dotted lines show where it can wait for you: a gate in `human` mode, a hard-rule
   - critic REVISE → refine, up to `loops.max_critic_rounds` (default 2);
   - failed checks → build, up to `loops.max_build_iterations` (default 5);
   - confirmed review findings → build, up to `loops.max_review_rounds` (default 3);
-  - re-sync conflict or failed re-check → build, which costs a review round.
+  - re-sync conflict or failed re-check → build, up to `loops.max_resyncs` (default 3), counted apart from review rounds;
+  - open review threads or failed optional checks with `merge.open_feedback: fix` → build, counted in the same re-sync rounds.
 - **Stalls**: a loop that fails the same way twice in a row escalates early, so a stuck builder does not use up the cap.
 - **Hard rules** (protected paths, new dependencies, secret/env changes) always escalate to you, whatever the gate mode.
   - Only a per-run `--unsafe` flag lifts them.
@@ -148,7 +152,18 @@ npm i -g @tomek-i/software-factory   # puts `factory` on your PATH
 factory init
 ```
 
-- **Update** with `npm i -g @tomek-i/software-factory@latest`; **remove** with `npm rm -g @tomek-i/software-factory`.
+- **Update** with `factory upgrade`; `factory upgrade --check` only says whether a newer version is out.
+  - It installs with the package manager that installed the factory (npm, pnpm or yarn).
+    When it can't tell which one did, it prints the commands to run by hand.
+  - It refuses while a `factory work` or `factory serve` is running, or a run is being driven (by them or by `factory run`).
+    Windows can't replace files a running factory has open, and the engine must not change under a run.
+  - It looks for nothing else: close other factory commands, such as `factory logs -f` or `factory new`, before upgrading.
+  - While it installs, `factory work` and `factory serve` refuse to start.
+  - It refuses a copy built from a checkout: update that with `git pull` and `pnpm build`.
+  - On Windows the running `factory.cmd` is replaced during the upgrade: if the shell prints an error after it finishes, open a new terminal.
+  - Each project's database is migrated forward when the new version first opens it, so an older factory can't read it afterwards.
+  - By hand: `npm i -g @tomek-i/software-factory@latest`.
+- **Remove** with `npm rm -g @tomek-i/software-factory`.
 - **With pnpm:** `pnpm add -g @tomek-i/software-factory`.
   - It needs pnpm's global bin folder on your `PATH` (run `pnpm setup` once if it complains).
   - If pnpm reports that it skipped `better-sqlite3`'s build script, run `pnpm approve-builds -g` and approve it.
@@ -197,6 +212,7 @@ factory new --discard <draft>                # drop a draft
 ```
 
 - An issue writer agent drafts the issue; by default the `issue_writer` gate waits for you to approve the draft.
+- It labels each issue with labels the repo already has on GitHub, never the factory's status labels.
 - Without `--queue`, `factory work` and `factory serve` leave the new issues alone until you queue them.
 - How drafts, the gate and sub-issues work: [Writing issues from an idea](docs/factory-new.md).
 - The web app's New issue screen does the same, with the same rules: [Web mode](docs/web-mode.md#screens).
@@ -206,7 +222,7 @@ factory new --discard <draft>                # drop a draft
 Work is picked **locally**, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
 
 ```sh
-factory sync               # pull open issues from GitHub into .factory/factory.db; finishes runs whose PR was merged or closed
+factory sync               # pull open issues from GitHub into .factory/factory.db; finishes runs whose PR was merged or closed, or whose issue was closed
 factory issues             # list them (Q marks queued issues); -q/--queued, -a/--all
 factory queue 12 15 18     # queue issues for the factory (fetches unsynced ones)
 factory unqueue 15         # take one back out
@@ -238,6 +254,7 @@ factory sync
 - It moves the local state `factory sync` cannot rebuild to another clone of the same GitHub repo.
 - **Finish or cancel a run on the machine that started it**, then export.
 - **The snapshot is as trusted as your own database**: keep it out of the repo and only import your own.
+- An import still trusts nothing on the file's word: GitHub confirms the issues the factory opened and fills in imported issues.
 - What travels and how import merges: [Moving between machines](docs/moving-between-machines.md).
 
 ### Web mode
@@ -248,6 +265,7 @@ factory serve --port 4181 --max-runs 2 --no-open
 ```
 
 - It does what `factory work` does and serves a web app for every project in the project list.
+- From the Inbox or a run's details you can approve, reject, send a run back to a stage (with the failure it waits on and fresh loop counters), dismiss a false-positive code scanning alert, or cancel.
 - It prints a link with a session token and opens it in your browser (`--no-open` only prints it).
 - Its screens are Inbox, Runs, Run details, Backlog and New issue; click a run to open its details.
 - The screens, the actions and how it stays private: [Web mode](docs/web-mode.md).
@@ -263,7 +281,9 @@ factory show 12            # overview: state, gate, branch, PR, verdict summarie
 factory show 12 triage     # one file in full: triage, refine and critic (latest spec round), build, checks or capture (latest round), approval, learn, or a path like round-2/checks.md
 factory approve <run>      # let a run waiting at a gate continue and keep running it; -m "why", --no-run to only record it
 factory reject <run> -m "why"   # end a run waiting at a gate
-factory resume <run> --to build -m "why"   # send an escalated run back to a stage and keep running it; --reset-loops, --no-run
+factory resume <run> --to build -m "why"   # send a run that waits for you (at a gate too) back to a stage and keep running it; --reset-loops, --no-run
+factory checks <run>       # the required checks that failed on the run's PR, with their open code scanning alerts
+factory dismiss <run> <alert> --reason false-positive -m "why"   # dismiss a code scanning alert; the run goes back to merge once the check passes
 factory cancel <run>       # stop the run, its agent and running checks; -m "why" is optional (see Cleaning up finished runs)
 factory cleanup            # remove the worktrees and branches finished runs left behind; --dry-run lists them first
 factory lessons            # lessons the learner proposed, waiting for you; -a/--all includes approved and rejected ones
@@ -287,13 +307,13 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | Key | Purpose |
 |---|---|
 | `project` | `name` and `default_branch` (default `main`), the branch the factory builds from and reads its config from |
-| `checks` | Commands that must all pass before reviews start |
+| `checks` | Commands that must all pass before reviews start: `name`, `run` (a shell command run in the worktree), `timeout_sec` (default 900) and `retries` (how often a failed check runs again before the gate fails, default 1; see [Quality gate](docs/pipeline.md#quality-gate)) |
 | `app` | How to start the app for screenshots and videos: `start` (a shell command run in the worktree; unset means no capture), `url` (must contain `{port}`, which is filled in; default `http://localhost:{port}`), `port_env` (the variable that carries the port, default `PORT`), `ready_timeout_sec` (how long `url` may take to answer, default 180), `narrate` (`auto`, `off` or a path to narrate.mjs, see [Narrated walkthrough](docs/pipeline.md#narrated-walkthrough)) and `env` (names of variables to pass from your environment to the app, which otherwise gets only a minimal one; tokens are never passed) |
 | `gates` | `always` / `auto` / `human` per gate (see [Pipeline](#pipeline) for the defaults) |
 | `hard_rules` | Paths and triggers that always escalate to a human (see [Hard rules](docs/pipeline.md#hard-rules)) |
-| `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
-| `loops` | Caps for build iterations, review rounds and spec critic rounds |
-| `reviews` | Which review lenses run always and which only for UI changes |
+| `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30); `open_feedback`: what to do about unresolved review threads and failed checks branch protection does not require, `ask` (default: wait for you), `fix` (send them to the builder) or `ignore`; `comment_bots`: apps whose threads `fix` may act on alone (default `["github-advanced-security[bot]"]`). See [Open review threads and failed checks](docs/pipeline.md#open-review-threads-and-failed-checks) |
+| `loops` | Caps for build iterations (`max_build_iterations`), review rounds (`max_review_rounds`), spec critic rounds (`max_critic_rounds`) and times the merge stage sent the run back to the builder (`max_resyncs`, default 3) |
+| `reviews` | Which review lenses run always and which only for UI changes; the `acceptance` lens always runs |
 | `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). Whatever the file sets wins over every recommendation: `default` and `effort` reach every agent it does not name, and the recommendations only fill in the rest |
 | `concurrency` | `max_runs`: how many runs `factory run` drives at once, and how many the worker drives per project (default 2) |
 | `trust` | Whose issues and comments count as the spec (see [Trust](docs/trust.md)) |
@@ -318,12 +338,22 @@ factory config reset --all                  # everything except project, checks,
 ## Development
 
 ```sh
-pnpm test        # vitest
+pnpm test:unit   # the fast loop: unit tests only, in seconds
+pnpm test        # every test, unit and integration (what CI and the quality gate run)
+pnpm test:integration # integration tests only: minutes
 pnpm typecheck   # tsc, including tests
 pnpm lint        # eslint
 pnpm build       # tsc -b, the web app with Vite, then the npm package's bundle (apps/cli/dist)
 pnpm factory status # run the CLI from source, on this repo
 ```
+
+Unit and integration tests:
+
+- They are two Vitest projects in `vitest.config.ts`, `unit` and `integration`, and the file name decides which.
+- Integration tests are named `*.int.test.ts`: they start processes (real git repos, the fake `claude`, apps, Chromium) and take minutes.
+- Every other `*.test.ts` file is a unit test and must start no process.
+  The unit project fails a test that tries, with a message to rename the file.
+- Integration tests get a long default timeout (`GIT_TEST_TIMEOUT`), because git and processes are slow on Windows and on a busy machine.
 
 The web app:
 
@@ -346,7 +376,7 @@ Narrate tests:
 - They use narrate's silent mock voice, so they cost nothing:
 
   ```sh
-  FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.test.ts
+  FACTORY_TEST_NARRATE=1 pnpm vitest run packages/core/src/capture/narrate.int.test.ts
   ```
 
 - The quality gate runs `pnpm test` with your environment, so leave the flag unset in the shell that runs the factory.
@@ -389,7 +419,7 @@ It runs from the **published npm package**, never from the code its runs change.
   - A run stops for you only on an escalation (a hard rule, an untrusted author, a loop cap) and at the merge gate.
   - The first run had every gate on `human`.
   - Note that on `human` the spec critic runs no agent; the gate only asks you to accept the spec triage already showed you.
-- **Update** with `npm i -g @tomek-i/software-factory@latest` after a release, when no run is in progress.
+- **Update** with `factory upgrade` after a release; it refuses while a run is in progress.
 - **Unreleased `main`:** to run code that is merged but not released yet, build a clone outside every repository and link it instead (PowerShell):
 
   ```powershell

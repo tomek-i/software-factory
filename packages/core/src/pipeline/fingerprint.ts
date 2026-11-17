@@ -20,11 +20,18 @@ const SHA = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g;
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** The path without trailing separators; a loop, as `/[\\/]+$/` backtracks polynomially on many separators. */
+function trimSeparators(path: string): string {
+  let end = path.length;
+  while (end > 0 && (path[end - 1] === "/" || path[end - 1] === "\\")) end--;
+  return path.slice(0, end);
+}
+
 /** Normalise tool output before hashing, so noise that changes every round does not hide a repeat. */
 export function normaliseOutput(text: string, paths: string[] = []): string {
   let out = text.replace(ANSI, "").replace(/\r\n?/g, "\n");
   for (const path of paths) {
-    const trimmed = path.replace(/[\\/]+$/, "");
+    const trimmed = trimSeparators(path);
     if (!trimmed) continue;
     const parts = trimmed.split(/[\\/]+/);
     // Escaped backslashes (as in JSON) first, so the plain forms do not leave half of them behind.
@@ -70,4 +77,21 @@ export function findingsFingerprint(findings: Finding[]): string {
     .map((f) => JSON.stringify([f.file?.replace(/\\/g, "/") ?? "", f.severity, normaliseOutput(f.claim)]))
     .sort();
   return hash(keys);
+}
+
+/**
+ * Fingerprint of why the merge stage sent the run back to the builder. The kind comes first, so a
+ * conflict, a gate failure and open feedback never match each other: `conflict:` with the
+ * conflicting files in any order, `gate:` with the quality gate's fingerprint after the merge, or
+ * `feedback:` with the open review threads and failed checks (`feedbackKeys`) in any order.
+ */
+export function resyncFingerprint(failure: { conflicts: string[] } | { gate: string } | { feedback: string[] }): string {
+  if ("conflicts" in failure) return `conflict:${hash([...new Set(failure.conflicts.map((f) => f.replace(/\\/g, "/")))].sort())}`;
+  if ("feedback" in failure) return `feedback:${hash([...new Set(failure.feedback)].sort())}`;
+  return `gate:${failure.gate}`;
+}
+
+/** Fingerprint of an issue's text as triage read it, so a human's triage approval is only reused for the same text. */
+export function issueFingerprint(issue: { title: string; body: string }): string {
+  return hash({ title: issue.title, body: issue.body });
 }

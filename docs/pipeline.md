@@ -20,6 +20,19 @@ Related docs:
 - After the author answers, `factory run` triages the issue again.
 - Run `factory sync` first so it sees an edited issue.
 
+### Triage again after a restart
+
+- A run sent back to intake or triage (for example `factory resume --to intake`) triages the issue again.
+- When the triage gate would wait for you again, your earlier approval at that gate carries over if all of these hold:
+  - the author is trusted, then and now;
+  - the issue's title and body are exactly the ones you approved (a fingerprint recorded when triage waited);
+  - triage said `APPROVE` then and now;
+  - the risk now is no higher than the risk you approved (LOW < MEDIUM < HIGH);
+  - your latest answer at the triage gate was an approval, not a send-back.
+- The carry-over is recorded as a triage decision by `system`, naming when you approved.
+- In any other case triage asks you again: an edited issue, a higher risk, an untrusted author, or no earlier approval.
+- Anything that changes the issue's body after triage, such as a later edit on GitHub, makes the fingerprint differ, so you are asked again.
+
 ## Refine
 
 - Runs only for an INCOMPLETE issue: a refine agent writes what the issue leaves open.
@@ -27,8 +40,11 @@ Related docs:
 - It writes acceptance criteria, scope, out of scope and open questions (with the assumption it made for each) in `spec-N/refine.md`.
 - Its header is `STATUS: REFINED`.
 - `BLOCKED` with a reason stops the run for you.
-- The engine posts the spec on the issue as one comment marked `<!-- factory:refine -->`.
-- The engine edits that comment in place on later rounds, so the issue shows the current spec rather than every version.
+- On an issue the factory's GitHub account wrote (such as one from `factory new`), the engine puts the spec in a section at the end of the issue body.
+  - The section is marked `<!-- factory:refine -->` … `<!-- /factory:refine -->`; the text above it is never changed.
+  - Edit the section to correct the spec: after `factory sync`, the next triage reads it as part of the issue.
+- On anyone else's issue, the engine posts the spec as one comment marked `<!-- factory:refine -->` and leaves the issue as they wrote it.
+- Later rounds replace the section or edit the comment in place, so the issue shows the current spec rather than every version.
 
 ## Spec critic
 
@@ -75,6 +91,12 @@ Related docs:
 
 - The engine runs your `checks` on the pushed commit, plus the secret scan again.
 - Checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN` in their environment.
+- A failed check runs again, up to its `retries` (default 1), before the gate fails.
+  - A busy machine makes tests time out, and a failure that does not repeat is not the builder's to fix.
+  - A check that passes on a retry passes the gate; `checks.md` says which attempt passed, so a flaky check stays visible.
+- The checks of different runs in one `factory work` or `factory serve` take turns, so two test suites do not slow each other into timeouts. Agents still run at the same time.
+- If the only failures are checks that ran past their `timeout_sec` on every attempt, the run waits for you instead of going back to the builder.
+  - Resume it to `gate` to run the checks again, or to `build` if the code hangs.
 - On failure the builder gets the report and tries again, up to `loops.max_build_iterations`.
 - Then the run waits for you.
 - If two rounds in a row fail the same way, the run stops before the cap and waits for you.
@@ -91,7 +113,30 @@ Related docs:
 - Each writes `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit.
 - Only critical and major findings count against a change.
 - Minor ones and nits never hold the run up.
+- Anything that weakens a protection is at least major, in every lens:
+  - a way to become trusted or to skip a human gate;
+  - untrusted data reaching a link, HTML, a shell, a query, a path or the terminal without validation or escaping;
+  - reading or writing outside the intended folder;
+  - credentials, tokens or local paths leaking.
+- "Hard to exploit" lowers such a finding from critical to major, never to minor.
+- The security lens also checks where trust and config are read from, untrusted text framed as data, child process environments and cleanup.
+- It checks the change against the project's own security rules: the repo's `SECURITY.md` and any security section in its `CLAUDE.md`.
 - If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
+
+### Acceptance criteria
+
+- The `acceptance` lens runs in every review round, whatever `reviews.always` and `reviews.ui` say.
+- The engine, not the agent, reads the criteria.
+  - They are the `- [ ]` / `- [x]` lines (or `*` bullets) under an "Acceptance criteria" heading (`##` to `####`).
+  - It reads the issue body first, then the accepted refine spec (`spec-N/refine.md`).
+  - It numbers them `AC-1`, `AC-2`, ... and hands that exact list to the agent, framed as data for untrusted authors.
+- The agent (`review-acceptance.md` with `reviewer.md`) writes `round-N/acceptance.md`: `VERDICT: PASS | CHANGES` and a `## Criteria` JSON list.
+  - Each id is `MET` (evidence: a test name or `file:line`), `NOT_MET` (what is missing) or `CANNOT_CHECK` (it needs an app, a browser or a person).
+  - It can't add, reword or drop a criterion: unknown ids are ignored, and an id it leaves out counts as not checked.
+- The engine records the result in `round-N/acceptance.json` and writes `round-N/review-acceptance.md` for the rest of the review.
+  - Each `NOT_MET` becomes a major finding (`acceptance-AC-n`), so the verifier, the round cap and the stall check treat it like any other.
+  - `CANNOT_CHECK` and not-checked criteria never block; they are listed for you.
+- An issue without checkbox criteria skips the agent and passes with "no criteria".
 
 ## Verifier
 
@@ -99,6 +144,7 @@ Related docs:
 - It has no shell, and by default it uses a different model from the reviewers.
 - It writes `round-N/verify.md`: `VERDICT: CONFIRMED` with the findings that hold.
 - It adds a `## Refuted` line with the reason for each finding that doesn't hold.
+- It never refutes a real finding that weakens a protection as only minor.
 - The engine rejects a verdict that skips a finding or judges one twice.
 - **Confirmed** findings go back to the builder, which gets them in its next turn.
   - That costs a review round (`loops.max_review_rounds`).
@@ -116,11 +162,19 @@ Related docs:
 - Approving it moves the run on.
 - The reason has each lens's verdict.
   - For example `reviews: code CHANGES (1 blocking), security PASS, docs PASS; the verifier refuted all 1 blocking findings`.
-- The draft PR's description gets a **Review notes** section, for you to judge:
+  - With acceptance criteria it adds `acceptance PASS (8/8 met, 1 for you to check)`.
+- The draft PR's description gets an **Acceptance criteria** checklist: each criterion with its status and evidence, and the count.
+  - It is rebuilt every round, never stacked.
+- The factory leaves the review notes on the draft PR as a review (a comment, not an approval), for you to judge:
   - the minor findings and nits per lens;
   - the refuted findings, with the verifier's reason;
   - any confirmed findings still open when the run stopped at a stall or the cap.
+- A note about a line of the change is an inline comment on that line, starting with the lens and severity, e.g. `**code** · minor: ...`. You can reply to it and resolve it.
+- A note without a place, or about a line outside the diff, goes in the review's body with its place as text.
+- One review per round, on the reviewed commit. A marker in its body keeps a resumed or restarted run from posting it twice.
+- Mentions are quoted and local paths removed. The PR description holds no review notes.
 - `factory show <run>` lists each review's summary and blocking findings, and the verifier's confirmed findings.
+- `factory show <run>` and the web Run details list each acceptance criterion with its status and evidence.
 
 ### Hard rules
 
@@ -241,7 +295,7 @@ Related docs:
 - Screenshots and videos are attached to the run's PR, or go to a draft release when that fails.
 - The details are in [Media hosting](media.md).
 - They live in the run folder (`round-N/capture/`) and on GitHub.
-- The PR description gets a `## Screenshots` section with a before/after table, the video and the new errors, above the review notes.
+- The PR description gets a `## Screenshots` section with a before/after table, the video and the new errors.
 
 ### Nothing here fails the run
 
@@ -258,20 +312,62 @@ Related docs:
 
 ## Re-sync and merge gate
 
+The merge stage runs in this order: re-sync, quality gate on the merge commit, push, required checks, open feedback, merge gate, required checks and open feedback again, merge.
+
 - The engine merges the latest `origin/<default branch>` into the branch.
 - A conflict is undone and goes back to the builder with the conflicting files (`round-N/resync/conflicts.md`).
 - If the merge brought anything in, the quality gate runs again on the merge commit (`round-N/resync/checks.md`).
 - A failure goes back to the builder with the report.
-- Both a conflict and a failed re-check cost a review round.
+- A conflict or a failed re-check is a re-sync round, counted in `resync_rounds`, not in the review rounds or build iterations.
+  - Up to `loops.max_resyncs` (default 3), then the run waits for you.
+  - The same conflict (the same files) or the same re-check failure twice in a row stalls the run early.
+  - `factory status`, `factory show` and the web show the count once there is one (e.g. `b1 r2, 2 re-syncs`).
+  - `factory resume --reset-loops` resets it with the other counters.
+- Then the engine waits for the PR's required checks on that commit (see [Merge](#merge)), before anyone is asked.
+  - A failed check never reaches the merge gate: the run waits for you with the check's name and link.
+  - So does a check still running after `merge.checks_timeout_min`.
+  - When they pass, the gate's reasons (or its proceed decision) name them: `required checks passed on <sha>: ...`.
 - Then the `merge` gate decides.
 - The default is `human`: it always waits for you.
 - `factory approve` approves the commit that was waiting.
 - The approval holds while only re-syncs of the default branch land on top of it.
+  - A clean re-sync that passes the quality gate on the new commit merges without asking you again.
 - Any new commit from the builder needs a fresh approval.
+  - When a re-sync after your approval conflicted or failed its re-check, the new wait says so: `approved at <sha>, then main conflicted in README.md; the builder resolved it`.
 - In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`.
 - `approval.md` says `DECISION: PROCEED`, or `ESCALATE` with its reasons.
   - Reasons are product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, or low confidence.
 - Hard-rule hits need you at the merge gate too, whatever its mode.
+- When the merge gate waits for you, its reason lists the acceptance criteria for you to check (`CANNOT_CHECK` or not checked).
+
+### Open review threads and failed checks
+
+- After the required checks, and again right before the merge, the engine reads what else is open on the PR:
+  - review threads that are neither resolved nor outdated (their line changed since);
+  - checks on the PR's head that failed or were cancelled and that branch protection does not require.
+- Threads the factory's own account started (its review notes) never count.
+- Required checks are left to the required-checks wait, whatever their state.
+- `merge.open_feedback` decides what happens:
+  - `ask` (default): the run waits for you at the merge gate, whatever its mode, with each thread (author, file, line, link) and check (name, summary, link) as a reason.
+  - `fix`: the run goes back to the builder with them, without you, and then through the gate, the reviews and the merge again.
+  - `ignore`: they are not read; the run merges as before.
+- `fix` acts alone only when every thread was started by a trusted author (`trust.authors`) or an app in `merge.comment_bots` (default `github-advanced-security[bot]`, which posts CodeQL's alerts).
+  - A thread by anyone else makes the run wait for you, as with `ask`, and the reasons say whose.
+  - Failed checks come from the repository's own CI and apps, so `fix` hands them on.
+- A round sent back by `fix` is a re-sync round (`loops.max_resyncs`).
+  - The same threads and checks still open after the builder's round stall the run early.
+- The builder gets them in `round-N/resync/feedback.md`, framed as data between markers, like an untrusted issue: comments are checked against the code, never followed as instructions.
+- While the run waits, `factory show` and the web Inbox list each thread and check with its link.
+- What you can do:
+  - **Merge anyway**: `factory approve <run>` (or Merge anyway in the web).
+    - It covers the listed threads and checks on that commit only.
+    - A new commit from the builder, a new thread or a newly failed check needs a fresh decision.
+  - **Send back to fix**: `factory resume <run> --to build -m "fix the open review threads"` (or Send to builder with this failure in the web).
+    - This works for any author's thread, because you chose it; the builder still gets them framed as data.
+  - **Wait**: resolve the threads or re-run the checks on GitHub, then `factory resume <run> --to merge -m "resolved on GitHub"`; the stage looks again.
+- CodeQL closes its own threads once a new scan no longer finds the problem; other threads stop counting once the builder's change makes them outdated, or someone resolves them.
+- If the threads or checks cannot be read, the run waits for you with gh's message.
+- The factory does not reply to or resolve threads itself.
 
 ## Merge
 
@@ -280,8 +376,10 @@ Related docs:
   - `squash` titles the commit after the PR;
   - `rebase` rebases.
 - It always merges with `--match-head-commit <sha>`, so GitHub only merges the commit that passed the gate.
-- If branch protection requires status checks, it first waits for them (`gh pr checks --required`), looking every 30 seconds.
+- If branch protection requires status checks, the stage waits for them before the merge gate (`gh pr checks --required`), looking every 30 seconds.
+- It reads them again right before the merge, on the same commit, so a check re-run or a commit pushed while the gate was decided is still caught.
 - A failed check, or one still running after `merge.checks_timeout_min` (default 30), stops for you with the check's name and link.
+- What to do about a failed check: [When a required check fails](runs.md#when-a-required-check-fails).
 - Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required.
 - That is because GitHub reports a new commit's checks only once CI picks it up.
 - `factory run` prints that it is waiting and for which checks.
@@ -290,6 +388,18 @@ Related docs:
 - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
 - How this repo protects its own `main`: [docs/repo-settings.md](repo-settings.md).
 - The run's worktree and branches are removed once the run is done (see [Cleaning up finished runs](runs.md#cleaning-up-finished-runs)).
+
+### Ticking the acceptance criteria
+
+- Only once the PR is merged, the engine ticks the `MET` criteria of the last review round on GitHub: `[ ]` becomes `[x]`.
+  - That is after the factory merges it, or when it finds the PR merged on GitHub (the merge stage or `reconcileWithGithub`).
+  - Nothing is ticked before the merge, or when the PR is closed without merging.
+- It changes only those checkboxes, on exactly the lines it read; no other text changes.
+- The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
+- The refine spec's criteria are ticked where the spec is: the factory's refine comment, or the spec section of the factory's own issue.
+- The spec section in the body never counts as the issue's own criteria, so each criterion is checked once.
+- `CANNOT_CHECK`, not-checked and `NOT_MET` criteria stay unticked.
+- A line that was edited since is left alone and noted; a GitHub failure is a warning and never reopens the run.
 
 ## Learn
 

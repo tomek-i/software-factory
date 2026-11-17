@@ -21,12 +21,14 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `pipeline/driver.ts`: `PipelineDriver`, the orchestrator: `startRun`, `drive` (lease, abort signal), `onError`, and `step`, which has a `case` per stage. It re-exports the public names of the files below
 - `pipeline/stages/<stage>.ts`: one module per stage (`triage` with intake, `refine`, `critic`, `build`, `gate`, `review` with the verifier, `capture`, `pr`, `merge` with re-sync and approver, `learn`), each a function `(ctx, run) => StepResult`
 - `pipeline/stages/context.ts`: `StageContext`, what every stage gets (store, project, config, ports, run machine, the abort signal, and helpers such as `move`, `waitForHuman`, `escalate`, `loopBack`, `agentBase`); `DriverDeps`, `DriveOutcome`
-- `pipeline/shared.ts`: helpers that need no driver: `approveTarget`, `nextAfterTriage`, `runDirOf`, `prBody`, `verdictPath`, `runEvidence`, spec rounds, `readValid`, `section`; `pipeline/reviews.ts`: blocking findings, what the verifier must judge, review notes
+- `pipeline/shared.ts`: helpers that need no driver: `approveTarget`, `nextAfterTriage`, `runDirOf`, `prBody`, `verdictPath`, `runEvidence`, spec rounds, `readValid`, `section`; `pipeline/reviews.ts`: blocking findings, what the verifier must judge, the review notes posted as a PR review (`reviewNotes`, split inline or into the body by `diffLines`)
+- `pipeline/acceptance.ts`: the acceptance lens's criteria (`extractCriteria`), its result file, the PR checklist, and `tickMetCriteria`, which ticks the met ones on GitHub after the merge
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
+- `pipeline/feedback.ts`: the PR's open review threads and failed optional checks the merge stage reads (`readOpenFeedback`), who `fix` may act on alone (`actionable`), and the report the builder gets (`feedbackReport`)
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
 - `pipeline/cleanup.ts`: removes finished runs' worktrees and branches
-- `pipeline/fingerprint.ts`: detects stalls (the same gate failure or findings twice)
+- `pipeline/fingerprint.ts`: detects stalls (the same gate failure, findings or failed re-sync twice); `issueFingerprint` for carrying a triage approval over a restart
 - `agents/runner.ts`: spawns `claude` with `claudeArgs` and `agentEnv`
 - `agents/prompts.ts`: `PromptRole`, `rolePrompt`, `permissionProfile`, `issueBlock`, `renderTask`
 - `agents/turn.ts`: one agent turn plus parsing its output file; `agents/stream.ts`: stream-json summary
@@ -41,9 +43,10 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `drafts/`: issue writer drafts for `factory new`
 - `init/`: `factory init`, project detection and the config template
 - `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
+- `service/waiting.ts`: `waitingOn`, what a run waiting for a human is stuck on (a loop cap, failed checks, a failed gate, confirmed findings); `service/checks.ts`: `runChecks` and `dismissAlert`, the human-only dismissal of a code scanning alert
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
-- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `stop.ts` for `factory stop`
+- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `stop.ts` for `factory stop`; `workers.ts`: the running workers and live leases `factory upgrade` refuses to replace the factory under
 - `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
@@ -111,9 +114,11 @@ From the adversarial reviews of #58 to #61. The protections are summarised in [S
 
 - Vitest. Agents are the fake `claude` (`packages/core/test/fake-claude.mjs`, driven by `fakeClaude` in `packages/core/test/helpers.ts`), and GitHub is a fake `GithubPort` or a fake `CommandRunner`. Never spend real usage or call real GitHub.
 - Shared setups: `packages/core/test/driver-setup.ts` for the driver, `apps/cli/test/runs-setup.ts` for the CLI run commands.
-- Driver tests live next to the source as `packages/core/src/pipeline/driver.<area>.test.ts`. Put new ones in their own file so they run in parallel.
-- Run the targeted tests while working (`pnpm vitest run <file>`) and the full suite once at the end, with `pnpm lint` and `pnpm typecheck`.
+- Two Vitest projects in `vitest.config.ts`: `unit` and `integration`. A test that starts a process (real git, the fake `claude`, an app, Chromium) is integration and is named `*.int.test.ts`; the unit project fails any other file that starts one (`packages/core/test/no-child-processes.ts`). Integration tests default to `GIT_TEST_TIMEOUT`.
+- Driver tests live next to the source as `packages/core/src/pipeline/driver.<area>.int.test.ts`. Put new ones in their own file so they run in parallel.
+- While working, run `pnpm test:unit` (seconds) and the targeted integration files (`pnpm vitest run <file>`); run the full suite (`pnpm test`) once at the end, with `pnpm lint` and `pnpm typecheck`.
 - Every test file gets its own temp `FACTORY_DATA_DIR` (`packages/core/test/setup-data-dir.ts`), so `factory init` in a test never adds to the user's project list.
+  Run Vitest from the repo root: without that setup file, `factoryDataDir` throws under Vitest rather than use the real folder.
 - `FACTORY_REQUIRE_BROWSER=1` makes the real-browser tests fail rather than skip without Chromium; `FACTORY_TEST_NARRATE=1` runs the real narrate plugin tests. See [Development](README.md#development).
 - `packages/core/test/claude-md.test.ts` checks that every path, symbol and link in this file exists.
 

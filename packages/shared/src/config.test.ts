@@ -152,14 +152,27 @@ describe("resolveModel", () => {
 });
 
 describe("merge config", () => {
-  it("merges with a merge commit and waits 30 minutes for required checks by default", () => {
-    expect(factoryConfigSchema.parse({ version: 1 }).merge).toEqual({ method: "merge", checks_timeout_min: 30 });
+  it("merges with a merge commit, waits 30 minutes for required checks and asks about open feedback by default", () => {
+    expect(factoryConfigSchema.parse({ version: 1 }).merge).toEqual({
+      method: "merge",
+      checks_timeout_min: 30,
+      open_feedback: "ask",
+      comment_bots: ["github-advanced-security[bot]"],
+    });
     expect(factoryConfigSchema.parse({ version: 1, merge: { method: "squash" } }).merge.method).toBe("squash");
   });
 
   it("refuses an unknown method and a timeout that is not positive", () => {
     expect(factoryConfigSchema.safeParse({ version: 1, merge: { method: "fast-forward" } }).success).toBe(false);
     expect(factoryConfigSchema.safeParse({ version: 1, merge: { checks_timeout_min: 0 } }).success).toBe(false);
+  });
+
+  it("takes ask, fix or ignore for open feedback, and a list of bots", () => {
+    for (const mode of ["ask", "fix", "ignore"]) expect(factoryConfigSchema.parse({ version: 1, merge: { open_feedback: mode } }).merge.open_feedback).toBe(mode);
+    // `always`/`never` are gate modes, not these.
+    expect(factoryConfigSchema.safeParse({ version: 1, merge: { open_feedback: "always" } }).success).toBe(false);
+    expect(factoryConfigSchema.parse({ version: 1, merge: { comment_bots: [] } }).merge.comment_bots).toEqual([]);
+    expect(factoryConfigSchema.safeParse({ version: 1, merge: { comment_bots: [""] } }).success).toBe(false);
   });
 });
 

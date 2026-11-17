@@ -1,10 +1,12 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { isBlocking, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
+import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
 import { refutedFindings, runDirOf } from "../pipeline/driver.js";
 import type { Project, Run, Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
 import { findRun } from "./runs.js";
+import { waitingOn, type FailureItem } from "./waiting.js";
 
 /** Verdict files the overview summarises, with the header that says the most about each. */
 const VERDICTS: { kind: VerdictKind; key: string; path: (files: string[]) => string | undefined }[] = [
@@ -50,6 +52,11 @@ function plainFileList(files: string[]): string {
   return files.length ? files.map((f) => `  ${f}`).join("\n") : "  (none)";
 }
 
+/** The error for a path that would leave the run folder. */
+function outsideRunDir(file: string): ServiceError {
+  return new ServiceError(`"${file}" is outside the run folder; give a path inside it, e.g. triage.md or round-1/checks.md.`);
+}
+
 /**
  * The run-folder-relative path `file` names, or a ServiceError. Lexical only: `\` counts as a
  * separator on every OS, and anything that would leave the run folder (`..`, absolute or drive
@@ -84,9 +91,7 @@ export function resolveInRunDir(runDir: string, file: string, files: string[]): 
     normalised === ".." ||
     normalised.startsWith("../");
   const rel = relative(runDir, resolve(runDir, normalised));
-  if (outside || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new ServiceError(`"${file}" is outside the run folder; give a path inside it, e.g. triage.md or round-1/checks.md.`);
-  }
+  if (outside || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw outsideRunDir(file);
   return normalised;
 }
 
@@ -97,7 +102,9 @@ export type OverviewSection =
   /** A verdict file that does not parse: the first problem. */
   | { kind: "unparsed"; path: string; problem: string }
   /** The capture report: the items of its summary. */
-  | { kind: "capture"; path: string; summary: string[] };
+  | { kind: "capture"; path: string; summary: string[] }
+  /** The acceptance lens's result: each criterion with its status and evidence, and the count line. */
+  | { kind: "acceptance"; path: string; count: string; criteria: CriterionResult[] };
 
 export interface RunOverview {
   run: Run;
@@ -110,6 +117,13 @@ export interface RunOverview {
   files: string[];
   /** In the order to show them. */
   sections: OverviewSection[];
+  /**
+   * The unresolved review threads and failed optional checks the merge gate waits on, so they are
+   * seen before anyone approves. Their text comes from GitHub: show it as text only.
+   */
+  openFeedback?: FailureItem[];
+  /** Its issue was closed on GitHub while its PR is open; cancelling closes the PR too (see waitingOn). */
+  issueClosed?: { pr: number };
 }
 
 function sectionsOf(runDir: string, files: string[]): OverviewSection[] {
@@ -133,7 +147,14 @@ function sectionsOf(runDir: string, files: string[]): OverviewSection[] {
   // The reviews of the latest gated round, each lens with its verdict and the findings that block,
   // then the verifier's judgement of those: the findings it confirmed and how many it refuted.
   const round = checks?.split("/")[0];
-  const judged = files.filter((f) => round && ((f.startsWith(`${round}/review-`) && f.endsWith(".md")) || f === `${round}/verify.md`));
+  // The acceptance lens is shown per criterion from the engine's record rather than as a review.
+  const acceptance = round ? readAcceptanceRecord(join(runDir, round)) : undefined;
+  if (acceptance) {
+    sections.push({ kind: "acceptance", path: `${round}/acceptance.json`, count: acceptanceCount(acceptance.criteria), criteria: acceptance.criteria });
+  }
+  const judged = files.filter(
+    (f) => round && ((f.startsWith(`${round}/review-`) && f.endsWith(".md") && !(acceptance && f === `${round}/review-acceptance.md`)) || f === `${round}/verify.md`),
+  );
   for (const path of judged) {
     try {
       const kind = path.endsWith("/verify.md") ? "verify" : "review";
@@ -176,7 +197,17 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
   const files = listRunFiles(runDir);
   const issueTitle = run.issue_number ? store.getIssue(project.id, run.issue_number)?.title : undefined;
   const hasRunDir = existsSync(runDir);
-  return { run, issueTitle, runDir, hasRunDir, files, sections: hasRunDir ? sectionsOf(runDir, files) : [] };
+  const { failure, issueClosed } = waitingOn(store, project, run);
+  return {
+    run,
+    issueTitle,
+    runDir,
+    hasRunDir,
+    files,
+    sections: hasRunDir ? sectionsOf(runDir, files) : [],
+    ...(failure?.kind === "feedback" ? { openFeedback: failure.items } : {}),
+    ...(issueClosed ? { issueClosed } : {}),
+  };
 }
 
 /** One lens's review of the latest gated round: its verdict and how many findings it has and how many block. */
@@ -216,7 +247,11 @@ export function runFile(store: Store, project: Project, ref: string, file: strin
   const runDir = runDirOf(project.repo_path, run.id);
   const files = listRunFiles(runDir);
   const path = resolveInRunDir(runDir, file, files);
-  const full = join(runDir, path);
+  // Checked again on the very path that is read, so a gap in the lexical checks above cannot reach
+  // a file outside the run folder (the web app sends `file` as it gets it).
+  const root = resolve(runDir);
+  const full = resolve(root, path);
+  if (!full.startsWith(root + sep)) throw outsideRunDir(file);
   if (!existsSync(full) || !statSync(full).isFile()) {
     throw new ServiceError(`No file "${path}" in the run folder of ${run.id}. Files there:\n${plainFileList(files)}`);
   }

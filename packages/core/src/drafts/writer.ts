@@ -7,10 +7,11 @@ import type { AgentRunner } from "../agents/runner.js";
 import { runTurn, type TurnResult } from "../agents/turn.js";
 import type { TrustedReader } from "../config/trusted.js";
 import { fetchIssue } from "../github/issues.js";
-import type { IssueWriterPort } from "../github/port.js";
+import type { IssueWriterPort, RepoLabel } from "../github/port.js";
 import type { Project, Store } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { formatDraft, ISSUE_DELIMITER, issueBody, parseDraft, parseIssueBlocks, SUB_ISSUE_DELIMITER, type DraftIssue, type IssueDraft } from "./draft.js";
+import { labelProblems, labelsSection, offeredLabels, repoSpelling } from "./labels.js";
 
 /** Drafts live here until they are created or discarded: there is no issue or run for them yet. */
 export const DRAFTS_DIR = join(".factory", "drafts");
@@ -25,6 +26,8 @@ export interface WriteDraftOptions {
   read: TrustedReader;
   runAgent: AgentRunner;
   idea: string;
+  /** The labels the issue writer may use (see offeredLabels); undefined when they could not be read. */
+  labels?: RepoLabel[];
   signal?: AbortSignal;
   timeoutMs?: number;
   /** Told the draft's id once its folder exists, before the agent starts. */
@@ -39,7 +42,7 @@ export interface WrittenDraft {
 }
 
 /** The task for the issue writer: the idea is the operator's own words, so it is the request. */
-function ideaTask(id: string, root: string, outputFile: string, idea: string, lessons: string | undefined): string {
+function ideaTask(id: string, root: string, outputFile: string, idea: string, lessons: string | undefined, labels: RepoLabel[] | undefined): string {
   const parts = [
     "# Task: issue_writer",
     "",
@@ -55,6 +58,7 @@ function ideaTask(id: string, root: string, outputFile: string, idea: string, le
     "",
     idea.trim(),
     "",
+    ...labelsSection(labels),
     "## Now",
     "Read the repository where the idea touches it, then write the draft to the output file.",
     "",
@@ -97,9 +101,12 @@ export async function writeDraft(options: WriteDraftOptions): Promise<WrittenDra
       signal: options.signal,
       timeoutMs: options.timeoutMs ?? 20 * 60_000,
       ...files,
-      prompt: ideaTask(id, root, file, options.idea, read(".factory/lessons.md")),
+      prompt: ideaTask(id, root, file, options.idea, read(".factory/lessons.md"), options.labels),
     },
-    validate: (verdict) => parseIssueBlocks(verdict.body).problems,
+    validate: (verdict) => {
+      const { issue, subIssues, problems } = parseIssueBlocks(verdict.body);
+      return problems.length || !issue ? problems : labelProblems([issue, ...subIssues], options.labels);
+    },
   });
   return { id, dir, file, turn };
 }
@@ -213,6 +220,7 @@ export interface DraftIssueEdit {
   ui: boolean;
   risk: string;
   body: string;
+  labels?: string[];
   /** Sub-issues only: positions (1-based) of earlier sub-issues. */
   dependsOn?: number[];
 }
@@ -229,6 +237,9 @@ function editProblems(edit: DraftEdit): string[] {
     const problems: string[] = [];
     if (/[\r\n]/.test(issue.title)) problems.push(`${name}: TITLE must be one line`);
     if (/[\r\n]/.test(issue.risk)) problems.push(`${name}: RISK must be LOW, MEDIUM or HIGH`);
+    for (const label of issue.labels ?? []) {
+      if (/[,\r\n]/.test(label)) problems.push(`${name}: label "${label}" may not hold a comma or a line break`);
+    }
     const lines = issue.body.split(/\r?\n/).map((line) => line.trim().toUpperCase());
     for (const delimiter of [ISSUE_DELIMITER, SUB_ISSUE_DELIMITER]) {
       if (lines.includes(delimiter)) problems.push(`${name}: the body may not hold a "${delimiter}" line`);
@@ -252,6 +263,7 @@ export function editDraft(ctx: DraftContext, ref: string, edit: DraftEdit): Draf
     title: issue.title.trim(),
     ui: issue.ui,
     risk: issue.risk.trim().toUpperCase() as DraftIssue["risk"],
+    labels: (issue.labels ?? []).map((l) => l.trim()).filter(Boolean),
     dependsOn: sub ? (issue.dependsOn ?? []) : [],
     body: issue.body,
   });
@@ -266,6 +278,8 @@ export interface PublishOptions extends DraftContext {
   ref: string;
   /** Queue the buildable issues for the factory once they are created. Off by default. */
   queue?: boolean;
+  /** `github.label_prefix`: the factory's status labels, which a draft may never use. */
+  statusLabelPrefix?: string;
 }
 
 export interface PublishedDraft {
@@ -281,7 +295,10 @@ export interface PublishedDraft {
 
 /** Identifies a draft entry, so a number created from it is never reused for different text. */
 function fingerprint(issue: DraftIssue): string {
-  return createHash("sha256").update(JSON.stringify([issue.title, issue.body, issue.ui, issue.risk, issue.dependsOn])).digest("hex");
+  const fields: unknown[] = [issue.title, issue.body, issue.ui, issue.risk, issue.dependsOn];
+  // Only when there are labels, so an approval interrupted before labels existed still matches.
+  if (issue.labels.length) fields.push(issue.labels);
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex");
 }
 
 /**
@@ -308,12 +325,21 @@ export function publishDraft(options: PublishOptions): PublishedDraft {
     }
   }
 
+  // A hand edit may name any label, so they are checked again before anything is created; a draft
+  // without labels needs no call to GitHub.
+  let offered: RepoLabel[] = [];
+  if (all.some((issue) => issue.labels.length)) {
+    offered = offeredLabels(github.listLabels(), options.statusLabelPrefix ?? "factory");
+    const problems = labelProblems(all, offered);
+    if (problems.length) throw new DraftError(`Draft ${entry.id} uses labels it may not: ${problems.join("; ")}. Fix the LABELS lines, or add the labels on GitHub first.`);
+  }
+
   const numbers = records.map((r) => r.number);
   all.forEach((issue, position) => {
     if (numbers[position] !== undefined) return;
     // Sub-issue positions are 1-based; they were created before this one, so their numbers are known.
     const needs = issue.dependsOn.map((p) => numbers[p]!);
-    const number = github.createIssue({ title: issue.title, body: issueBody(issue, needs) });
+    const number = github.createIssue({ title: issue.title, body: issueBody(issue, needs), labels: repoSpelling(issue.labels, offered) });
     store.recordDraftIssue(project.id, entry.id, { position, number, fingerprint: fingerprint(issue) });
     numbers[position] = number;
   });

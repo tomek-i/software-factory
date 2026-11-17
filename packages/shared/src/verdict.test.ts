@@ -1,5 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { isUnprintable, parseLessons, parseVerdict, pullRequestTitleProblem, VerdictParseError } from "./verdict.js";
+import { isUnprintable, parseCriteria, parseLessons, parseVerdict, pullRequestTitleProblem, VerdictParseError } from "./verdict.js";
+
+describe("acceptance output", () => {
+  const block = (items: object[]) => "```json\n" + JSON.stringify(items) + "\n```";
+  const output = (verdict: string, criteria: object[] | string) =>
+    `VERDICT: ${verdict}\n\n## Summary\n- checked\n\n## Criteria\n${typeof criteria === "string" ? criteria : block(criteria)}\n`;
+  const parse = (text: string) => parseCriteria(parseVerdict("acceptance", text).body);
+
+  it("parses each criterion's status and evidence, upper-casing the status", () => {
+    const criteria = [
+      { id: "AC-1", status: "met", evidence: "test 'ticks' in a.test.ts" },
+      { id: "AC-2", status: "CANNOT_CHECK" },
+      { id: "AC-3", status: "NOT_MET", evidence: "no docs" },
+    ];
+    expect(parse(output("CHANGES", criteria))).toEqual([
+      { id: "AC-1", status: "MET", evidence: "test 'ticks' in a.test.ts" },
+      { id: "AC-2", status: "CANNOT_CHECK" },
+      { id: "AC-3", status: "NOT_MET", evidence: "no docs" },
+    ]);
+  });
+
+  it("keeps ids it does not know (the engine drops them) and accepts an empty list", () => {
+    expect(parse(output("PASS", [{ id: "AC-99", status: "MET", evidence: "x" }])).map((c) => c.id)).toEqual(["AC-99"]);
+    expect(parse(output("PASS", []))).toEqual([]);
+  });
+
+  it("rejects malformed output", () => {
+    const bad: [string, RegExp][] = [
+      [output("PASS", [{ id: "AC-1", status: "MET" }]), /criteria\.0\.evidence: MET needs evidence/],
+      [output("CHANGES", [{ id: "AC-1", status: "NOT_MET", evidence: " " }]), /evidence/],
+      [output("PASS", [{ id: "AC-1", status: "MAYBE", evidence: "x" }]), /criteria\.0\.status/],
+      [output("PASS", [{ id: "AC-1", status: "MET", evidence: "x" }, { id: "AC-1", status: "MET", evidence: "y" }]), /duplicate criterion ids: AC-1/],
+      [output("PASS", "```json\n[{]\n```"), /criteria JSON is invalid/],
+      [output("PASS", "all good"), /exactly one ```json array block/],
+      ["VERDICT: PASS\n\n## Summary\n- checked\n", /## Criteria is missing/],
+      [output("PASS", [{ id: "AC-1", status: "NOT_MET", evidence: "x" }]), /PASS contradicts a NOT_MET criterion/],
+      [output("CHANGES", [{ id: "AC-1", status: "MET", evidence: "x" }]), /CHANGES needs at least one NOT_MET/],
+    ];
+    for (const [text, problem] of bad) expect(() => parseVerdict("acceptance", text)).toThrow(problem);
+    expect(() => parseCriteria("## Criteria\nnone")).toThrow(VerdictParseError);
+  });
+});
 
 const finding = (id: string, severity: string) => ({ id, severity, claim: "c", evidence: "e" });
 const block = (items: object[]) => "```json\n" + JSON.stringify(items) + "\n```";

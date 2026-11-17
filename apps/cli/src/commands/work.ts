@@ -1,4 +1,5 @@
 import {
+  asWorker,
   DEFAULT_MAX_RUNS,
   listRegistered,
   openRegisteredProject,
@@ -6,6 +7,7 @@ import {
   reportLines,
   requestStop,
   Scheduler,
+  ServiceError,
   type CommandRunner,
   type GithubPort,
   type Project,
@@ -53,6 +55,15 @@ export function refuseRunningOnAnyProject(projects: () => RegistryEntry[] = list
  * Resolves with the last line to print; `interrupted` says the runs were stopped mid-way.
  */
 export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+  try {
+    return await asWorker(() => work(options, deps));
+  } catch (err) {
+    // e.g. refused while `factory upgrade` runs
+    throw err instanceof ServiceError ? new CliError(err.message) : err;
+  }
+}
+
+async function work(options: { maxRuns?: number }, deps: WorkDeps): Promise<{ message: string; interrupted: boolean }> {
   // A `factory stop` sent while it is still starting up (reconciling below) counts.
   const startedAt = Date.now();
   const print = deps.print ?? console.log;
@@ -147,9 +158,9 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
 }
 
 /** `factory stop`: asks every running `factory work` and `factory serve` to stop, through a file they check. */
-export function runStop(options: { now?: boolean }, file?: string): string {
+export function runStop(options: { now?: boolean }, file?: string, style: Style = plain): string {
   requestStop({ now: options.now }, file);
   return options.now
-    ? "Asked any running `factory work` or `factory serve` to interrupt its runs and exit. The runs continue on the next `factory work` or `factory serve`, or with `factory run <n>`."
+    ? `Asked any running \`factory work\` or \`factory serve\` to interrupt its runs and exit. ${style.hint("The runs continue on the next `factory work` or `factory serve`, or with `factory run <n>`.")}`
     : "Asked any running `factory work` or `factory serve` to start no more runs, finish the ones going on, and exit.";
 }

@@ -7,7 +7,7 @@ import {
   type Stage,
   type VerdictKind,
 } from "@factory/shared";
-import type { PullRequestState } from "../github/port.js";
+import type { IssueState, PullRequestState } from "../github/port.js";
 import type { Run, RunEvent, RunPatch, StatePatch, Store } from "../store/store.js";
 import { findingsFingerprint } from "./fingerprint.js";
 
@@ -52,6 +52,18 @@ export function resumeTargets(run: Pick<Run, "parked_from">): RunState[] {
   return [...new Set<RunState>([...back, ...onward, "rejected", "cancelled"])];
 }
 
+/** The working stages a human sends work back to with a message, in pipeline order. */
+const SEND_BACK: readonly RunState[] = ["refine", "build", "review"];
+
+/**
+ * Where a run waiting at a gate can be sent back to besides approving or rejecting it: the working
+ * stages before the one it waits in. A subset of resumeTargets, so RunMachine.resume allows each.
+ */
+export function sendBackTargets(run: Pick<Run, "parked_from">): RunState[] {
+  const parked = run.parked_from && STAGES.includes(run.parked_from as Stage) ? STAGES.indexOf(run.parked_from as Stage) : 0;
+  return resumeTargets(run).filter((s) => SEND_BACK.includes(s) && STAGES.indexOf(s as Stage) < parked);
+}
+
 /** Facts about the run's worktree and output files, injected so guards stay testable. */
 export interface Evidence {
   verdict<K extends VerdictKind>(kind: K): ParsedVerdict<K>;
@@ -62,6 +74,12 @@ export interface Evidence {
    * still loops, but stalls cannot be detected.
    */
   gateFingerprint?(): string;
+  /**
+   * Fingerprint of why the merge stage sent the run back (resyncFingerprint): the files that
+   * conflicted, the quality gate's failure after the merge, or the open feedback on the PR. Without
+   * it the run still loops, but stalls cannot be detected.
+   */
+  resyncFingerprint?(): string;
   /** The run's pull request as GitHub sees it now. */
   pullRequest?(): PullRequestState;
   /** The latest spec round (spec-N/) that has the file, 0 when none. Without it the critic's round is not checked. */
@@ -171,8 +189,8 @@ const GUARDS: Partial<Record<`${RunState}->${RunState}`, Guard>> = {
     if (pr.number !== run.pr_number) return [`PR #${pr.number} is not the run's PR (#${run.pr_number ?? "none"})`];
     return pr.state === "merged" ? [] : [`PR #${pr.number} is ${pr.state}, not merged`];
   },
-  // A failed merge attempt (conflict, failing re-gate) costs a review round so the loop is bounded.
-  "merge->build": ({ run, config }) => capProblem(run.review_rounds, config.loops.max_review_rounds, "review round"),
+  // A failed re-sync (conflict, failing re-gate) or open feedback on the PR is no review finding, so it has its own cap.
+  "merge->build": ({ run, config }) => capProblem(run.resync_rounds, config.loops.max_resyncs, "re-sync round"),
 };
 
 type Edge = `${RunState}->${RunState}`;
@@ -180,9 +198,9 @@ type Edge = `${RunState}->${RunState}`;
 /** A loop edge that sends work back to the builder, and how to tell one failure from another. */
 interface LoopSpec {
   /** Names the repeated failure, e.g. "quality gate failed the same way in rounds 2 and 3". */
-  describe: (rounds: string) => string;
-  /** Output file of a round, relative to the run folder. */
-  file: (round: number) => string;
+  describe: (rounds: string, fingerprint: string) => string;
+  /** Output file of a round, relative to the run folder; the fingerprint tells which kind of failure it was. */
+  file: (round: number, fingerprint: string) => string;
   /** The round that just failed (the move bumps the counter). */
   round: (run: Run) => number;
   fingerprint: (evidence: Evidence) => string | undefined;
@@ -200,6 +218,16 @@ const LOOPS: Partial<Record<Edge, LoopSpec>> = {
     file: (round) => `round-${round}/verify.md`,
     round: (run) => run.round,
     fingerprint: (evidence) => findingsFingerprint(evidence.verdict("verify").findings),
+  },
+  "merge->build": {
+    describe: (rounds, fingerprint) =>
+      fingerprint.startsWith("feedback:")
+        ? `the same review threads and failed checks were still open on the PR in rounds ${rounds}`
+        : `bringing in the default branch failed the same way in rounds ${rounds}`,
+    file: (round, fingerprint) =>
+      `round-${round}/resync/${fingerprint.startsWith("conflict:") ? "conflicts.md" : fingerprint.startsWith("feedback:") ? "feedback.md" : "checks.md"}`,
+    round: (run) => run.round,
+    fingerprint: (evidence) => evidence.resyncFingerprint?.(),
   },
 };
 
@@ -252,13 +280,13 @@ function stallOf(events: RunEvent[], edge: Edge, spec: LoopSpec, current: LoopFa
   const previous = previousFailure(events, edge);
   if (!previous || previous.fingerprint !== current.fingerprint) return undefined;
   const rounds: [number, number] = [previous.round, current.round];
-  const files: [string, string] = [spec.file(previous.round), spec.file(current.round)];
+  const files: [string, string] = [spec.file(previous.round, previous.fingerprint), spec.file(current.round, current.fingerprint)];
   return {
     edge,
     fingerprint: current.fingerprint,
     rounds,
     files,
-    reason: `stalled: ${spec.describe(`${rounds[0]} and ${rounds[1]}`)} (see ${files[0]} and ${files[1]})`,
+    reason: `stalled: ${spec.describe(`${rounds[0]} and ${rounds[1]}`, current.fingerprint)} (see ${files[0]} and ${files[1]})`,
   };
 }
 
@@ -281,7 +309,8 @@ function triageReady(evidence: Evidence): string[] {
 function loopPatch(run: Run, from: RunState, to: RunState): StatePatch {
   if (to === "gate") return { round: run.round + 1 };
   if (from === "gate" && to === "build") return { build_iterations: run.build_iterations + 1 };
-  if ((from === "review" || from === "merge") && to === "build") return { review_rounds: run.review_rounds + 1 };
+  if (from === "review" && to === "build") return { review_rounds: run.review_rounds + 1 };
+  if (from === "merge" && to === "build") return { resync_rounds: run.resync_rounds + 1 };
   if (from === "critic" && to === "refine") return { critic_rounds: run.critic_rounds + 1 };
   // The author answered: triage reads a changed issue, so its spec gets a fresh round budget.
   if (from === "needs_info" && to === "triage") return { critic_rounds: 0 };
@@ -318,6 +347,8 @@ export interface ResumeOptions {
   resetLoops?: boolean;
   owner?: string;
   commitSha?: string;
+  /** More facts about the decision for the resume event, e.g. the alert a human dismissed. */
+  data?: Record<string, unknown>;
 }
 
 /**
@@ -389,7 +420,7 @@ export class RunMachine {
       waiting_gate: null,
       parked_from: null,
       ...releaseIfTerminal(to),
-      ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0 } : {}),
+      ...(options.resetLoops ? { build_iterations: 0, review_rounds: 0, critic_rounds: 0, resync_rounds: 0 } : {}),
       // A human sending the run (back) to the gate starts a new round, like the builder handing over.
       ...(to === "gate" ? { round: run.round + 1 } : {}),
     };
@@ -405,6 +436,7 @@ export class RunMachine {
         commit_sha: options.commitSha ?? null,
       });
       this.store.appendEvent(runId, from, to, `human: ${options.comment}`, {
+        ...options.data,
         gate,
         resetLoops: !!options.resetLoops,
         // The commit the human approved, so the merge stage can tell whether the approval still holds.
@@ -469,6 +501,36 @@ export class RunMachine {
     });
   }
 
+  /**
+   * The run's issue was closed on GitHub (done by hand in another PR, a duplicate, not planned):
+   * cancel the run. Only for a run without a PR: one with a PR finishes by that PR, and while it is
+   * open a human decides (`cancelRun` closes it too). A run another worker is driving is refused,
+   * as in closeByPullRequest.
+   */
+  closeByIssue(runId: string, issue: Pick<IssueState, "number" | "state" | "reason" | "closedBy">, owner?: string): Run {
+    const run = this.load(runId);
+    this.checkLease(run, "cancelled", owner);
+    const problems: string[] = [];
+    if (isTerminal(run.state)) problems.push(`run is already ${run.state}`);
+    if (run.issue_number !== issue.number) problems.push(`issue #${issue.number} is not the run's issue`);
+    if (issue.state !== "closed") problems.push(`issue #${issue.number} is still open`);
+    if (run.pr_number !== null) problems.push(`run has PR #${run.pr_number}: it finishes by that PR, or a human decides`);
+    if (problems.length) throw new TransitionError(runId, run.state, "cancelled", problems);
+
+    const reason = closedIssueReason(issue);
+    return this.commit(run, "cancelled", { waiting_gate: null, parked_from: null, ...releaseIfTerminal("cancelled") }, () => {
+      this.store.recordDecision({
+        run_id: runId,
+        gate: run.waiting_gate ?? "escalation",
+        mode: "human",
+        outcome: "reject",
+        actor: "human",
+        comment: reason,
+      });
+      this.store.appendEvent(runId, run.state, "cancelled", reason, { issue: issue.number, ...(issue.closedBy.length ? { closedBy: issue.closedBy } : {}) });
+    });
+  }
+
   private load(runId: string): Run {
     const run = this.store.getRun(runId);
     if (!run) throw new Error(`run ${runId} not found`);
@@ -508,4 +570,10 @@ function runGuard(guard: Guard, ctx: GuardContext): string[] {
   } catch (err) {
     return [`evidence unavailable: ${(err as Error).message}`];
   }
+}
+
+/** Why a run ended with its issue, e.g. "issue #173 was closed on GitHub (completed, by #221)". */
+export function closedIssueReason(issue: Pick<IssueState, "number" | "reason" | "closedBy">): string {
+  const why = [issue.reason?.replace(/_/g, " "), issue.closedBy.length ? `by ${issue.closedBy.map((n) => `#${n}`).join(", ")}` : undefined].filter(Boolean);
+  return `issue #${issue.number} was closed on GitHub${why.length ? ` (${why.join(", ")})` : ""}`;
 }

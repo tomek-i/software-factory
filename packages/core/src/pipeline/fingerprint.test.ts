@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Finding } from "@factory/shared";
 import type { CheckResult, SecretScan } from "../gate/gate.js";
-import { findingsFingerprint, gateFingerprint, normaliseOutput } from "./fingerprint.js";
+import { findingsFingerprint, gateFingerprint, normaliseOutput, resyncFingerprint } from "./fingerprint.js";
 
 const WORKTREE = "C:\\Users\\dev\\repo\\.worktrees\\run-1";
 const SHA = "3f2c9e1d4b5a6789012345678901234567890abc";
@@ -15,6 +15,7 @@ function check(overrides: Partial<CheckResult> = {}): CheckResult {
     exitCode: 1,
     durationMs: 1200,
     tail: "FAIL src/a.test.ts > adds\nexpected 2 to be 3",
+    attempts: 1,
     ...overrides,
   };
 }
@@ -44,6 +45,13 @@ describe("normaliseOutput", () => {
 
   it("replaces JSON-escaped worktree paths too", () => {
     expect(normaliseOutput(`"file": "C:\\\\Users\\\\dev\\\\repo\\\\.worktrees\\\\run-1\\\\x.ts"`, [WORKTREE])).toBe(`"file": "<path>\\\\x.ts"`);
+  });
+
+  it("ignores trailing separators on a path, and handles many of them quickly", () => {
+    expect(normaliseOutput("at /repo/run-1/x.ts", ["/repo/run-1/\\/"])).toBe("at <path>/x.ts");
+    const started = Date.now();
+    expect(normaliseOutput("ok", [`a${"/".repeat(50_000)}b`])).toBe("ok");
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
 
@@ -113,5 +121,28 @@ describe("findingsFingerprint", () => {
     expect(findingsFingerprint([finding({ file: "src/c.ts" })])).not.toBe(base);
     expect(findingsFingerprint([finding({ severity: "critical" })])).not.toBe(base);
     expect(findingsFingerprint([finding(), finding({ id: "F2", claim: "another bug" })])).not.toBe(base);
+  });
+});
+
+describe("resyncFingerprint", () => {
+  it("matches the same conflicting files in any order and with either separator", () => {
+    expect(resyncFingerprint({ conflicts: ["README.md", "apps\\web\\App.test.tsx"] })).toBe(resyncFingerprint({ conflicts: ["apps/web/App.test.tsx", "README.md"] }));
+    expect(resyncFingerprint({ conflicts: ["README.md"] })).not.toBe(resyncFingerprint({ conflicts: ["README.md", "docs/a.md"] }));
+  });
+
+  it("never matches a conflict with a gate failure", () => {
+    const conflict = resyncFingerprint({ conflicts: ["README.md"] });
+    const gate = resyncFingerprint({ gate: "abc" });
+    expect(conflict).toMatch(/^conflict:/);
+    expect(gate).toBe("gate:abc");
+    expect(conflict).not.toBe(gate);
+  });
+
+  it("matches the same open feedback in any order, and never a conflict with the same names", () => {
+    const feedback = resyncFingerprint({ feedback: ["thread:T1", "check:CodeQL"] });
+    expect(feedback).toMatch(/^feedback:/);
+    expect(feedback).toBe(resyncFingerprint({ feedback: ["check:CodeQL", "thread:T1"] }));
+    expect(feedback).not.toBe(resyncFingerprint({ feedback: ["thread:T1"] }));
+    expect(feedback).not.toBe(resyncFingerprint({ conflicts: ["check:CodeQL", "thread:T1"] }));
   });
 });

@@ -75,6 +75,11 @@ describe("renderCaptureReport", () => {
     expect(text).toContain("- media could not be uploaded: gh release create failed: HTTP 403");
     expect(text).toContain("- the app left changes in the worktree, which were undone: dist/out.js");
   });
+
+  it("escapes every pipe and backslash in a table cell", () => {
+    const broken = [{ ...pages[1]!, after: [{ width: 390, signals: [], error: "a|b\\|c\\d" }] }];
+    expect(renderCaptureReport({ result: { ...result, pages: broken }, urls })).toContain("| invoices | `/invoices` | new | 390 | new screen | failed: a\\|b\\\\\\|c\\\\d |");
+  });
 });
 
 describe("screenshotsSection", () => {

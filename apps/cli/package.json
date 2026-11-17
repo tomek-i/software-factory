@@ -1,6 +1,6 @@
 {
   "name": "@tomek-i/software-factory",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "AI software factory: turns GitHub issues into reviewed, tested pull requests",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
@@ -30,7 +30,7 @@
     "prepack": "node scripts/bundle.mjs"
   },
   "dependencies": {
-    "@fastify/static": "10.1.8",
+    "@fastify/static": "10.1.9",
     "better-sqlite3": "^12.4.1",
     "commander": "^15.1.0",
     "execa": "^10.2.1",

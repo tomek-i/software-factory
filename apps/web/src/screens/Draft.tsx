@@ -101,11 +101,27 @@ interface Fields {
   ui: boolean;
   risk: string;
   body: string;
+  /** As typed, e.g. "ui, bug". */
+  labels: string;
   /** As typed, e.g. "1, 2". */
   dependsOn: string;
 }
 
-const fieldsOf = (issue: DraftIssue): Fields => ({ title: issue.title, ui: issue.ui, risk: issue.risk, body: issue.body, dependsOn: issue.dependsOn.join(", ") });
+const fieldsOf = (issue: DraftIssue): Fields => ({
+  title: issue.title,
+  ui: issue.ui,
+  risk: issue.risk,
+  body: issue.body,
+  labels: issue.labels.join(", "),
+  dependsOn: issue.dependsOn.join(", "),
+});
+
+/** "ui, bug" as label names; the server checks them against the repository's labels on publish. */
+const labelList = (text: string): string[] =>
+  text
+    .split(",")
+    .map((l) => l.trim())
+    .filter(Boolean);
 
 /** "1, #2" as positions, or what isn't one: the server would refuse it anyway, but can't be sent a non-number. */
 function positions(text: string): { numbers: number[]; bad: string[] } {
@@ -137,6 +153,10 @@ function IssueFields({ name, fields, sub, onChange }: { name: string; fields: Fi
             ))}
           </Select>
         </label>
+        <label className="flex items-center gap-2">
+          Labels
+          <Input aria-label={`${name} labels`} className="w-48" placeholder="e.g. ui, bug" value={fields.labels} onChange={(e) => set({ labels: e.target.value })} />
+        </label>
         {sub && (
           <label className="flex items-center gap-2">
             Depends on sub-issues
@@ -165,8 +185,8 @@ function Editor({ pending }: { pending: DraftView & { draft: NonNullable<DraftVi
 
   const badPositions = subIssues.flatMap((s, i) => positions(s.dependsOn).bad.map((p) => `sub-issue ${i + 1}: DEPENDS_ON ${p} is not a sub-issue number`));
   const edit = (): DraftEdit => ({
-    issue: { title: issue.title, ui: issue.ui, risk: issue.risk, body: issue.body },
-    subIssues: subIssues.map((s) => ({ title: s.title, ui: s.ui, risk: s.risk, body: s.body, dependsOn: positions(s.dependsOn).numbers })),
+    issue: { title: issue.title, ui: issue.ui, risk: issue.risk, body: issue.body, labels: labelList(issue.labels) },
+    subIssues: subIssues.map((s) => ({ title: s.title, ui: s.ui, risk: s.risk, body: s.body, labels: labelList(s.labels), dependsOn: positions(s.dependsOn).numbers })),
   });
   const act = useMutation({
     mutationFn: async (action: Action) => {

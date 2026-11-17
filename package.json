@@ -1,6 +1,6 @@
 {
   "name": "software-factory-monorepo",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
@@ -12,6 +12,8 @@
     "build": "tsc -b && pnpm --filter @factory/web build && pnpm --filter @tomek-i/software-factory bundle",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p apps/web/tsconfig.json",
     "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
     "test:watch": "vitest",
     "lint": "eslint .",
     "factory": "tsx --conditions=source apps/cli/src/main.ts"

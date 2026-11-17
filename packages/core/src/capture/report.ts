@@ -139,9 +139,12 @@ function code(text: string): string {
   return `\`${text.replace(/`/g, "'").replace(/\r?\n/g, " ")}\``;
 }
 
-/** A markdown table cell: no pipes or line breaks. */
+/**
+ * A markdown table cell: no pipes or line breaks. Backslashes are escaped too, or one in the text
+ * would pair with the escape of a pipe after it (`\|` → `\\|`) and the pipe would end the cell.
+ */
 function cell(text: string): string {
-  return text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  return text.replace(/[\\|]/g, "\\$&").replace(/\r?\n/g, " ");
 }
 
 function isAttachment(url: string): boolean {

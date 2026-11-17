@@ -15,6 +15,7 @@ import {
   resumeRun,
   runCost,
   trustedConfig,
+  waitingOn,
   type CommandRunner,
   type DriveOutcome,
   type DroppedMedia,
@@ -268,15 +269,16 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
       const lessons = lessonsNote(store, project);
       const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
-      if (runs.length === 0) return notes + (options.all ? "No runs yet." : "No active runs. `factory status --all` shows finished ones.") + footer;
+      if (runs.length === 0) return notes + (options.all ? "No runs yet." : `No active runs. ${style.hint("`factory status --all` shows finished ones.")}`) + footer;
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
       const rows = runs.map((r) => [
         r.id,
         r.issue_number ? `#${r.issue_number}` : "-",
         r.state,
-        `b${r.build_iterations + 1} r${r.review_rounds + 1}`,
+        `b${r.build_iterations + 1} r${r.review_rounds + 1}${r.resync_rounds ? `, ${r.resync_rounds} re-sync${r.resync_rounds > 1 ? "s" : ""}` : ""}`,
         `$${runCost(store, r.id).toFixed(2)}`,
-        r.waiting_gate ?? "",
+        // A closed issue outranks the gate: the work may be done elsewhere (see `factory show`).
+        [r.waiting_gate, waitingOn(store, project, r).issueClosed ? "issue closed" : undefined].filter(Boolean).join(", "),
       ]);
       const widths = header.map((_, i) => Math.max(...[header, ...rows].map((row) => row[i]!.length)));
       // Widths and padding come from the plain text; only the cell content is styled, never the padding.
@@ -442,15 +444,17 @@ export function runReject(cwd: string, ref: string, options: { message: string }
  * `factory cancel <run>`: stop its agent (and everything the agent started) and end the run. Its
  * worktree and branch are cleaned up now when no worker drives it, or else by the worker once it stopped.
  */
-export function runCancel(cwd: string, ref: string, options: { message?: string }, run?: CommandRunner): string {
+export function runCancel(cwd: string, ref: string, options: { message?: string }, deps: Pick<RunDeps, "run" | "github"> = {}): string {
   return withProject(
     cwd,
     (ctx) => {
-      const cancelled = cancelRun(ctx, ref, options.message?.trim() || "cancelled from the CLI", run);
-      const { stopped: count } = cancelled;
+      const cancelled = cancelRun(ctx, ref, options.message?.trim() || "cancelled from the CLI", deps);
+      const { stopped: count, closedPr } = cancelled;
       const stopped = count ? ` Stopped ${count} agent process${count > 1 ? "es" : ""}.` : "";
-      return `Cancelled ${cancelled.run.id}.${stopped}${describeMedia(cancelled.media)}${cancelled.cleaned.map((l) => `\n${l}`).join("")}`;
+      // Its issue was closed on GitHub, so its PR went with it.
+      const pr = closedPr === undefined ? "" : `\nClosed PR #${closedPr} and deleted its branch: the issue was closed on GitHub.`;
+      return `Cancelled ${cancelled.run.id}.${stopped}${describeMedia(cancelled.media)}${pr}${cancelled.cleaned.map((l) => `\n${l}`).join("")}`;
     },
-    run,
+    deps.run,
   );
 }

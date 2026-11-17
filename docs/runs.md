@@ -27,6 +27,11 @@ Back to the [README](../README.md#running-an-issue) for the commands; the stages
 - So a local edit cannot change where an approved run goes.
 - `factory approve` and `factory resume` carry on driving the run in the same terminal, as `factory run` would.
 - With `--no-run` they only record the decision.
+- `factory resume` works on any run waiting for you, at a gate too.
+  - It goes back to any stage up to where the run waits, or one step onward from there.
+  - At a gate, sending it back to build with `-m "what to fix"` is the alternative to approving or rejecting it.
+  - `--reset-loops` gives the build, review and spec loops a fresh budget.
+  - Use it when a loop cap stopped the run: without it, the run stops again at once.
 
 ## Naming a run
 
@@ -80,14 +85,24 @@ Stopping:
 - `factory stop` works through a `stop.json` in the factory's data folder, so it reaches workers in other terminals.
 - A worker obeys only a request made after it started.
 - Ctrl+C in the worker's terminal interrupts its runs like `factory stop --now` and exits.
+- A running worker keeps a file in `workers/` in the same folder, so `factory upgrade` knows not to replace the factory under it.
+- While `factory upgrade` checks and installs, it holds an `upgrading.json` there, and a worker refuses to start.
 
 ## Merging or closing on GitHub
 
-- You can also merge or close the PR yourself on GitHub at any point.
+- You can also merge or close the PR, or close the issue, yourself on GitHub at any point.
 - The next `factory status`, `factory run` or `factory sync` sees it.
 - A merged PR marks the run `done`, with a `merge` decision holding the merge commit.
 - A PR closed without merging marks it `cancelled`. You don't need `factory cancel`.
-- Runs without a PR, or with an open one, are left alone.
+- An issue closed on GitHub (done in another PR, a duplicate, not planned) marks a run without an open PR `cancelled`.
+  - The decision says how and by which PRs it was closed, e.g. `issue #173 was closed on GitHub (completed, by #221)`.
+- A run whose issue was closed while its PR is still open is left for you, since closing a PR is your call.
+  - `factory status` shows `issue closed` in its WAITING column; `factory show` and the web app say what cancelling does.
+  - `factory cancel` (or Cancel run in the web app) then also closes the PR, with a comment, and deletes its branch.
+  - It asks GitHub first: an issue reopened since is recorded open again, and the PR stays.
+  - If GitHub refuses to close the PR, the run is not cancelled and the output says why; close the PR on GitHub and the next sync cancels the run.
+- An issue reopened on GitHub is recorded open again; it is not queued again until you queue it.
+- Runs whose PR and issue are both open are left alone.
 - If GitHub can't be reached, the command prints a warning and carries on.
 
 ## Cleaning up finished runs
@@ -107,7 +122,7 @@ Stopping:
 - **Who does it:**
   - the worker that finished the run, once it has stopped;
   - `factory reject`, and `factory cancel` of a run no worker is driving, right away;
-  - `factory status` and `factory run`, right away, for runs they themselves finish because their PR was merged or closed on GitHub;
+  - `factory status` and `factory run`, right away, for runs they themselves finish because their PR was merged or closed, or their issue was closed, on GitHub;
   - `factory status` and `factory run`, for finished runs the cleanup has not handled yet, 2 minutes after they finished and only once no worker holds them.
     - So a worker that is still stopping is never disturbed.
 - **If cleanup fails** (for example, a file locked on Windows, or the remote out of reach):
@@ -135,6 +150,33 @@ Stopping:
 - Run `factory run` again after the reset and it continues the same agent session.
 - A malformed agent hand-over gets one retry with the problems listed, then the run waits for you.
 - What the run left behind is described in [Run artifacts](run-artifacts.md).
+
+## When a required check fails
+
+- The merge stage stops for you when a check branch protection requires fails on the PR.
+- `factory checks <run>` lists the failed checks, and for code scanning checks (CodeQL or another SARIF tool) their open alerts on the PR's head: rule, severity, file and line, link.
+- A check counts as code scanning when the PR has open alerts from a tool of the check's name.
+- **A real problem**: send the run to the builder, e.g. `factory resume <run> --to build --reset-loops -m "CodeQL: Missing rate limiting at src/drafts.ts:296"`.
+- **A false positive**: `factory dismiss <run> <alert> --reason false-positive -m "why"`.
+  - The reasons are GitHub's: `false-positive`, `wont-fix` or `used-in-tests`.
+  - The message is required; GitHub takes at most 280 characters.
+  - Only an open alert of a failed required check on the run's own PR can be dismissed.
+  - It is your decision, recorded on the run; agents never dismiss alerts.
+  - GitHub then updates the check in place, without a new CI run.
+  - When no required check fails any more, the run goes back to merge, which checks everything again on the same commit.
+  - A merge approval you already gave still holds, since the commit did not change; without one, the merge gate decides as usual.
+  - While a check still fails (other alerts are open, or GitHub has not updated it yet), the run keeps waiting.
+  - Dismissing needs a `gh` login whose token may write code scanning alerts (the `security_events` scope, or Code scanning alerts: write).
+- **Any other failed required check** can't be accepted from the factory: branch protection would refuse the merge anyway.
+  - Only the builder path is offered for it.
+
+## When review threads or checks are open on the PR
+
+- With `merge.open_feedback: ask` (the default), the merge gate waits for you while the PR has unresolved review threads or failed checks that branch protection does not require.
+- `factory show <run>` lists them with their links, and so does the web Inbox.
+- `factory approve <run>` merges anyway, for that commit and those threads only.
+- `factory resume <run> --to build -m "fix the open review threads"` sends them to the builder.
+- Details: [Open review threads and failed checks](pipeline.md#open-review-threads-and-failed-checks).
 
 ## What steers the agents
 

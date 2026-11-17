@@ -7,14 +7,35 @@ function fileList(files: string[], style: Style): string {
   return files.length ? files.map((f) => `  ${style.detail(f)}`).join("\n") : "  (none)";
 }
 
-function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOverview, style: Style): string {
+function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFeedback, issueClosed }: RunOverview, style: Style): string {
   const lines = [`Run ${style.detail(run.id)}`, `  state:   ${style.state(run.state)}`];
   if (run.waiting_gate) lines.push(`  waiting: ${style.attention(`${run.waiting_gate} gate`)}`);
+  // Times merging the default branch sent the run back to the builder, apart from review rounds (loops.max_resyncs).
+  if (run.resync_rounds) lines.push(`  resyncs: ${run.resync_rounds}`);
   lines.push(
     `  issue:   ${run.issue_number ? `#${run.issue_number} ${issueTitle ?? run.title}` : `- ${run.title}`}`,
     `  branch:  ${run.branch ? style.detail(run.branch) : "-"}`,
     `  PR:      ${run.pr_number ? style.detail(`#${run.pr_number}`) : "-"}`,
   );
+  // First: the work may be done elsewhere, which makes every other question moot.
+  if (issueClosed) {
+    lines.push(
+      "",
+      style.attention(`Issue #${run.issue_number} was closed on GitHub, so this work may be done elsewhere.`),
+      style.hint(`\`factory cancel ${run.id}\` also closes PR #${issueClosed.pr} and deletes its branch.`),
+    );
+  }
+  // Before anything else: this is what the merge gate asks about.
+  if (openFeedback?.length) {
+    lines.push("", style.title(`Open on PR #${run.pr_number}`));
+    for (const item of openFeedback) {
+      const where = item.file ? ` at ${item.file}${item.line ? `:${item.line}` : ""}` : "";
+      lines.push(`  - ${item.name}${where}${item.summary ? `: ${item.summary}` : ""}${item.link ? ` ${style.detail(`(${item.link})`)}` : ""}`);
+    }
+    lines.push(
+      style.hint(`Merge anyway with \`factory approve ${run.id}\`, or send it to the builder with \`factory resume ${run.id} --to build -m "fix the open review threads and checks"\`.`),
+    );
+  }
 
   if (!hasRunDir) {
     lines.push("", `No files yet: ${style.detail(runDir)} does not exist.`);
@@ -38,6 +59,13 @@ function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOv
         break;
       case "capture":
         lines.push(style.title(section.path), ...summary(section.summary));
+        break;
+      case "acceptance":
+        lines.push(`${style.title(section.path)} (acceptance criteria: ${section.count})`);
+        for (const c of section.criteria) {
+          lines.push(`  ${c.id} ${style.verdict(c.status)}: ${c.text}`);
+          if (c.evidence) lines.push(`    ${c.evidence}`);
+        }
     }
   }
 

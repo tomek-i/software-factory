@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
+import { OpenFeedback } from "../components/OpenFeedback";
 import { RunActions } from "../components/RunActions";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
@@ -170,6 +171,7 @@ function Waiting({ run }: { run: RunRow }) {
       <CardContent className="space-y-3">
         {reason && <p className="text-sm xl:max-w-3xl">{reason}</p>}
         {merge && <MergeDetails details={details.data} loading={details.isPending} error={details.error} />}
+        <OpenFeedback run={run} />
         <p className="text-xs text-muted-foreground">
           <Link to={runPath(run)} className="underline">
             Details

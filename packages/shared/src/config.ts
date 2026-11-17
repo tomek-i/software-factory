@@ -7,9 +7,15 @@ export const checkSchema = z.object({
   name: z.string().min(1),
   run: z.string().min(1),
   timeout_sec: z.number().int().positive().default(900),
+  // A busy machine makes tests time out; a failure that does not repeat is not the builder's to fix.
+  retries: z.number().int().min(0).max(5).default(1),
 });
 
-export const HARD_RULE_TRIGGERS = ["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"] as const;
+/** What the merge stage does about open review threads and failed optional checks (`merge.open_feedback`). */
+export const OPEN_FEEDBACK_MODES = ["ask", "fix", "ignore"] as const;
+export type OpenFeedbackMode = (typeof OPEN_FEEDBACK_MODES)[number];
+
+export const HARD_RULE_TRIGGERS =["new_dependency", "secrets_or_env_changes", "deletes_files_outside_scope"] as const;
 
 /** Paths that always escalate to a human. Config can add to these but not remove them. */
 export const DEFAULT_PROTECTED_PATHS = [
@@ -31,7 +37,11 @@ const protectedPath = z
     message: "use a repo-relative glob with forward slashes and only *, ** and ? (no {a,b}, [abc], leading / or backslashes)",
   });
 
-export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui"] as const;
+/**
+ * `acceptance` checks the issue's and the spec's acceptance criteria one by one. The engine runs it in
+ * every review round whatever `reviews.always` and `reviews.ui` say (see `reviewLenses` in core).
+ */
+export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui", "acceptance"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
 
 export const AGENT_ROLES = [
@@ -174,6 +184,9 @@ export const factoryConfigSchema = z.object({
       max_build_iterations: z.number().int().min(1).default(5),
       max_review_rounds: z.number().int().min(1).default(3),
       max_critic_rounds: z.number().int().min(1).default(2),
+      // Times the merge stage may go back to the builder because the default branch conflicted or
+      // broke the quality gate, or (merge.open_feedback: fix) for open feedback; counted apart from review rounds.
+      max_resyncs: z.number().int().min(1).default(3),
     })
     .prefault({}),
   reviews: z
@@ -215,6 +228,12 @@ export const factoryConfigSchema = z.object({
       method: z.enum(["merge", "squash", "rebase"]).default("merge"),
       // How long the merge stage waits for checks that branch protection requires, before asking a human.
       checks_timeout_min: z.number().positive().default(30),
+      // Unresolved review threads and failed checks branch protection does not require, read right
+      // before the merge: `ask` waits for a human, `fix` sends them to the builder (only threads of
+      // trusted authors and `comment_bots`; others still ask), `ignore` merges anyway.
+      open_feedback: z.enum(OPEN_FEEDBACK_MODES).default("ask"),
+      // Apps whose review threads `fix` may hand to the builder without a human, as GitHub shows them.
+      comment_bots: z.array(z.string().min(1)).default(["github-advanced-security[bot]"]),
     })
     .prefault({}),
   github: z

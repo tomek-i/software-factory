@@ -17,7 +17,7 @@ export async function gate(ctx: StageContext, run: Run): Promise<StepResult> {
   // one be left over anyway (runs from before the round counter), it is for another commit and must
   // not be reused for whatever this gate passes.
   for (const lens of REVIEW_LENSES) rmSync(reviewPath(join(dir, `round-${round}`), lens), { force: true });
-  rmSync(join(dir, `round-${round}`, "verify.md"), { force: true });
+  for (const file of ["verify.md", "acceptance.md", "acceptance.json"]) rmSync(join(dir, `round-${round}`, file), { force: true });
   const result = await runQualityGate({
     runId: run.id,
     worktreePath: worktree.path,
@@ -42,6 +42,17 @@ export async function gate(ctx: StageContext, run: Run): Promise<StepResult> {
     if (problems.length) return ctx.escalate(run, `quality gate passed but ${problems.join("; ")}`);
     ctx.move(run, "review", `quality gate passed (round ${round})`, { round, commit: result.head }, evidence);
     return undefined;
+  }
+  // Checks that only ran out of time, on every attempt, point at a slow machine more often than at
+  // the code; a builder sent back with no failure to fix would only lose a round or break working code.
+  const failed = result.checks.filter((c) => !c.passed);
+  if (result.secrets.hits.length === 0 && failed.length > 0 && failed.every((c) => c.timedOut)) {
+    const names = failed.map((c) => c.name).join(", ");
+    return ctx.escalate(
+      run,
+      `quality gate timed out (round ${round}): ${names} ran past timeout_sec on every attempt; resume to gate to run it again, or to build if the code hangs`,
+      { round, timedOut: failed.map((c) => c.name) },
+    );
   }
   return ctx.loopBack(run, `quality gate failed (round ${round})`, { round }, evidence, "quality gate", `quality gate still failing after round ${round}`, (reason, data) =>
     ctx.escalate(run, reason, data),

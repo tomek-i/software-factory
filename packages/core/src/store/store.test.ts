@@ -60,6 +60,25 @@ describe("Store", () => {
     reopened.close();
   });
 
+  it("adds the re-sync counter to existing runs at 0, keeping their other counters", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "factory-db-")), "factory.db");
+    const store = new Store(path);
+    const project = store.upsertProject({ name: "a", repo_path: "/a" });
+    const run = store.createRun({ project_id: project.id, title: "t", issue_number: 4 });
+    store.writeState(run.id, "merge", { build_iterations: 2, review_rounds: 1, round: 3 });
+    store.close();
+    // Undo the migration, as if this database was made before it.
+    const version = MIGRATIONS.findIndex((sql) => sql.includes("ADD COLUMN resync_rounds")) + 1;
+    const db = new Database(path);
+    db.exec("ALTER TABLE runs DROP COLUMN resync_rounds");
+    db.prepare("DELETE FROM schema_migrations WHERE version = ?").run(version);
+    db.close();
+
+    const reopened = new Store(path);
+    expect(reopened.getRun(run.id)).toMatchObject({ state: "merge", build_iterations: 2, review_rounds: 1, round: 3, resync_rounds: 0 });
+    reopened.close();
+  });
+
   it("upserts projects by repo path", () => {
     const { store, project } = setup();
     const again = store.upsertProject({ name: "renamed", repo_path: "/repo/demo", github_repo: "me/demo" });

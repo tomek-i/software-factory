@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Snapshot } from "@factory/shared";
 import { MIGRATIONS } from "./migrations.js";
 import { exportSnapshot, importChangeCount, importSnapshot, schemaVersion } from "./snapshot.js";
-import { Store, type IssueInput } from "./store.js";
+import { FACTORY_CLAIM_PENDING, fetchedFromGithub, NEVER_SYNCED, Store, type IssueInput } from "./store.js";
 
 const NOW = new Date("2026-11-16T10:00:00.000Z");
 
@@ -122,16 +122,17 @@ describe("importSnapshot", () => {
     const { snapshot } = exportSnapshot(a.store, a.project, { now: NOW, host: "laptop" });
     const b = machine("/home/elsewhere/repo");
 
-    const report = importSnapshot(b.store, b.project, carry(snapshot), { now: NOW });
+    const report = importSnapshot(b.store, b.project, carry(snapshot));
     expect(report.runs).toEqual({ added: [a.done.id], present: 0 });
     expect(report.issues).toEqual({ added: [2, 3, 4], queued: [], created_by_factory: [] });
     expect(report).toMatchObject({ run_events: 2, decisions: 1, agent_runs: 1, lessons: { added: 3, decided: 0, missing_run: 0 }, draft_issues: 1, drafts_done: 1 });
 
-    // The queue keeps its order, and trust markers survive.
+    // The queue keeps its order; the factory's marker comes as a claim the next fetch settles.
     expect(b.store.listIssues({ project_id: b.project.id, queued: true }).map((i) => [i.number, i.queued_at])).toEqual(
       a.store.listIssues({ project_id: a.project.id, queued: true }).map((i) => [i.number, i.queued_at]),
     );
-    expect(b.store.getIssue(b.project.id, 4)?.created_by_factory).toBe(true);
+    expect(b.store.getIssue(b.project.id, 4)?.created_by_factory).toBe(false);
+    expect(b.store.pendingFactoryClaims(b.project.id, [2, 3, 4])).toEqual([4]);
     expect(b.store.getIssue(b.project.id, 1)).toBeUndefined(); // neither queued nor the factory's: the next sync brings it
     expect(b.store.listLessons({ project_id: b.project.id }).map((l) => [l.rule, l.status, l.comment, l.pull_request])).toEqual([
       ["Rule one.", "proposed", null, null],
@@ -149,7 +150,7 @@ describe("importSnapshot", () => {
     expect(b.store.getRun(a.active.id)).toBeUndefined();
 
     const before = dump(b.store);
-    const again = importSnapshot(b.store, b.project, carry(snapshot), { now: NOW });
+    const again = importSnapshot(b.store, b.project, carry(snapshot));
     expect(importChangeCount(again)).toBe(0);
     expect(again.runs.present).toBe(1);
     expect(dump(b.store)).toEqual(before);
@@ -232,14 +233,44 @@ describe("importSnapshot", () => {
       expect(b.store.getIssue(b.project.id, 9)).toBeUndefined();
     });
 
-    it("ORs created_by_factory and never clears it", () => {
+    it("takes created_by_factory only as a claim for GitHub to settle, and never clears a local one", () => {
       const { a, b } = both();
       a.store.markCreatedByFactory(a.project.id, 1);
       b.store.markCreatedByFactory(b.project.id, 2);
       const report = importSnapshot(b.store, b.project, carry(exportSnapshot(a.store, a.project).snapshot));
       expect(report.issues.created_by_factory).toEqual([1]);
-      expect(b.store.getIssue(b.project.id, 1)?.created_by_factory).toBe(true);
+      // Not trusted on the file's word: issue 1 waits for a fetch from GitHub.
+      expect(b.store.getIssue(b.project.id, 1)?.created_by_factory).toBe(false);
+      expect(b.store.pendingFactoryClaims(b.project.id, [1, 2])).toEqual([1]);
       expect(b.store.getIssue(b.project.id, 2)?.created_by_factory).toBe(true);
+      // A second import of the same claim changes nothing.
+      expect(importChangeCount(importSnapshot(b.store, b.project, carry(exportSnapshot(a.store, a.project).snapshot)))).toBe(0);
+    });
+
+    it("plants no trust for an issue number GitHub does not have yet", () => {
+      const { a, b } = both();
+      const snapshot = carry(exportSnapshot(a.store, a.project).snapshot) as Snapshot;
+      // A crafted file: issue 99 does not exist yet, so whoever opens it next would get it.
+      snapshot.issues.push({ ...snapshot.issues[0]!, number: 99, author: "mallory", created_by_factory: true });
+      importSnapshot(b.store, b.project, snapshot);
+      expect(b.store.getIssue(b.project.id, 99)).toMatchObject({ created_by_factory: false, author: "" });
+      expect(b.store.db.prepare("SELECT created_by_factory FROM issues WHERE project_id = ? AND number = 99").get(b.project.id)).toEqual({
+        created_by_factory: FACTORY_CLAIM_PENDING,
+      });
+    });
+
+    it("takes none of a new issue's GitHub fields from the file, so a fetch must fill them before use", () => {
+      const { a, b, set } = both();
+      a.store.upsertIssue(a.project.id, { ...issue(9), title: "\u001b]8;;https://evil.example\u0007click", author: "mallory" });
+      set(a, 9, "2026-01-01T00:00:00.000Z", 1);
+      const snapshot = carry(exportSnapshot(a.store, a.project).snapshot) as Snapshot;
+      snapshot.issues.find((i) => i.number === 9)!.url = "javascript:alert(1)";
+      importSnapshot(b.store, b.project, snapshot);
+      const imported = b.store.getIssue(b.project.id, 9)!;
+      expect(imported).toMatchObject({ title: "", body: "", author: "", labels: [], url: "", gh_updated_at: NEVER_SYNCED, synced_at: NEVER_SYNCED });
+      expect(imported.queued_at).toBe("2026-01-01T00:00:00.000Z");
+      expect(fetchedFromGithub(imported)).toBe(false);
+      expect(fetchedFromGithub(b.store.getIssue(b.project.id, 1)!)).toBe(true);
     });
 
     it("leaves the GitHub mirror fields of an existing issue to sync", () => {
@@ -302,6 +333,21 @@ describe("importSnapshot", () => {
     });
   });
 
+  it("carries the re-sync counter, and takes 0 from a file made before it existed", () => {
+    const a = laptop();
+    const id = a.store.listRuns({ project_id: a.project.id }).find((r) => r.state === "done")!.id;
+    a.store.writeState(id, "done", { resync_rounds: 2 });
+    const snapshot = carry(exportSnapshot(a.store, a.project).snapshot) as Snapshot;
+    const b = machine("/b");
+    importSnapshot(b.store, b.project, snapshot);
+    expect(b.store.getRun(id)!.resync_rounds).toBe(2);
+
+    for (const run of snapshot.runs) delete (run as { resync_rounds?: number }).resync_rounds;
+    const c = machine("/c");
+    importSnapshot(c.store, c.project, snapshot);
+    expect(c.store.getRun(id)!.resync_rounds).toBe(0);
+  });
+
   it("skips an agent run whose id this store has under another run", () => {
     const a = laptop();
     const b = machine("/b");
@@ -320,10 +366,10 @@ describe("importSnapshot", () => {
     const snapshot = carry(exportSnapshot(a.store, a.project).snapshot);
     const b = machine("/b");
     const before = dump(b.store);
-    const dry = importSnapshot(b.store, b.project, snapshot, { dryRun: true, now: NOW });
+    const dry = importSnapshot(b.store, b.project, snapshot, { dryRun: true });
     expect(dry.dryRun).toBe(true);
     expect(dump(b.store)).toEqual(before);
-    const real = importSnapshot(b.store, b.project, snapshot, { now: NOW });
+    const real = importSnapshot(b.store, b.project, snapshot);
     expect({ ...dry, dryRun: false }).toEqual(real);
   });
 

@@ -19,3 +19,9 @@ export function ago(iso: string, now = Date.now()): string {
 export function money(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
+
+/** A run's loop counters, "b2 r1", plus its re-syncs with the default branch once it has any. */
+export function rounds(run: { build: number; review: number; resyncs: number }): string {
+  const resyncs = run.resyncs ? `, ${run.resyncs} re-sync${run.resyncs > 1 ? "s" : ""}` : "";
+  return `b${run.build} r${run.review}${resyncs}`;
+}

@@ -204,9 +204,10 @@ function tomlDependencies(text: string): Map<string, string> {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim();
     if (!line || line.startsWith("#")) continue;
-    const header = /^\[\[?\s*([^\]]+?)\s*\]\]?$/.exec(line);
+    // The name is trimmed after matching: `\s*` around a lazy name backtracked polynomially on long lines.
+    const header = /^\[\[?([^\]]+)\]\]?$/.exec(line);
     if (header) {
-      table = header[1]!.toLowerCase().replace(/["']/g, "");
+      table = header[1]!.trim().toLowerCase().replace(/["']/g, "");
       continue;
     }
     const assign = /^["']?([A-Za-z0-9_.-]+)["']?\s*=\s*/.exec(line);
@@ -248,7 +249,8 @@ function goDependencies(text: string): Map<string, string> {
     else if (block && line === ")") block = null;
     else if (block && line) add(block, line);
     else {
-      const single = /^(require|replace)\s+(.+)$/.exec(line);
+      // `\S` starts the entry, so the spaces before it can split only one way (no polynomial backtracking).
+      const single = /^(require|replace)\s+(\S.*)$/.exec(line);
       if (single) add(single[1] as "require" | "replace", single[2]!);
     }
   }

@@ -29,11 +29,12 @@ export const reviewsPass = (lenses: string[] = ["code", "security", "docs"]): Fa
 
 /**
  * Test timeout for files whose tests drive real git repos and child processes: seconds each on
- * Windows, and many times that while the machine is busy (another `pnpm test`). Use it with
- * `vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT })`; tests that prove something is fast keep their
- * own, tighter limits.
+ * Windows, and many times that while the machine is busy (another `pnpm test`). It is the default
+ * test timeout of the integration project (`*.int.test.ts`, see vitest.config.ts); tests that prove
+ * something is fast keep their own, tighter limits. A whole-pipeline test (build, reviews, PR, merge) takes about 20s alone and
+ * already took up to 100s in a full `pnpm test`; a busier machine pushed some just past 120s.
  */
-export const GIT_TEST_TIMEOUT = 120_000;
+export const GIT_TEST_TIMEOUT = 240_000;
 
 export interface FakeInvocation {
   argv: string[];

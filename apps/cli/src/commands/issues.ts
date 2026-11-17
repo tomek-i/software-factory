@@ -4,14 +4,15 @@ import { CliError, withProject } from "../context.js";
 import { plain, type Style } from "../style.js";
 
 /** `factory sync`: pull issues from GitHub, and finish runs whose PR was merged or closed there. */
-export function runSync(cwd: string, run?: CommandRunner, github?: GithubPort): string {
+export function runSync(cwd: string, run?: CommandRunner, github?: GithubPort, style: Style = plain): string {
   return withProject(
     cwd,
     ({ store, project, config }) => {
       const result = syncIssues(store, project, run);
       const queued = store.listIssues({ project_id: project.id, queued: true }).length;
       const reconciled = reconcileRuns(store, project, config, { run, github });
-      return `${reconciled.map((l) => `${l}\n`).join("")}Synced ${project.github_repo}: ${result.open} open, ${result.closed} closed since last sync, ${queued} queued.`;
+      const count = (n: number) => style.detail(String(n));
+      return `${reconciled.map((l) => `${l}\n`).join("")}Synced ${project.github_repo}: ${count(result.open)} open, ${count(result.closed)} closed since last sync, ${count(queued)} queued.`;
     },
     run,
   );
@@ -65,7 +66,7 @@ function parseNumbers(values: string[]): number[] {
   });
 }
 
-export function runQueue(cwd: string, values: string[], queued: boolean, run?: CommandRunner): string {
+export function runQueue(cwd: string, values: string[], queued: boolean, run?: CommandRunner, style: Style = plain): string {
   const numbers = parseNumbers(values);
   return withProject(
     cwd,
@@ -76,10 +77,10 @@ export function runQueue(cwd: string, values: string[], queued: boolean, run?: C
             // Queueing an issue that was never synced fetches just that issue.
             if (queued && !store.getIssue(project.id, n)) fetchIssue(store, project, n, run);
             const issue = store.setQueued(project.id, n, queued);
-            const line = `${queued ? "Queued" : "Unqueued"} #${n} ${issue.title}`;
-            return queued && !isTrustedIssue(config, issue) ? `${line}\n${UNTRUSTED_NOTE}` : line;
+            const line = `${queued ? "Queued" : "Unqueued"} ${style.detail(`#${n}`)} ${issue.title}`;
+            return queued && !isTrustedIssue(config, issue) ? `${line}\n${style.attention(UNTRUSTED_NOTE)}` : line;
           } catch (err) {
-            return `Skipped #${n}: ${(err as Error).message}`;
+            return style.warning(`Skipped #${n}: ${(err as Error).message}`);
           }
         })
         .join("\n"),

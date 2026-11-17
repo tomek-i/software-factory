@@ -71,6 +71,24 @@ describe("ghPort", () => {
     }
   });
 
+  it("reads an issue's state, why it was closed and the PRs that closed it", () => {
+    const closed = fakeGh(JSON.stringify({ number: 7, state: "CLOSED", stateReason: "COMPLETED", closedByPullRequestsReferences: [{ number: 221 }, { number: 224 }] }));
+    expect(ghPort(project, closed.run).issueState(7)).toEqual({ number: 7, state: "closed", reason: "completed", closedBy: [221, 224] });
+    expect(closed.calls[0]).toEqual(["issue", "view", "7", "-R", "o/r", "--json", "number,state,stateReason,closedByPullRequestsReferences"]);
+    const open = fakeGh(JSON.stringify({ number: 7, state: "OPEN", stateReason: "REOPENED", closedByPullRequestsReferences: [] }));
+    expect(ghPort(project, open.run).issueState(7)).toEqual({ number: 7, state: "open", closedBy: [] });
+    for (const out of ["nope", JSON.stringify({ number: 8, state: "OPEN" }), JSON.stringify({ number: 7, state: "WEIRD" })]) {
+      expect(() => ghPort(project, fakeGh(out).run).issueState(7)).toThrow(/unexpected output/);
+    }
+  });
+
+  it("closes a PR with a comment and deletes its branch", () => {
+    const { calls, run } = fakeGh("");
+    ghPort(project, run).closePullRequest(42, "Superseded by #221.");
+    expect(calls).toEqual([["pr", "close", "42", "-R", "o/r", "--comment", "Superseded by #221.", "--delete-branch"]]);
+    expect(() => ghPort(project, fakeGh("", 1).run).closePullRequest(42, "x")).toThrow(/gh pr close failed: boom/);
+  });
+
   it("marks a PR ready and merges it only at the commit that passed", () => {
     const { calls, run } = fakeGh("");
     ghPort(project, run).markReady(42);
@@ -125,35 +143,107 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).requiredChecks(42)).toThrow(/unexpected output/);
   });
 
-  it("reads every check on the PR's head, in each bucket, and treats a commit with none as an empty list", () => {
+  it("lists every check on the PR's head with its summary, and none when nothing reported", () => {
     const listed = [
-      { name: "test", bucket: "pass", link: "https://ci/1" },
-      { name: "CodeQL", bucket: "fail", link: "https://ci/2" },
-      { name: "deploy", bucket: "pending" },
-      { name: "docs", bucket: "skipping", link: "" },
-      { name: "e2e", bucket: "cancel", link: "https://ci/5" },
+      { name: "CodeQL", bucket: "fail", link: "https://github.com/o/r/runs/3", description: " 2 new alerts including 2 high severity " },
+      { name: "lint", bucket: "pass", link: "", description: "" },
     ];
-    const calls: string[][] = [];
-    // gh exits 1 with a failed check, but the list is still on stdout.
-    const run: CommandRunner = (_cmd, args) => {
-      calls.push(args);
-      return { code: 1, stdout: JSON.stringify(listed), stderr: "" };
-    };
+    const { calls, run } = fakeGh(JSON.stringify(listed), 1);
     expect(ghPort(project, run).pullRequestChecks(42)).toEqual([
-      { name: "test", bucket: "pass", link: "https://ci/1" },
-      { name: "CodeQL", bucket: "fail", link: "https://ci/2" },
-      { name: "deploy", bucket: "pending" },
-      { name: "docs", bucket: "skipping" },
-      { name: "e2e", bucket: "cancel", link: "https://ci/5" },
+      { name: "CodeQL", bucket: "fail", link: "https://github.com/o/r/runs/3", summary: "2 new alerts including 2 high severity" },
+      { name: "lint", bucket: "pass" },
     ]);
-    expect(calls[0]).toEqual(["pr", "checks", "42", "-R", "o/r", "--json", "name,bucket,link"]);
-
+    expect(calls[0]).toEqual(["pr", "checks", "42", "-R", "o/r", "--json", "name,bucket,link,description"]);
     const none: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no checks reported on the 'x' branch" });
     expect(ghPort(project, none).pullRequestChecks(42)).toEqual([]);
-    expect(() => ghPort(project, fakeGh("<html>", 0).run).pullRequestChecks(42)).toThrow(/gh pr checks failed/);
-    expect(() => ghPort(project, fakeGh(JSON.stringify({ name: "x" })).run).pullRequestChecks(42)).toThrow(/gh pr checks failed/);
-    expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: 5, bucket: "pass" }])).run).pullRequestChecks(42)).toThrow(/unexpected output/);
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).pullRequestChecks(42)).toThrow(/unexpected output/);
+  });
+
+  it("lists the review threads that are neither resolved nor outdated, naming apps as GitHub shows them", () => {
+    const comment = (login: string | null, typename: string, body: string, own = false) => ({
+      nodes: [{ author: login === null ? null : { __typename: typename, login }, body, url: `https://github.com/o/r/pull/42#discussion_r${body.length}`, viewerDidAuthor: own }],
+    });
+    const threads = {
+      pageInfo: { hasNextPage: false },
+      nodes: [
+        { id: "T1", isResolved: false, isOutdated: false, path: "src/a.ts", line: 37, comments: comment("github-advanced-security", "Bot", "Polynomial regular expression") },
+        { id: "T2", isResolved: true, isOutdated: false, path: "src/a.ts", line: 3, comments: comment("bob", "User", "resolved") },
+        { id: "T3", isResolved: false, isOutdated: true, path: "src/a.ts", line: null, comments: comment("bob", "User", "outdated") },
+        { id: "T4", isResolved: false, isOutdated: false, path: "README.md", line: null, comments: comment("factory-bot", "User", "a note", true) },
+        { id: "T5", isResolved: false, isOutdated: false, path: "x.ts", line: 1, comments: comment(null, "User", "gone") },
+      ],
+    };
+    const { calls, run } = fakeGh(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: threads } } } }));
+    expect(ghPort(project, run).unresolvedReviewThreads(42)).toEqual([
+      { id: "T1", author: "github-advanced-security[bot]", own: false, path: "src/a.ts", line: 37, body: "Polynomial regular expression", url: "https://github.com/o/r/pull/42#discussion_r29" },
+      { id: "T4", author: "factory-bot", own: true, path: "README.md", body: "a note", url: "https://github.com/o/r/pull/42#discussion_r6" },
+      { id: "T5", author: "ghost", own: false, path: "x.ts", line: 1, body: "gone", url: "https://github.com/o/r/pull/42#discussion_r4" },
+    ]);
+    expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*reviewThreads.*isOutdated/), "-f", "owner=o", "-f", "name=r", "-F", "n=42"]);
+
+    const more = fakeGh(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { ...threads, pageInfo: { hasNextPage: true } } } } } }));
+    expect(() => ghPort(project, more.run).unresolvedReviewThreads(42)).toThrow(/more than 100 review threads/);
+    expect(() => ghPort(project, fakeGh("{}").run).unresolvedReviewThreads(42)).toThrow(/unexpected output/);
+    const broken = { data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "T9", isResolved: false, isOutdated: false, comments: { nodes: [] } }] } } } } };
+    expect(() => ghPort(project, fakeGh(JSON.stringify(broken)).run).unresolvedReviewThreads(42)).toThrow(/unexpected review thread/);
+  });
+
+  it("lists the open code scanning alerts on the PR's head ref, and none for a repo without code scanning", () => {
+    const listed = [
+      {
+        number: 26,
+        state: "open",
+        html_url: "https://github.com/o/r/security/code-scanning/26",
+        rule: { id: "js/missing-rate-limiting", severity: "error", security_severity_level: "high", description: "Missing rate limiting" },
+        tool: { name: "CodeQL" },
+        most_recent_instance: { location: { path: "apps/server/src/drafts.ts", start_line: 317 } },
+      },
+      { number: 3, html_url: "https://github.com/o/r/security/code-scanning/3", rule: { id: "x/y", severity: "warning" }, tool: { name: "Semgrep" }, most_recent_instance: {} },
+    ];
+    const { calls, run } = fakeGh(JSON.stringify(listed));
+    expect(ghPort(project, run).codeScanningAlerts(172)).toEqual([
+      {
+        number: 26,
+        rule: "js/missing-rate-limiting",
+        description: "Missing rate limiting",
+        severity: "high",
+        tool: "CodeQL",
+        file: "apps/server/src/drafts.ts",
+        line: 317,
+        url: "https://github.com/o/r/security/code-scanning/26",
+      },
+      { number: 3, rule: "x/y", description: "x/y", severity: "warning", tool: "Semgrep", url: "https://github.com/o/r/security/code-scanning/3" },
+    ]);
+    expect(calls[0]).toEqual(["api", "-X", "GET", "repos/o/r/code-scanning/alerts", "-f", "ref=refs/pull/172/head", "-f", "state=open", "-F", "per_page=100"]);
+
+    const disabled: CommandRunner = () => ({ code: 1, stdout: "", stderr: "gh: no analysis found (HTTP 404)" });
+    expect(ghPort(project, disabled).codeScanningAlerts(172)).toEqual([]);
+    const forbidden: CommandRunner = () => ({ code: 1, stdout: "", stderr: "gh: Resource not accessible by integration (HTTP 403)" });
+    expect(() => ghPort(project, forbidden).codeScanningAlerts(172)).toThrow(/code-scanning\/alerts failed: gh: Resource not accessible/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ number: "x" }])).run).codeScanningAlerts(172)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("{}").run).codeScanningAlerts(172)).toThrow(/unexpected output/);
+  });
+
+  it("dismisses a code scanning alert with GitHub's reason and the comment as plain text", () => {
+    const { calls, run } = fakeGh("");
+    ghPort(project, run).dismissCodeScanningAlert(26, "false positive", "@file: a limiter covers every draft route");
+    expect(calls[0]).toEqual([
+      "api",
+      "-X",
+      "PATCH",
+      "repos/o/r/code-scanning/alerts/26",
+      "-f",
+      "state=dismissed",
+      "-f",
+      "dismissed_reason=false positive",
+      "-f",
+      "dismissed_comment=@file: a limiter covers every draft route",
+      "--silent",
+    ]);
+    expect(() => ghPort(project, run).dismissCodeScanningAlert(0, "won't fix", "x")).toThrow(/not an alert number/);
+    expect(() => ghPort(project, run).dismissCodeScanningAlert(4, "nah" as "won't fix", "x")).toThrow(/not a reason/);
+    expect(calls).toHaveLength(1);
+    expect(() => ghPort(project, fakeGh("", 1).run).dismissCodeScanningAlert(4, "used in tests", "x")).toThrow(/gh api -X failed: boom/);
   });
 
   it("reads a PR's head commit and diff size", () => {
@@ -180,6 +270,28 @@ describe("ghPort", () => {
     expect(sent).toBe("## Why\nx\n");
     expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
     expect(() => ghPort(project, fakeGh("created").run).createIssue({ title: "t", body: "b" })).toThrow(/unexpected output: created. The issue "t" may have been created anyway; check GitHub/);
+  });
+
+  it("opens an issue with one --label per label", () => {
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      return { code: 0, stdout: "https://github.com/o/r/issues/32", stderr: "" };
+    };
+    ghPort(project, run).createIssue({ title: "T", body: "b", labels: ["ui", "good first issue"] });
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "create", "-R", "o/r", "--title", "T", "--label", "ui", "--label", "good first issue", "--body-file"]);
+  });
+
+  it("lists the repository's labels with their descriptions", () => {
+    const list = fakeGh(JSON.stringify([{ name: "ui", description: "Visible changes" }, { name: "bug", description: "" }]));
+    expect(ghPort(project, list.run).listLabels()).toEqual([
+      { name: "ui", description: "Visible changes" },
+      { name: "bug", description: "" },
+    ]);
+    expect(list.calls[0]).toEqual(["label", "list", "-R", "o/r", "--limit", "200", "--json", "name,description"]);
+    expect(() => ghPort(project, fakeGh("{}").run).listLabels()).toThrow(/gh label list returned unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ description: "x" }])).run).listLabels()).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("", 1).run).listLabels()).toThrow(/gh label list failed: boom/);
   });
 
   it("links a sub-issue by the node ids of both issues", () => {
@@ -254,6 +366,70 @@ describe("ghPort", () => {
     expect(sent).toBe("new text");
     expect(existsSync(calls[0]![5]!.slice("body=@".length))).toBe(false);
     expect(() => ghPort(project, fakeGh("", 1).run).editComment(12, "x")).toThrow(/gh api -X failed: boom/);
+  });
+
+  it("finds a review of its own that starts with a marker", () => {
+    const reviews = (nodes: object[]) => JSON.stringify({ data: { repository: { pullRequest: { reviews: { nodes } } } } });
+    const { calls, run } = fakeGh(
+      reviews([
+        { body: "<!-- factory:r:review-round-1 -->\nsomeone else pasted the marker", viewerDidAuthor: false },
+        { body: "quoting <!-- factory:r:review-round-2 --> later on", viewerDidAuthor: true },
+        { body: "<!-- factory:r:review-round-3 -->\nnotes", viewerDidAuthor: true },
+      ]),
+    );
+    const github = ghPort(project, run);
+    expect(github.hasReview(42, "<!-- factory:r:review-round-1 -->")).toBe(false);
+    expect(github.hasReview(42, "<!-- factory:r:review-round-2 -->")).toBe(false);
+    expect(github.hasReview(42, "<!-- factory:r:review-round-3 -->")).toBe(true);
+    expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*viewerDidAuthor/), "-f", "owner=o", "-f", "name=r", "-F", "n=42"]);
+    expect(() => ghPort(project, fakeGh("{}").run).hasReview(42, "x")).toThrow(/unexpected output/);
+  });
+
+  it("leaves a COMMENT review with inline comments on the new side, sending it from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args[5]!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).createReview(42, { commit: "abc", body: "notes", comments: [{ path: "a.ts", line: 3, body: "**code** · minor: x" }] });
+    expect(calls[0]).toEqual(["api", "-X", "POST", "repos/o/r/pulls/42/reviews", "--input", expect.any(String), "--silent"]);
+    expect(JSON.parse(sent)).toEqual({ commit_id: "abc", event: "COMMENT", body: "notes", comments: [{ path: "a.ts", line: 3, side: "RIGHT", body: "**code** · minor: x" }] });
+    expect(existsSync(calls[0]![5]!)).toBe(false);
+    expect(() => ghPort(project, fakeGh("", 1).run).createReview(42, { commit: "abc", body: "x", comments: [] })).toThrow(/gh api -X failed: boom/);
+  });
+
+  it("reads a comment's body through the API", () => {
+    const { calls, run } = fakeGh(JSON.stringify({ id: 12, body: "- [ ] one\r\n" }));
+    expect(ghPort(project, run).commentBody(12)).toBe("- [ ] one\r\n");
+    expect(calls[0]).toEqual(["api", "repos/o/r/issues/comments/12"]);
+    expect(() => ghPort(project, fakeGh("nope").run).commentBody(12)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("{}").run).commentBody(12)).toThrow(/no body/);
+  });
+
+  it("reads an issue's body only when the factory's account wrote the issue", () => {
+    const issue = (viewerDidAuthor: boolean) => JSON.stringify({ data: { repository: { issue: { body: "text", viewerDidAuthor } } } });
+    const own = fakeGh(issue(true));
+    expect(ghPort(project, own.run).ownIssueBody(3)).toBe("text");
+    expect(own.calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*viewerDidAuthor/), "-f", "o=o", "-f", "r=r", "-F", "n=3"]);
+    expect(ghPort(project, fakeGh(issue(false)).run).ownIssueBody(3)).toBeUndefined();
+    expect(() => ghPort(project, fakeGh("nope").run).ownIssueBody(3)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ data: { repository: { issue: null } } })).run).ownIssueBody(3)).toThrow(/no body/);
+  });
+
+  it("edits an issue's body from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).editIssueBody(3, "- [x] one\n");
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "edit", "3", "-R", "o/r", "--body-file"]);
+    expect(sent).toBe("- [x] one\n");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
   });
 
   it("marks factory comments", () => {

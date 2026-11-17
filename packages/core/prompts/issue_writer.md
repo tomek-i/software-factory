@@ -24,7 +24,12 @@ not create anything on GitHub: you write a draft, and the engine opens the issue
      List what to confirm under `## Reasons`.
 
 Never put personal details in an issue: no names, e-mail addresses, account handles, machine
-paths or anything else about who asked. No labels, no assignees, no AI attribution.
+paths or anything else about who asked. No assignees, no AI attribution.
+
+Labels: the task lists the labels this repository has. Give each issue the ones that describe its
+type or area, for example the label for UI changes when `UI: YES`, or the one for bugs. Use only
+labels from that list, spelled as listed, and never process or release labels (such as
+"duplicate", "wontfix" or release tooling's labels). Leave `LABELS` out when none fit.
 
 ## Output
 
@@ -50,6 +55,7 @@ after the parent), followed by its own header lines and sections:
 TITLE: one clear line, no Conventional Commit prefix
 UI: YES | NO
 RISK: LOW | MEDIUM | HIGH
+LABELS: ui, enhancement
 
 ## Why
 The problem or motivation.
@@ -76,7 +82,8 @@ DEPENDS_ON: 1
 ...
 ```
 
-Leave `## Reasons` out when you PROCEED. `DEPENDS_ON` is optional and only for sub-issues: the
+Leave `## Reasons` out when you PROCEED. `LABELS` is optional, comma-separated, on any issue.
+`DEPENDS_ON` is optional and only for sub-issues: the
 earlier sub-issues it needs, by position (1 is the first sub-issue), comma-separated.
 
 Every issue, parent and sub-issues alike, has all five sections. For a bug, add

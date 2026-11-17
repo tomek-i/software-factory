@@ -1,7 +1,7 @@
 import { styleText } from "node:util";
 import { describe, expect, it } from "vitest";
 import { RUN_STATES } from "@factory/shared";
-import { AGENT_FORMAT, colourEnabled, createStyle, plain, STATE_FORMAT, styleFor, VERDICT_FORMAT } from "./style.js";
+import { AGENT_FORMAT, colourEnabled, createStyle, LESSON_FORMAT, plain, STATE_FORMAT, styleFor, VERDICT_FORMAT } from "./style.js";
 
 const AGENT_STATUSES = ["running", "ok", "error", "rate_limited", "cancelled"] as const;
 const paint = (format: Parameters<typeof styleText>[0], text: string) => styleText(format, text, { validateStream: false });
@@ -27,10 +27,14 @@ describe("colour scheme", () => {
 
   it("maps every verdict header value by meaning", () => {
     const by = (format: string) => Object.keys(VERDICT_FORMAT).filter((v) => VERDICT_FORMAT[v] === format).sort();
-    expect(by("green")).toEqual(["ACCEPT", "APPROVE", "NONE_CONFIRMED", "PASS", "PROCEED", "READY", "REFINED"]);
-    expect(by("red")).toEqual(["BLOCKED", "CHANGES", "CONFIRMED", "FAIL", "REJECT"]);
-    expect(by("yellow")).toEqual(["ESCALATE", "INCOMPLETE", "NEEDS_INFO", "REVISE"]);
-    expect(Object.keys(VERDICT_FORMAT)).toHaveLength(16);
+    expect(by("green")).toEqual(["ACCEPT", "APPROVE", "MET", "NONE_CONFIRMED", "PASS", "PROCEED", "READY", "REFINED"]);
+    expect(by("red")).toEqual(["BLOCKED", "CHANGES", "CONFIRMED", "FAIL", "NOT_MET", "REJECT"]);
+    expect(by("yellow")).toEqual(["CANNOT_CHECK", "ESCALATE", "INCOMPLETE", "NEEDS_INFO", "NOT_CHECKED", "REVISE"]);
+    expect(Object.keys(VERDICT_FORMAT)).toHaveLength(20);
+  });
+
+  it("maps every lesson status by meaning", () => {
+    expect(LESSON_FORMAT).toEqual({ proposed: "yellow", approved: "green", rejected: "red" });
   });
 
   it("styles text by what it is when colour is on", () => {
@@ -54,6 +58,14 @@ describe("colour scheme", () => {
     expect(style.verdict("1")).toBe("1");
     expect(style.verdict("toString")).toBe("toString");
     expect(style.title("triage.md")).toBe(paint("bold", "triage.md"));
+    expect(style.lesson("proposed")).toBe(paint("yellow", "proposed"));
+    expect(style.lesson("approved", "approved (PR #7)")).toBe(paint("green", "approved (PR #7)"));
+    expect(style.lesson("rejected")).toBe(paint("red", "rejected"));
+    expect(style.success("factory 1.0.0 is up to date.")).toBe(paint("green", "factory 1.0.0 is up to date."));
+    expect(style.warning("warning: careful")).toBe(paint("yellow", "warning: careful"));
+    expect(style.error("error:")).toBe(paint("red", "error:"));
+    expect(style.command("status")).toBe(paint("cyan", "status"));
+    expect(style.option("--all")).toBe(paint("green", "--all"));
     // Styling only wraps the text: without the codes it is unchanged.
     expect(style.transition(`-> ${style.state("build")}: go`).replace(ANSI, "")).toBe("-> build: go");
     // Empty text stays empty, so padding and trimming still work.
@@ -71,6 +83,12 @@ describe("colour scheme", () => {
       expect(style.hint("Approve")).toBe("Approve");
       for (const value of Object.keys(VERDICT_FORMAT)) expect(style.verdict(value)).toBe(value);
       expect(style.title("triage.md")).toBe("triage.md");
+      for (const status of ["proposed", "approved", "rejected"] as const) expect(style.lesson(status)).toBe(status);
+      expect(style.success("done")).toBe("done");
+      expect(style.warning("warning: careful")).toBe("warning: careful");
+      expect(style.error("error:")).toBe("error:");
+      expect(style.command("status")).toBe("status");
+      expect(style.option("-a, --all")).toBe("-a, --all");
     }
   });
 });

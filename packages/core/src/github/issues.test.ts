@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Store } from "../store/store.js";
+import { FACTORY_CLAIM_PENDING, Store } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 import { fetchIssue, GithubError, syncIssues } from "./issues.js";
 
@@ -17,12 +17,12 @@ function ghIssue(number: number, extra: object = {}) {
   };
 }
 
-function fakeGh(responses: { list?: object[]; view?: object; fail?: boolean }) {
+function fakeGh(responses: { list?: object[]; view?: object; login?: string; fail?: boolean }) {
   const calls: string[][] = [];
   const run: CommandRunner = (_cmd, args) => {
     calls.push(args);
     if (responses.fail) return { code: 1, stdout: "", stderr: "HTTP 401: Bad credentials" };
-    const body = args[1] === "list" ? responses.list : responses.view;
+    const body = args[0] === "api" ? { login: responses.login } : args[1] === "list" ? responses.list : responses.view;
     return { code: 0, stdout: JSON.stringify(body), stderr: "" };
   };
   return { run, calls };
@@ -138,6 +138,43 @@ describe("fetchIssue", () => {
     const { store, project } = setup();
     const run: CommandRunner = () => ({ code: 0, stdout: "", stderr: "" });
     expect(() => fetchIssue(store, project, 1, run)).toThrow(GithubError);
+  });
+});
+
+describe("factory claims from an import", () => {
+  /** Issues 1 and 2 as `factory import` leaves them: claimed for the factory, not settled yet. */
+  function claimed() {
+    const s = setup();
+    syncIssues(s.store, s.project, fakeGh({ list: [ghIssue(1), ghIssue(2)] }).run);
+    s.store.db.prepare("UPDATE issues SET created_by_factory = ? WHERE project_id = ?").run(FACTORY_CLAIM_PENDING, s.project.id);
+    return s;
+  }
+
+  it("keeps a claim on sync only where the factory's own gh login opened the issue", () => {
+    const { store, project } = claimed();
+    const gh = fakeGh({ list: [ghIssue(1, { author: { login: "Factory-Bot" } }), ghIssue(2)], login: "factory-bot" });
+    syncIssues(store, project, gh.run);
+    expect(gh.calls).toContainEqual(["api", "user"]);
+    expect(store.getIssue(project.id, 1)!.created_by_factory).toBe(true);
+    expect(store.getIssue(project.id, 2)!.created_by_factory).toBe(false);
+    expect(store.pendingFactoryClaims(project.id, [1, 2])).toEqual([]);
+  });
+
+  it("settles a claim when a single issue is fetched, and leaves it pending for an issue GitHub did not return", () => {
+    const { store, project } = claimed();
+    fetchIssue(store, project, 1, fakeGh({ view: ghIssue(1, { author: { login: "factory-bot" } }), login: "factory-bot" }).run);
+    expect(store.getIssue(project.id, 1)!.created_by_factory).toBe(true);
+    expect(() => fetchIssue(store, project, 2, fakeGh({ fail: true }).run)).toThrow(GithubError);
+    expect(store.getIssue(project.id, 2)!.created_by_factory).toBe(false);
+    expect(store.pendingFactoryClaims(project.id, [2])).toEqual([2]);
+  });
+
+  it("does not ask for the gh login when nothing is claimed", () => {
+    const { store, project } = setup();
+    const gh = fakeGh({ list: [ghIssue(1)], view: ghIssue(1) });
+    syncIssues(store, project, gh.run);
+    fetchIssue(store, project, 1, gh.run);
+    expect(gh.calls.some((args) => args[0] === "api")).toBe(false);
   });
 });
 

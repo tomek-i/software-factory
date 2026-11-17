@@ -4,13 +4,13 @@ import { isTrustedIssue } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn } from "../../agents/turn.js";
 import type { Run } from "../../store/store.js";
-import { latestRoundWith, latestSpecRound, quietMentions, readValid, REFINE_MARKER, refined, section, specFile } from "../shared.js";
+import { latestRoundWith, latestSpecRound, quietMentions, readValid, REFINE_END_MARKER, REFINE_MARKER, refined, section, specFile, withoutMarkers, withSpecSection } from "../shared.js";
 import type { StageContext, StepResult } from "./context.js";
 
 /**
  * Triage rated the issue INCOMPLETE, or the spec critic asked for a revision: the refine agent writes
  * what the issue leaves open (acceptance criteria, scope, out of scope, open questions) as a new
- * spec round, and the engine posts it on the issue.
+ * spec round, and the engine puts it on the issue (see postSpec).
  */
 export async function refine(ctx: StageContext, run: Run): Promise<StepResult> {
   const issue = ctx.issueOf(run);
@@ -70,8 +70,10 @@ export async function refine(ctx: StageContext, run: Run): Promise<StepResult> {
 }
 
 /**
- * The refined spec on the issue, as one marked comment: a later round edits it in place, so the
- * issue shows the current spec and does not fill up with old versions.
+ * The refined spec on the issue, in one marked place that a later round edits in place, so the issue
+ * shows the current spec and does not fill up with old versions. On an issue the factory's account
+ * wrote, that is a section at the end of the issue body, so the issue reads as one spec and edits to
+ * it reach triage. Anyone else's issue is left as they wrote it and gets a comment.
  */
 function postSpec(ctx: StageContext, run: Run, round: number, body: string): void {
   const { github } = ctx.deps;
@@ -83,14 +85,26 @@ function postSpec(ctx: StageContext, run: Run, round: number, body: string): voi
   ];
   const parts = headings.flatMap(([name, title]) => {
     const text = section(body, name);
-    return text ? [`### ${title}\n${quietMentions(text)}`] : [];
+    return text ? [`### ${title}\n${quietMentions(withoutMarkers(text))}`] : [];
   });
+  const issue = run.issue_number!;
+  const own = github.ownIssueBody(issue);
+  if (own !== undefined) {
+    const spec = [
+      REFINE_MARKER,
+      `## Spec (filled in by the factory, spec round ${round})`,
+      "A spec critic checks this against the code before anything is built. If any of it is wrong, edit it here.",
+      ...parts,
+      REFINE_END_MARKER,
+    ].join("\n\n");
+    github.editIssueBody(issue, withSpecSection(own, spec));
+    return;
+  }
   const text = [
     REFINE_MARKER,
     `The factory filled in what this issue leaves open (spec round ${round}). A spec critic checks it against the code before anything is built. If any of it is wrong, edit the issue.`,
     ...parts,
   ].join("\n\n");
-  const issue = run.issue_number!;
   const existing = github.findComment(issue, REFINE_MARKER);
   if (existing === undefined) github.commentOnIssue(issue, `${text}\n`);
   else github.editComment(existing, `${text}\n`);
