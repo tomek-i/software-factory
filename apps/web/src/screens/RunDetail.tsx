@@ -35,9 +35,10 @@ function AcceptanceSection({ section }: { section: Extract<OverviewSection, { ki
         <span className="font-medium">Acceptance criteria: {section.count}</span>
       </div>
       {section.criteria.length > 0 && (
-        <ul className="space-y-1 pl-1 text-sm">
+        <ul className="space-y-1 pl-1 text-sm" aria-label="Acceptance criteria">
           {section.criteria.map((c) => (
-            <li key={c.id} className="whitespace-pre-wrap">
+            // break-words: evidence is a path such as `src/a.test.ts:12`, one long token that must wrap on a phone.
+            <li key={c.id} className="whitespace-pre-wrap break-words">
               <span className="mr-1.5 font-mono text-xs text-muted-foreground">{c.id}</span>
               <span className={`mr-1.5 font-mono text-xs ${CRITERION_STATUS[c.status].className}`}>{CRITERION_STATUS[c.status].label}</span>
               {c.text}
