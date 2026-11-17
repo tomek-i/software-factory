@@ -1,9 +1,9 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, isTerminal } from "@factory/shared";
-import { findRepoRoot, readStopRequest, Store, type DriveFn, type DriveOutcome, type ProjectContext, type StopRequest } from "@factory/core";
+import { findRepoRoot, readStopRequest, Store, takeUpgradeLock, upgradeLockPath, workersDir, type DriveFn, type DriveOutcome, type ProjectContext, type StopRequest } from "@factory/core";
 import { CliError } from "../context.js";
 import { parseMaxRuns, refuseRunningOnAnyProject, runStop, runWork, type WorkDeps } from "./work.js";
 
@@ -48,6 +48,28 @@ function setup(outcomes: DriveOutcome[], issues = [12]) {
 describe("runWork", () => {
   it("says to register a project when there is none", async () => {
     await expect(runWork({}, { projects: () => [] })).rejects.toThrow(CliError);
+  });
+
+  it("says it is running before it opens a project, and stops saying so when it stops", async () => {
+    const { deps } = setup([{ kind: "finished", state: "done" }]);
+    let during: string[] = [];
+
+    await runWork({}, { ...deps, reconcile: () => ((during = readdirSync(workersDir())), []) });
+
+    expect(during).toHaveLength(1);
+    expect(readdirSync(workersDir())).toEqual([]);
+  });
+
+  it("refuses to start while `factory upgrade` runs", async () => {
+    const { deps } = setup([]);
+    // The test runner's pid: alive, and not this process.
+    const release = takeUpgradeLock(upgradeLockPath(), process.ppid);
+    try {
+      await expect(runWork({}, deps)).rejects.toThrow(CliError);
+      await expect(runWork({}, deps)).rejects.toThrow(/is replacing the factory .* Start this again once it has finished/);
+    } finally {
+      release();
+    }
   });
 
   it("prints each run's progress with its project and issue, and stops when asked", async () => {

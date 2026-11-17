@@ -12,4 +12,8 @@ describe("runCommand", () => {
   it("returns the exit code and trimmed output", () => {
     expect(runCommand(process.execPath, ["-e", "console.log(' hi '); process.exit(3)"], { cwd: process.cwd() })).toEqual({ code: 3, stdout: "hi", stderr: "" });
   });
+
+  it("with inherit, leaves the output to the terminal and returns only the exit code", () => {
+    expect(runCommand(process.execPath, ["-e", "process.exit(4)"], { cwd: process.cwd(), inherit: true })).toEqual({ code: 4, stdout: "", stderr: "" });
+  });
 });

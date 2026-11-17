@@ -44,3 +44,4 @@ export * from "./service/project.js";
 export * from "./registry.js";
 export * from "./scheduler/scheduler.js";
 export * from "./scheduler/stop.js";
+export * from "./scheduler/workers.js";

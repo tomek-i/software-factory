@@ -1,7 +1,8 @@
+import { readdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
-import { Store, type DriveFn, type ProjectContext, type StopRequest } from "@factory/core";
+import { Store, workersDir, type DriveFn, type ProjectContext, type StopRequest } from "@factory/core";
 import { tempDir } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
 import { parsePort, runServe } from "./serve.js";
@@ -89,6 +90,18 @@ describe("runServe", () => {
     expect(await served).toEqual({ message: "Stopped: no runs are going on.", interrupted: false });
     await expect(api(url, "/api/projects")).rejects.toThrow();
     expect(() => s.store.listRuns()).toThrow();
+  });
+
+  it("says it is running before it opens a project", async () => {
+    const s = setup();
+    let during: string[] = [];
+    const served = runServe({ port: 0, open: false }, { ...s.deps, reconcile: () => ((during = readdirSync(workersDir())), []) });
+    await s.url;
+
+    expect(during).toHaveLength(1);
+    s.requestStop();
+    await served;
+    expect(readdirSync(workersDir())).toEqual([]);
   });
 
   it("does not open the browser with --no-open, and Ctrl+C interrupts", async () => {
