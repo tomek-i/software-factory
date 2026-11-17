@@ -20,11 +20,18 @@ const SHA = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/g;
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** The path without trailing separators; a loop, as `/[\\/]+$/` backtracks polynomially on many separators. */
+function trimSeparators(path: string): string {
+  let end = path.length;
+  while (end > 0 && (path[end - 1] === "/" || path[end - 1] === "\\")) end--;
+  return path.slice(0, end);
+}
+
 /** Normalise tool output before hashing, so noise that changes every round does not hide a repeat. */
 export function normaliseOutput(text: string, paths: string[] = []): string {
   let out = text.replace(ANSI, "").replace(/\r\n?/g, "\n");
   for (const path of paths) {
-    const trimmed = path.replace(/[\\/]+$/, "");
+    const trimmed = trimSeparators(path);
     if (!trimmed) continue;
     const parts = trimmed.split(/[\\/]+/);
     // Escaped backslashes (as in JSON) first, so the plain forms do not leave half of them behind.
