@@ -181,6 +181,8 @@ factory init
 - registers the project in `.factory/factory.db`.
 - adds the repo to your project list (see below).
 - creates GitHub status labels only if you enabled `github.status_labels` (off by default; see [Status labels](docs/trust.md#status-labels)).
+- with `--sync`, pulls issues from GitHub afterwards, as `factory sync` does.
+  A failed sync is a warning: the repo is still set up, and `factory sync` tries again.
 
 It is safe to re-run.
 An existing config is never overwritten; `factory config reset` brings settings back to the defaults (see [Configuration](#configuration)).

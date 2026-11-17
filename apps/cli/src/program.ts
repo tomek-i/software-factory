@@ -56,8 +56,9 @@ export function buildProgram(): Command {
   program
     .command("init")
     .description("set up the factory in the current git repository")
-    .action(() => {
-      console.log(runInit(process.cwd(), undefined, styleFor(process.stdout)));
+    .option("--sync", "pull issues from GitHub afterwards, as `factory sync` does")
+    .action((options: { sync?: boolean }) => {
+      console.log(runInit(process.cwd(), undefined, styleFor(process.stdout), { sync: options.sync }));
     });
 
   const config = program.command("config").description("manage .factory/config.yaml");
