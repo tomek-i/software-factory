@@ -254,6 +254,7 @@ factory sync
 - It moves the local state `factory sync` cannot rebuild to another clone of the same GitHub repo.
 - **Finish or cancel a run on the machine that started it**, then export.
 - **The snapshot is as trusted as your own database**: keep it out of the repo and only import your own.
+- An import still trusts nothing on the file's word: GitHub confirms the issues the factory opened and fills in imported issues.
 - What travels and how import merges: [Moving between machines](docs/moving-between-machines.md).
 
 ### Web mode

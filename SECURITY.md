@@ -32,6 +32,12 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - Config, prompts, checks, the trust list, lessons and the `CLAUDE.md` given to agents are read from the default branch on GitHub, never from the run's own branch.
 - Your checks run without `ANTHROPIC_API_KEY`, `GH_TOKEN` or `GITHUB_TOKEN`, and a secret scan runs on every checked commit.
 
+**What an imported snapshot cannot do** ([Moving between machines](docs/moving-between-machines.md)):
+- Make an issue trusted: a "the factory opened it" mark from the file counts only once GitHub says the factory's own gh login opened the issue.
+- Supply an issue's text, author or link: an issue new to the database is filled in from GitHub, and fetched before a run uses it.
+- Send escapes to your terminal: `factory import` shows control characters from the file as `[U+001B]`, in `--dry-run` too.
+- `factory export` writes the file readable by you only, also when it overwrites one.
+
 **What always stops for you:**
 - Hard rules: protected paths, new dependencies or new dependency sources, any lockfile change, package-source config, `.env`, key and certificate files, and deletions the issue does not name. Only a per-run `--unsafe` flag lifts them, and it can never be set in config.
 - The merge gate, by default. The factory merges only the exact commit that passed the gate (`gh pr merge --match-head-commit`).
