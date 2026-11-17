@@ -166,6 +166,20 @@ describe("factory show <run>", () => {
     );
   });
 
+  it("says when the run's issue was closed on GitHub while its PR is open, and what cancelling does", () => {
+    const { dir, root, runId } = setup({ "triage.md": TRIAGE }, { pr_number: 7 });
+    const store = new Store(join(root, ".factory", "factory.db"));
+    store.writeState(runId, "needs_human", { parked_from: "merge", waiting_gate: "merge" });
+    store.appendEvent(runId, "merge", "needs_human", "waiting at merge gate: gate is set to human");
+    expect(runShow(dir, "16")).not.toContain("was closed on GitHub");
+    store.closeIssue(store.listProjects()[0]!.id, 16);
+    store.close();
+
+    expect(runShow(dir, "16")).toContain(
+      ["", "Issue #16 was closed on GitHub, so this work may be done elsewhere.", `\`factory cancel ${runId}\` also closes PR #7 and deletes its branch.`].join("\n"),
+    );
+  });
+
   it("shows the latest round's reviews with their blocking findings, and the verifier's judgement", () => {
     const findings = (severity: string) =>
       `## Findings\n\`\`\`json\n[{ "id": "x-1", "severity": "${severity}", "file": "src/a.ts", "line": 3, "claim": "breaks on empty input", "evidence": "a(\\"\\")" }]\n\`\`\`\n`;

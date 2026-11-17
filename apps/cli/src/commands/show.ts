@@ -7,7 +7,7 @@ function fileList(files: string[], style: Style): string {
   return files.length ? files.map((f) => `  ${style.detail(f)}`).join("\n") : "  (none)";
 }
 
-function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFeedback }: RunOverview, style: Style): string {
+function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFeedback, issueClosed }: RunOverview, style: Style): string {
   const lines = [`Run ${style.detail(run.id)}`, `  state:   ${style.state(run.state)}`];
   if (run.waiting_gate) lines.push(`  waiting: ${style.attention(`${run.waiting_gate} gate`)}`);
   // Times merging the default branch sent the run back to the builder, apart from review rounds (loops.max_resyncs).
@@ -17,6 +17,14 @@ function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFee
     `  branch:  ${run.branch ? style.detail(run.branch) : "-"}`,
     `  PR:      ${run.pr_number ? style.detail(`#${run.pr_number}`) : "-"}`,
   );
+  // First: the work may be done elsewhere, which makes every other question moot.
+  if (issueClosed) {
+    lines.push(
+      "",
+      style.attention(`Issue #${run.issue_number} was closed on GitHub, so this work may be done elsewhere.`),
+      style.hint(`\`factory cancel ${run.id}\` also closes PR #${issueClosed.pr} and deletes its branch.`),
+    );
+  }
   // Before anything else: this is what the merge gate asks about.
   if (openFeedback?.length) {
     lines.push("", style.title(`Open on PR #${run.pr_number}`));

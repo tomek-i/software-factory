@@ -35,6 +35,19 @@ const failedGate = renderChecks({
 });
 
 describe("waitingOn", () => {
+  it("says a run's issue was closed on GitHub while its PR is open, and nothing while the issue is open", () => {
+    const { store, project, run } = parkedRun("merge", "waiting at merge gate: gate is set to human");
+    store.upsertIssue(project.id, { number: 1, title: "t", body: "", state: "open", author: "a", labels: [], url: "u", gh_updated_at: "2026-01-01T00:00:00Z" });
+    store.writeState(run.id, "needs_human", { pr_number: 7, waiting_gate: "merge" });
+    expect(waitingOn(store, project, store.getRun(run.id)!).issueClosed).toBeUndefined();
+
+    store.closeIssue(project.id, 1);
+    expect(waitingOn(store, project, store.getRun(run.id)!)).toEqual({ issueClosed: { pr: 7 } });
+    // Without a PR, reconcile cancels the run rather than ask.
+    store.writeState(run.id, "needs_human", { pr_number: null });
+    expect(waitingOn(store, project, store.getRun(run.id)!).issueClosed).toBeUndefined();
+  });
+
   it("names the loop cap that stopped a run", () => {
     const { store, project, run } = parkedRun("gate", "quality gate still failing after round 2: build iteration cap reached (5)");
     expect(waitingOn(store, project, run).capReached).toBe("build iteration cap reached (5)");

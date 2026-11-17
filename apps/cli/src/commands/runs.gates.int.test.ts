@@ -3,11 +3,26 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLEANUP_MARKER, MEDIA_MARKER, mediaTag, runCommand, Store, type CommandRunner } from "@factory/core";
 import { git, reviewsPass } from "../../../../packages/core/test/helpers.js";
-import { BUILD, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
+import { BUILD, closedPrs, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { runApprove, runCancel, runReject, runResume, runStatus } from "./runs.js";
 
 describe("approve / reject / cancel", () => {
+  it("closes the run's PR on cancel once its issue was closed on GitHub", async () => {
+    const { run, queue, dir, deps, root, projectId } = setup([{ output: TRIAGE }, BUILD, ...reviewsPass()]);
+    queue();
+    await run();
+    expect(await runApprove(dir, "12", {}, deps)).toMatch(/is waiting at the merge gate/);
+    const s = new Store(join(root, ".factory", "factory.db"));
+    s.closeIssue(projectId, 12);
+    s.close();
+
+    const message = runCancel(dir, "12", {}, { github });
+
+    expect(message).toMatch(/^Cancelled 12-[\w-]+\.\nClosed PR #7 and deleted its branch: the issue was closed on GitHub\./);
+    expect(closedPrs).toEqual([{ number: 7, comment: "Issue #12 was closed on GitHub, so the factory's run for it was cancelled." }]);
+  });
+
   it("only acts on runs waiting at a gate", async () => {
     const { run, queue, dir } = setup([{ output: TRIAGE }], "triage: human");
     queue();

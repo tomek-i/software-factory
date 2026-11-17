@@ -447,6 +447,29 @@ describe("inbox", () => {
 
     await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cancel", body: { state: "needs_human", gate: "triage" } }]));
   });
+
+  it("says a run's issue was closed on GitHub and that cancelling closes its PR, and keeps the card when the PR stays open", async () => {
+    server.runs = [runRow({ waitingGate: "merge", issueClosed: { pr: 7 } })];
+    server.answers.set("/cancel", { closedPr: { number: 7, error: "gh pr close failed: no access" } });
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const note = "Issue #12 was closed on GitHub, so this work may be done elsewhere. Cancelling the run also closes PR #7 and deletes its branch.";
+    expect((await screen.findByRole("note")).textContent).toBe(note);
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    const form = screen.getByRole("form", { name: "Cancel run" });
+    expect(within(form).getByRole("note").textContent).toBe(note);
+    await user.click(within(form).getByRole("button", { name: "Cancel run" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Cancelled, but PR #7 is still open: gh pr close failed: no access");
+  });
+
+  it("shows no closed-issue note for a run whose issue is open", async () => {
+    server.runs = [runRow()];
+    renderAt("/inbox");
+    expect(await screen.findByRole("button", { name: /Cancel run/ })).toBeTruthy();
+    expect(screen.queryByRole("note")).toBeNull();
+  });
 });
 
 describe("run details", () => {
