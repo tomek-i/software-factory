@@ -97,6 +97,8 @@ export interface RunRow {
   capReached?: string;
   /** What it waits on that the builder could fix, with the details known. */
   failure?: WaitingFailure;
+  /** Its issue was closed on GitHub while its PR is open; cancelling closes the PR too. */
+  issueClosed?: { pr: number };
 }
 
 /** The required checks that failed on a run's PR, for the page that lets a human act on them. */
@@ -188,6 +190,7 @@ function rowOf(key: string, ctx: ProjectContext, run: Run, now: string): RunRow 
     resumeTargets: run.state !== "needs_human" ? [] : run.waiting_gate ? sendBackTargets(run) : resumeTargets(run),
     ...(waiting.capReached ? { capReached: waiting.capReached } : {}),
     ...(waiting.failure ? { failure: redactFailure(waiting.failure, redact) } : {}),
+    ...(waiting.issueClosed ? { issueClosed: waiting.issueClosed } : {}),
   };
 }
 
@@ -441,8 +444,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     };
   });
   runAction("cancel", (ctx, run, body) => {
-    const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", options.run);
-    return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned };
+    const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", { run: options.run, github: options.github?.(ctx.project) });
+    return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned, ...(cancelled.closedPr !== undefined ? { closedPr: cancelled.closedPr } : {}) };
   });
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });

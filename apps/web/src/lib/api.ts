@@ -58,6 +58,8 @@ export interface RunRow {
   capReached?: string;
   /** What it waits on that the builder could fix. */
   failure?: WaitingFailure;
+  /** Its issue was closed on GitHub while its PR is open; cancelling closes the PR too. */
+  issueClosed?: { pr: number };
 }
 
 /** One thing that failed. Written from agent output or GitHub: show it as text only. */

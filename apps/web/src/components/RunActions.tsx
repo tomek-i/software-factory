@@ -84,37 +84,46 @@ export function RunActions({ run }: { run: RunRow }) {
     if (mode) act.mutate(mode);
   };
 
+  const closedNote = run.issueClosed && (
+    <p className="rounded-md bg-amber-500/15 px-2 py-1 text-xs text-amber-800 dark:text-amber-200" role="note">
+      Issue #{run.issue} was closed on GitHub, so this work may be done elsewhere. Cancelling the run also closes PR #{run.issueClosed.pr} and deletes its branch.
+    </p>
+  );
+
   if (!mode) {
     return (
-      <div className="flex flex-wrap gap-2">
-        {gate && (
-          <>
-            <Button size="sm" onClick={() => open("approve")}>
-              <Check aria-hidden /> {approveLabel}
+      <div className="space-y-2">
+        {closedNote}
+        <div className="flex flex-wrap gap-2">
+          {gate && (
+            <>
+              <Button size="sm" onClick={() => open("approve")}>
+                <Check aria-hidden /> {approveLabel}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => open("reject")}>
+                <X aria-hidden /> Reject
+              </Button>
+            </>
+          )}
+          {canResume && (
+            <Button size="sm" variant={gate ? "outline" : "default"} onClick={() => open("resume")}>
+              <Undo2 aria-hidden /> {gate ? "Send back to…" : "Resume"}
             </Button>
-            <Button size="sm" variant="outline" onClick={() => open("reject")}>
-              <X aria-hidden /> Reject
+          )}
+          {toBuilder && (
+            <Button size="sm" variant="outline" onClick={sendToBuilder} disabled={prefill.isPending}>
+              <Wrench aria-hidden /> Send to builder with this failure
             </Button>
-          </>
-        )}
-        {canResume && (
-          <Button size="sm" variant={gate ? "outline" : "default"} onClick={() => open("resume")}>
-            <Undo2 aria-hidden /> {gate ? "Send back to…" : "Resume"}
+          )}
+          {run.failure?.kind === "checks" && (
+            <Button size="sm" variant="outline" onClick={() => open("checks")}>
+              <ListChecks aria-hidden /> Failed checks…
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => open("cancel")}>
+            <Ban aria-hidden /> Cancel run
           </Button>
-        )}
-        {toBuilder && (
-          <Button size="sm" variant="outline" onClick={sendToBuilder} disabled={prefill.isPending}>
-            <Wrench aria-hidden /> Send to builder with this failure
-          </Button>
-        )}
-        {run.failure?.kind === "checks" && (
-          <Button size="sm" variant="outline" onClick={() => open("checks")}>
-            <ListChecks aria-hidden /> Failed checks…
-          </Button>
-        )}
-        <Button size="sm" variant="ghost" onClick={() => open("cancel")}>
-          <Ban aria-hidden /> Cancel run
-        </Button>
+        </div>
       </div>
     );
   }
@@ -125,6 +134,7 @@ export function RunActions({ run }: { run: RunRow }) {
   const help = to ? TARGET_HELP[to] : undefined;
   return (
     <form className="space-y-2" onSubmit={submit} aria-label={submitLabel}>
+      {mode === "cancel" && closedNote}
       {mode === "resume" && (
         <div className="space-y-1">
           <label className="flex flex-wrap items-center gap-2 text-sm">

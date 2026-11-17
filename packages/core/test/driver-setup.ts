@@ -187,6 +187,10 @@ export function setup(
       const head = pr.head ?? (prs[0] ? git(remote, "rev-parse", `refs/heads/${prs[0].head}`) : "");
       return { number, state: pr.state, draft: pr.draft, head, ...(pr.mergeCommit ? { mergeCommit: pr.mergeCommit } : {}) };
     },
+    issueState: (number) => ({ number, state: "open", closedBy: [] }),
+    closePullRequest: () => {
+      throw new Error("the pipeline closed a PR: only a human's cancel may");
+    },
     markReady: () => {
       pr.draft = false;
     },

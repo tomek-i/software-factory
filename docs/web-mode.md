@@ -19,6 +19,7 @@ Back to the [README](../README.md#web-mode) for the commands.
   - "Send back to…" sends a run at a gate back to an earlier working stage (refine, build or review, whichever come before the gate), with a message.
     - It is hidden at a gate with none before it (triage).
   - A run parked for you outside a gate, such as a failed agent, can be resumed to a stage you pick, with a reason.
+  - A run whose issue was closed on GitHub while its PR is still open says so; cancelling it also closes the PR and deletes its branch.
   - Each target says what happens and what runs again.
     - Picking intake or triage warns that triage, the spec critic and the build all run again, at a cost.
   - "Reset loop counters" gives the build, review and spec loops a fresh budget, as `--reset-loops` does.
@@ -51,7 +52,7 @@ Back to the [README](../README.md#web-mode) for the commands.
 - **Backlog**: each project's open issues.
   - Each shows its place in the queue, whether the author is trusted and the state of the latest run.
   - Queue and unqueue them from here.
-  - "Sync now" pulls issues from GitHub and finishes runs whose PR was merged or closed.
+  - "Sync now" pulls issues from GitHub and finishes runs whose PR was merged or closed, or whose issue was closed (see [Merging or closing on GitHub](runs.md#merging-or-closing-on-github)).
 - **New issue**: `factory new` in the browser (see [Writing issues from an idea](factory-new.md)).
   - Pick a project, describe the idea and start the issue writer.
   - Its progress shows live, and it can be stopped.

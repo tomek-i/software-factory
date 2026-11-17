@@ -2,13 +2,13 @@ import type { FactoryConfig } from "@factory/shared";
 import { ghPort, type GithubPort } from "../github/port.js";
 import { cleanupFinishedRun, cleanupFinishedRuns, describeCleanup } from "../pipeline/cleanup.js";
 import { runDirOf } from "../pipeline/driver.js";
-import { reconcilePullRequests } from "../pipeline/reconcile.js";
+import { reconcileWithGithub } from "../pipeline/reconcile.js";
 import type { Project, Store } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 
 /**
- * Finish runs whose PR was merged or closed on GitHub since the factory last looked. Returns one
- * line per run that moved, or a warning. Never throws, so a GitHub outage or a missing login never
+ * Finish runs whose PR was merged or closed, or whose issue was closed, on GitHub since the factory
+ * last looked (see reconcileWithGithub). Returns one line per run that moved, or a warning. Never throws, so a GitHub outage or a missing login never
  * stops the action that asked.
  */
 export function reconcileRuns(
@@ -18,18 +18,18 @@ export function reconcileRuns(
   deps: { github?: GithubPort; run?: CommandRunner },
   onMoved?: (runId: string) => void,
 ): string[] {
-  // Without a GitHub repository no run has a PR.
+  // Without a GitHub repository no run has a PR or an issue on GitHub.
   if (!deps.github && !project.github_repo) return [];
   try {
-    return reconcilePullRequests(store, project, deps.github ?? ghPort(project, deps.run), config, onMoved);
+    return reconcileWithGithub(store, project, deps.github ?? ghPort(project, deps.run), config, onMoved);
   } catch (err) {
-    return [`warning: could not check pull requests: ${(err as Error).message}`];
+    return [`warning: could not check GitHub: ${(err as Error).message}`];
   }
 }
 
 /** What reconcileAndSweep did, as lines in the order it happened. */
 export interface ReconcileReport {
-  /** Runs finished because their PR was merged or closed. */
+  /** Runs finished because their PR was merged or closed, or their issue was closed. */
   moved: string[];
   /** From reconcileRuns: the runs that moved, and warnings. */
   reconciled: string[];
