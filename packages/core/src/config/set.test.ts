@@ -42,6 +42,18 @@ describe("setConfigValue", () => {
     expect(() => setConfigValue('version: 1\nproject: "shop"\n', "project.name", "store")).toThrow(/not in the file/);
   });
 
+  it.each([
+    ["a multi-line value", 'version: 1\nproject:\n  name: >-\n    shop\n  default_branch: "main"\n'],
+    ["an empty value", "version: 1\nproject:\n  name:\n"],
+    ["an anchored value", "version: 1\nproject:\n  name: &n shop\n"],
+  ])("refuses %s rather than producing a broken file", (_, text) => {
+    expect(() => setConfigValue(text, "project.name", "store")).toThrow(/set it by hand/);
+  });
+
+  it("refuses an alias", () => {
+    expect(() => setConfigValue("version: 1\nx: &n shop\nproject:\n  name: *n\n", "project.name", "store")).toThrow(/alias/);
+  });
+
   it("refuses an inline mapping", () => {
     expect(() => setConfigValue("version: 1\ngithub: { status_labels: false }\n", "github.status_labels", true)).toThrow(/by hand/);
   });

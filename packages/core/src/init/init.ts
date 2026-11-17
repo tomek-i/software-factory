@@ -59,7 +59,8 @@ export function initRepo(options: InitOptions): InitResult {
   const dryRun = options.dryRun ?? false;
   const root = findRepoRoot(options.cwd, run);
   if (!root) throw new InitError("Not inside a git repository. Run `git init` first, or cd into your project.");
-  if (options.name !== undefined && options.name.trim() === "") throw new InitError("The project name can't be empty.");
+  const newName = options.name?.trim();
+  if (newName === "") throw new InitError("The project name can't be empty.");
 
   const steps: InitResult["steps"] = [];
   const done = (now: string, later: string) => (dryRun ? `Would ${later}` : now);
@@ -72,7 +73,7 @@ export function initRepo(options: InitOptions): InitResult {
   const existed = existsSync(configFile);
   let text = existed
     ? readFileSync(configFile, "utf8")
-    : renderConfig({ ...detection, projectName: options.name ?? detection.projectName }, { operatorLogin: githubLogin(root, run) });
+    : renderConfig({ ...detection, projectName: newName ?? detection.projectName }, { operatorLogin: githubLogin(root, run) });
   // Worked out before anything is written, so a flag that can't be applied leaves the repo as it was.
   const set: string[] = [];
   const apply = (setting: string, value: string | boolean) => {
@@ -80,7 +81,7 @@ export function initRepo(options: InitOptions): InitResult {
     text = result.text;
     if (result.changed) set.push(`${setting} to ${JSON.stringify(value)}`);
   };
-  if (existed && options.name !== undefined) apply("project.name", options.name);
+  if (existed && newName !== undefined) apply("project.name", newName);
   if (options.labels) apply("github.status_labels", true);
   // Validate the text that will be on disk, so a broken hand-edited config is reported straight away.
   const config = parseConfig(text, configFile);

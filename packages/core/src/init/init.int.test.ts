@@ -292,6 +292,21 @@ describe("initRepo", () => {
       expect(listRegistered({ file: registryFile })[0]).toMatchObject({ name: "Renamed" });
     });
 
+    it("keeps CRLF line endings when it renames", () => {
+      const dir = gitRepo();
+      initRepo({ cwd: dir });
+      const configFile = join(dir, ".factory", "config.yaml");
+      const crlf = readFileSync(configFile, "utf8").replace(/\n/g, "\r\n");
+      writeFileSync(configFile, crlf);
+
+      initRepo({ cwd: dir, name: "Renamed", labels: true });
+
+      const after = readFileSync(configFile, "utf8");
+      expect(after).not.toMatch(/[^\r]\n/);
+      expect(after).toContain('name: "Renamed"\r\n');
+      expect(after).toContain("status_labels: true\r\n");
+    });
+
     it("refuses an empty name", () => {
       expect(() => initRepo({ cwd: gitRepo(), name: " " })).toThrow(InitError);
     });

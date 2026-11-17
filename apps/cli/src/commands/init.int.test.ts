@@ -34,13 +34,32 @@ describe("runInit", () => {
     expect(output).toContain("+ Wrote .factory/config.yaml");
     expect(output).toContain("- GitHub status labels (off;");
     expect(output).toContain("Next: review .factory/config.yaml");
-    expect(output).toContain("then run `factory sync` to pull issues");
+    // No GitHub remote, so there is nothing to sync from.
+    expect(output).not.toContain("factory sync");
   });
 
-  it("does not sync without --sync", () => {
+  it("does not sync without --sync, and points at `factory sync`", () => {
     const output = runInit(repo(true), fakeGh());
 
     expect(output).not.toContain("Synced");
+    expect(output).toContain("then run `factory sync` to pull issues");
+  });
+
+  it("skips --sync with a warning when there is no GitHub remote", () => {
+    for (const dryRun of [false, true]) {
+      const output = runInit(repo(), fakeGh(), undefined, { sync: true, dryRun });
+
+      expect(output).toContain("! No GitHub origin remote found; skipped syncing issues");
+      expect(output).not.toContain("Would sync");
+    }
+  });
+
+  it("trims --name", () => {
+    const dir = repo();
+
+    runInit(dir, undefined, undefined, { name: "  Shop  " });
+
+    expect(readFileSync(join(dir, ".factory", "config.yaml"), "utf8")).toContain('name: "Shop"\n');
   });
 
   it("pulls issues with --sync", () => {

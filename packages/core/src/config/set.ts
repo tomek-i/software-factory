@@ -1,4 +1,4 @@
-import { isMap, isScalar, parseDocument } from "yaml";
+import { isAlias, isMap, isScalar, parseDocument, Scalar } from "yaml";
 import { ConfigError, CONFIG_FILE, parseConfig } from "./load.js";
 
 export interface SetResult {
@@ -26,8 +26,15 @@ export function setConfigValue(text: string, dotted: string, value: string | boo
     if (node.flow) throw new ConfigError(path, [`${dotted}: written inline ({ ... }); set it by hand`]);
     node = node.items.find((p) => isScalar(p.key) && String(p.key.value) === segment)?.value;
   }
+  if (isAlias(node)) throw new ConfigError(path, [`${dotted}: points to another value (*alias); set it by hand`]);
   if (!isScalar(node) || !node.range) throw new ConfigError(path, [`${dotted}: not in the file; add it by hand`]);
   if (node.value === value) return { text, changed: false };
+  // Only a value written on its own line can be swapped in place: a block scalar's range runs on into
+  // the next line, an empty one has no characters to replace, and an anchored one is shared.
+  const inline = node.type === Scalar.PLAIN || node.type === Scalar.QUOTE_DOUBLE || node.type === Scalar.QUOTE_SINGLE;
+  if (!inline || node.range[0] === node.range[1] || node.anchor) {
+    throw new ConfigError(path, [`${dotted}: written in a form this can't change safely (empty, multi-line or anchored); set it by hand`]);
+  }
 
   const [start, end] = node.range;
   const out = text.slice(0, start) + JSON.stringify(value) + text.slice(end);
