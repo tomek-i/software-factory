@@ -139,8 +139,8 @@ export interface RunDetail {
   issue: { number: number; title: string; url: string | null } | null;
   hasRunDir: boolean;
   files: string[];
-  /** The files with no text to show (screenshots, videos): listed, but not opened. */
-  binaryFiles: string[];
+  /** The files the page can't show, and why: no text (screenshots, videos), or too big. */
+  unshown: Record<string, "binary" | "too_big">;
   sections: OverviewSection[];
 }
 

@@ -20,6 +20,9 @@ export const githubUrl = (url: string | null) => (url && url.startsWith("https:/
 // Everything below comes from agents that read untrusted issue text: it is rendered as React text
 // (escaped), never as HTML or markdown.
 
+/** Why a file is listed but can't be opened here. */
+const UNSHOWN: Record<"binary" | "too_big", string> = { binary: "not text", too_big: "too big to show here" };
+
 const CRITERION_STATUS: Record<AcceptanceCriterion["status"], { label: string; className: string }> = {
   MET: { label: "met", className: "text-emerald-700 dark:text-emerald-300" },
   NOT_MET: { label: "not met", className: "text-destructive" },
@@ -139,14 +142,14 @@ function RunPage({ project, id }: { project: string; id: string }) {
   const location = useLocation();
   const detail = useQuery({ queryKey: ["run", project, id], queryFn: () => api.run(project, id) });
   const [file, setFile] = useState<string>();
-  const [done, setDone] = useState<string>();
+  const [done, setDone] = useState<{ text: string; at: string }>();
   // Opened from a link of the app, back goes where it came from; opened directly, to the Inbox.
   const back = () => (location.key === "default" ? navigate("/inbox") : navigate(-1));
 
   const data = detail.data;
   const run = data?.run;
   const url = githubUrl(data?.issue?.url ?? null);
-  const binary = new Set(data?.binaryFiles ?? []);
+  const unshown = data?.unshown ?? {};
 
   return (
     <section className="space-y-4">
@@ -188,10 +191,11 @@ function RunPage({ project, id }: { project: string; id: string }) {
             <CardContent className="space-y-3">
               {run.reason ? <p className="whitespace-pre-wrap break-words text-sm">{run.reason}</p> : <p className="text-sm text-muted-foreground">No reason recorded.</p>}
               <OpenFeedback run={run} />
-              <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} onDone={setDone} />
+              <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} onDone={(text) => setDone({ text, at: `${run.state}/${run.waitingGate ?? ""}` })} />
               {/* Outside RunActions, which goes away once the run is no longer waiting for you. */}
+              {/* Shown until the run waits for you again somewhere else, where it would describe an old decision. */}
               <p role="status" className="text-sm">
-                {done}
+                {done && !(run.state === "needs_human" && done.at !== `${run.state}/${run.waitingGate ?? ""}`) ? done.text : undefined}
               </p>
             </CardContent>
           </Card>
@@ -216,9 +220,9 @@ function RunPage({ project, id }: { project: string; id: string }) {
               <CardContent>
                 <ul className="flex flex-wrap gap-1" aria-label="Run files">
                   {data.files.map((f) =>
-                    binary.has(f) ? (
+                    unshown[f] ? (
                       <li key={f} className="min-w-0 max-w-full px-3 py-2 text-xs">
-                        <span className="break-all font-mono text-muted-foreground">{f}</span> <span className="text-muted-foreground">(not text, open it from the run folder)</span>
+                        <span className="break-all font-mono text-muted-foreground">{f}</span> <span className="text-muted-foreground">({UNSHOWN[unshown[f]]}, open it from the run folder)</span>
                       </li>
                     ) : (
                       <li key={f} className="min-w-0 max-w-full">

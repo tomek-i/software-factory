@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { isBlocking, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
 import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
@@ -241,37 +241,47 @@ export function latestReviews(store: Store, project: Project, ref: string): Revi
   });
 }
 
-/** How much of a file `isBinaryFile` looks at: enough for any image or video header. */
+/** How much of a file `unshownFile` looks at: enough for any image or video header. */
 const SNIFF_BYTES = 8192;
 
 /**
- * A NUL byte or bytes that are not UTF-8: a screenshot, a video, anything with no text to show.
- * `head`: only the start of the file, which may end part way through a character.
+ * Whether bytes have no text to show: a NUL byte (images, videos, UTF-16), or so many bytes that
+ * are not UTF-8 that the text would be mostly replacement characters. A log that is plain text but
+ * for a few stray bytes, such as an app's localised message in another code page, is still text:
+ * it is the log to read when capture fails.
  */
-export function isBinary(bytes: Uint8Array, head = false): boolean {
+export function isBinary(bytes: Uint8Array): boolean {
   if (bytes.includes(0)) return true;
+  const text = new TextDecoder("utf-8").decode(bytes);
+  let broken = 0;
+  for (const ch of text) if (ch === "\uFFFD") broken++;
+  return broken * 10 > [...text].length;
+}
+
+/** Why a file of the run folder can't be shown in the page, judged from its size and first kilobytes. */
+export type Unshown = "binary" | "too_big";
+
+/**
+ * Whether a file can't be shown, and why, for a listing: its size, then its first few kilobytes.
+ * Undefined for a file that can't be read now (removed meanwhile, locked): opening it says why.
+ */
+export function unshownFile(path: string, maxBytes: number): Unshown | undefined {
   try {
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream: head });
-    return false;
+    const fd = openSync(path, "r");
+    try {
+      if (fstatSync(fd).size > maxBytes) return "too_big";
+      const head = Buffer.alloc(SNIFF_BYTES);
+      return isBinary(head.subarray(0, readSync(fd, head, 0, SNIFF_BYTES, 0))) ? "binary" : undefined;
+    } finally {
+      closeSync(fd);
+    }
   } catch {
-    return true;
+    return undefined;
   }
 }
 
-/** Whether a file has no text to show, from its first few kilobytes. */
-export function isBinaryFile(path: string): boolean {
-  const fd = openSync(path, "r");
-  try {
-    const head = Buffer.alloc(SNIFF_BYTES);
-    const read = readSync(fd, head, 0, SNIFF_BYTES, 0);
-    // Fewer bytes than asked for: that is the whole file, so a cut-off last character is not excused.
-    return isBinary(head.subarray(0, read), read === SNIFF_BYTES);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-const megabytes = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+/** A size limit in words: whole megabytes or kilobytes. */
+const sizeLimit = (bytes: number) => (bytes >= 1024 * 1024 ? `${Math.round(bytes / 1024 / 1024)} MB` : `${Math.round(bytes / 1024)} KB`);
 
 /**
  * One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk.
@@ -298,7 +308,7 @@ export function runFile(
   }
   const size = statSync(full).size;
   if (options.maxBytes !== undefined && size > options.maxBytes) {
-    throw new ServiceError(`"${path}" is ${megabytes(size)}, too big to show here (the limit is ${megabytes(options.maxBytes)}). Open it from the run folder.`);
+    throw new ServiceError(`"${path}" is too big to show here (over ${sizeLimit(options.maxBytes)}). Open it from the run folder.`);
   }
   const bytes = readFileSync(full);
   return { run, path, text: bytes.toString("utf8"), binary: isBinary(bytes) };

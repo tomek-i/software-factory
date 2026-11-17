@@ -19,12 +19,11 @@ const DISMISS_COMMENT_MAX = 280;
 const checksKey = (run: RunRow) => ["checks", run.project, run.id];
 
 /** What each decision did, said once it went through. */
-const DONE: Record<Mode, (to: RunState | "") => string> = {
+const DONE: Record<Exclude<Mode, "checks">, (to: RunState | "") => string> = {
   approve: () => "Approved.",
   reject: () => "Rejected.",
-  resume: (to) => `Sent back to ${to}.`,
+  resume: (to) => `Sent to ${to}.`,
   cancel: () => "Cancelled.",
-  checks: (to) => `Sent back to ${to}.`,
 };
 
 /**
@@ -44,7 +43,7 @@ export function RunActions({ run, warn = false, onDone }: { run: RunRow; warn?: 
   const [resetLoops, setResetLoops] = useState(!!run.capReached);
   const helpId = useId();
   const act = useMutation({
-    mutationFn: (m: Mode) => {
+    mutationFn: (m: Exclude<Mode, "checks">) => {
       if (m === "approve") return api.approve(run, message.trim() || undefined);
       if (m === "reject") return api.reject(run, message);
       if (m === "resume") return api.resume(run, to as RunState, message, resetLoops);
@@ -97,7 +96,7 @@ export function RunActions({ run, warn = false, onDone }: { run: RunRow; warn?: 
   };
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (mode) act.mutate(mode);
+    if (mode && mode !== "checks") act.mutate(mode);
   };
 
   const closedNote = run.issueClosed && (

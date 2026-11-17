@@ -59,7 +59,7 @@ class FakeServer {
     issue: run.issue === null ? null : { number: run.issue, title: `Issue ${run.issue}`, url: `https://github.com/acme/shop/issues/${run.issue}` },
     hasRunDir: true,
     files: Object.keys(this.files),
-    binaryFiles: [],
+    unshown: {},
     sections: [
       { kind: "verdict", path: "triage.md", key: "DECISION", value: "APPROVE", summary: ["risk is HIGH: it touches auth"], blocking: [], refuted: 0 },
       { kind: "verdict", path: "spec-1/critic.md", key: "VERDICT", value: "ACCEPT", summary: ["the spec holds"], blocking: [], refuted: 0 },
@@ -719,11 +719,30 @@ describe("run details", () => {
     expect(screen.queryByText("Approved.")).toBeNull();
   });
 
+  it("confirms a decision while the run goes on, and drops it once the run waits for you elsewhere", async () => {
+    server.runs = [runRow({ waitingGate: null, reason: "the build agent failed", resumeTargets: ["build", "triage"] })];
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Resume/ }));
+    await user.type(screen.getByLabelText("Reason"), "try again");
+    // The server moves it on as the decision goes through.
+    server.runs = [runRow({ state: "build", waitingGate: null, reason: "resumed" })];
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Sent to build."));
+
+    // Later it parks at the merge gate: the old confirmation would describe the wrong decision.
+    server.runs = [runRow({ waitingGate: "merge", reason: "waiting at merge gate" })];
+    server.send({ type: "run", project: "shop", issue: 12, event: { type: "run:state", runId: "run-1", from: "build", to: "needs_human" } });
+    expect(await screen.findByText("waiting at merge gate")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
   it("says it is loading, encodes the project in the URL, and does not offer to open a binary file", async () => {
     server.runs = [runRow({ project: "p 1" })];
     server.files = { "triage.md": "x", "shot.png": "" };
     const detail = server.detail;
-    server.detail = (run) => ({ ...detail(run), binaryFiles: ["shot.png"] });
+    server.detail = (run) => ({ ...detail(run), unshown: { "shot.png": "binary" } });
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -18,7 +18,7 @@ import {
   resumeRun,
   resumeTargets,
   runCost,
-  isBinaryFile,
+  unshownFile,
   runFile,
   runChecks,
   runOverview,
@@ -35,6 +35,7 @@ import {
   type ProjectContext,
   type Run,
   type SchedulerStatus,
+  type Unshown,
   type WaitingFailure,
 } from "@factory/core";
 import { isTerminal, isTrustedIssue } from "@factory/shared";
@@ -124,8 +125,8 @@ export interface RunDetail {
   hasRunDir: boolean;
   /** Every file in the run folder, sorted, `/`-separated. */
   files: string[];
-  /** The files with no text to show (screenshots, videos): listed, but not opened. */
-  binaryFiles: string[];
+  /** The files the page can't show, and why: no text (screenshots, videos), or too big. */
+  unshown: Record<string, Unshown>;
   sections: OverviewSection[];
 }
 
@@ -395,7 +396,12 @@ export function createServer(options: ServerOptions): FastifyInstance {
       issue: run.issue_number === null ? null : { number: run.issue_number, title: synced?.title ?? run.title, url: synced?.url ?? null },
       hasRunDir: overview.hasRunDir,
       files: overview.files,
-      binaryFiles: overview.files.filter((f) => isBinaryFile(join(overview.runDir, f))),
+      unshown: Object.fromEntries(
+        overview.files.flatMap((f) => {
+          const why = unshownFile(join(overview.runDir, f), MAX_FILE_BYTES);
+          return why ? [[f, why]] : [];
+        }),
+      ),
       sections: overview.sections.map((s) => redactSection(s, redact)),
     };
   });

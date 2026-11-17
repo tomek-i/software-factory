@@ -5,7 +5,7 @@ import { tempDir } from "../../test/helpers.js";
 import { runDirOf } from "../pipeline/driver.js";
 import { Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
-import { isBinary, latestChecks, latestReviews, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
+import { isBinary, latestChecks, latestReviews, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview, unshownFile } from "./show.js";
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n";
@@ -130,15 +130,28 @@ describe("runFile and resolveInRunDir", () => {
   it("tells text from binary, and refuses a file over the size given", () => {
     expect(isBinary(Buffer.from("plain text\n"))).toBe(false);
     expect(isBinary(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]))).toBe(true); // NUL
-    expect(isBinary(Buffer.from([0x41, 0xff, 0xfe, 0x41]))).toBe(true); // not UTF-8, no NUL
-    // Cut in the middle of "é": still text as the head of a file, not as a whole file.
-    const cut = Buffer.from("café", "utf8").subarray(0, 4);
-    expect(isBinary(cut, true)).toBe(false);
-    expect(isBinary(cut)).toBe(true);
+    expect(isBinary(Buffer.from([0x41, 0xff, 0xfe, 0x41]))).toBe(true); // mostly not UTF-8, no NUL
+    // A log in plain text but for one byte in another code page is still text.
+    expect(isBinary(Buffer.concat([Buffer.from("Server started on port 3000\nFehler: "), Buffer.from([0xe9]), Buffer.from("\n")]))).toBe(false);
+    expect(isBinary(Buffer.from([]))).toBe(false);
 
     const { store, project, run } = setup({ "triage.md": TRIAGE });
-    expect(() => runFile(store, project, run.id, "triage", { maxBytes: 10 })).toThrow(/^"triage\.md" is 0\.0 MB, too big to show here \(the limit is 0\.0 MB\)\. Open it from the run folder\.$/);
+    expect(() => runFile(store, project, run.id, "triage", { maxBytes: 10 })).toThrow('"triage.md" is too big to show here (over 0 KB). Open it from the run folder.');
     expect(runFile(store, project, run.id, "triage", { maxBytes: TRIAGE.length }).text).toBe(TRIAGE);
+  });
+
+  it("says why a file can't be shown, from its size and first kilobytes, and nothing for one it can't open", () => {
+    const dir = tempDir("factory-unshown-");
+    const at = (name: string, content: string | Buffer) => {
+      writeFileSync(join(dir, name), content);
+      return join(dir, name);
+    };
+    expect(unshownFile(at("notes.md", "# notes\n"), 1024)).toBeUndefined();
+    expect(unshownFile(at("shot.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0])), 1024)).toBe("binary");
+    expect(unshownFile(at("big.log", "x".repeat(1025)), 1024)).toBe("too_big");
+    // Only the head is read: a NUL far into a big text file does not make it binary here.
+    expect(unshownFile(at("long.log", `${"x".repeat(9000)}\0`), 10_000)).toBeUndefined();
+    expect(unshownFile(join(dir, "gone.md"), 1024)).toBeUndefined();
   });
 
   it("refuses paths outside the run folder and names the files when one is missing", () => {
