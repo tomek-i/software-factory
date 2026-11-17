@@ -8,6 +8,7 @@ import { loadConfig } from "../config/load.js";
 import { FactoryEvents, type FactoryEvent } from "../events.js";
 import { MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { runDirOf } from "../pipeline/driver.js";
+import { FACTORY_CLAIM_PENDING, NEVER_SYNCED } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { ServiceError } from "./errors.js";
 import {
@@ -57,10 +58,11 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Answers `gh issue view` with the given issue, and fails `gh release delete`; git runs for real. */
-function fakeGh(issue?: { number: number; state: string; author: string }): CommandRunner {
+/** Answers `gh issue view` with the given issue and `gh api user` with the login, and fails `gh release delete`; git runs for real. */
+function fakeGh(issue?: { number: number; state: string; author: string }, login?: string): CommandRunner {
   return (cmd, args, options) => {
     if (cmd !== "gh") return runCommand(cmd, args, options);
+    if (args[0] === "api" && args[1] === "user" && login) return { code: 0, stdout: JSON.stringify({ login }), stderr: "" };
     if (args[0] === "issue" && args[1] === "view" && issue) {
       const json = { number: issue.number, title: `Issue ${issue.number}`, body: "", state: issue.state, author: { login: issue.author }, labels: [], url: "u", updatedAt: "2026-01-01T00:00:00Z" };
       return { code: 0, stdout: JSON.stringify(json), stderr: "" };
@@ -94,6 +96,20 @@ describe("ensureQueued", () => {
 
     expect(fetched).toMatchObject({ issue: { number: 13, title: "Issue 13" }, queued: true, trusted: false });
     expect(ctx.store.getIssue(ctx.project.id, 13)!.queued_at).not.toBeNull();
+  });
+
+  it("fetches an issue an import queued before using it, and settles the factory claim the file made for it", () => {
+    const { ctx } = context();
+    // As `factory import` leaves an issue new to this store: queued, nothing from GitHub yet, claimed for the factory.
+    ctx.store.db
+      .prepare("UPDATE issues SET title = '', author = '', synced_at = ?, created_by_factory = ? WHERE project_id = ? AND number = 12")
+      .run(NEVER_SYNCED, FACTORY_CLAIM_PENDING, ctx.project.id);
+    expect(() => ensureQueued(ctx, 12, fakeGh())).toThrow(/^Could not fetch issue #12: /);
+
+    const fetched = ensureQueued(ctx, 12, fakeGh({ number: 12, state: "OPEN", author: "bob" }, "factory-bot"));
+    // bob opened it, not the factory's login, and bob is not trusted: the file's claim is dropped.
+    expect(fetched).toMatchObject({ issue: { number: 12, title: "Issue 12", author: "bob", created_by_factory: false }, queued: false, trusted: false });
+    expect(ctx.store.pendingFactoryClaims(ctx.project.id, [12])).toEqual([]);
   });
 
   it("refuses a closed issue and one that cannot be fetched, without queueing either", () => {

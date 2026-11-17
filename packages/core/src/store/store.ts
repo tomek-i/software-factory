@@ -158,6 +158,22 @@ export type IssueInput = Omit<Issue, "project_id" | "synced_at" | "queued_at" | 
 type RunRow = Omit<Run, "unsafe"> & { unsafe: number };
 type IssueRow = Omit<Issue, "labels" | "created_by_factory"> & { labels: string; created_by_factory: number };
 
+/**
+ * `created_by_factory` of an issue a snapshot file says the factory opened, until a fetch from
+ * GitHub settles it (`settleFactoryClaims`). A file can come from anywhere, so the claim alone
+ * trusts nothing: only 1 does.
+ */
+export const FACTORY_CLAIM_PENDING = 2;
+
+/**
+ * `synced_at` and `gh_updated_at` of an issue `factory import` added that was never fetched from
+ * GitHub. Its title, body, author, labels and url stay empty until then: they would come from the file.
+ */
+export const NEVER_SYNCED = "1970-01-01T00:00:00.000Z";
+
+/** Whether the issue's title, body and author came from GitHub rather than being left empty by an import. */
+export const fetchedFromGithub = (issue: Pick<Issue, "synced_at">): boolean => issue.synced_at !== NEVER_SYNCED;
+
 const toIssue = (row: IssueRow): Issue => ({
   ...row,
   labels: JSON.parse(row.labels) as string[],
@@ -337,6 +353,27 @@ export class Store {
       .prepare("UPDATE issues SET created_by_factory = 1 WHERE project_id = ? AND number = ?")
       .run(projectId, number);
     if (result.changes !== 1) throw new Error(`issue #${number} is not synced yet`);
+  }
+
+  /** Of these issues, those whose factory claim came from `factory import` and is not settled yet. */
+  pendingFactoryClaims(projectId: string, numbers: number[]): number[] {
+    const pending = new Set(
+      (this.db.prepare("SELECT number FROM issues WHERE project_id = ? AND created_by_factory = ?").all(projectId, FACTORY_CLAIM_PENDING) as { number: number }[]).map(
+        (r) => r.number,
+      ),
+    );
+    return numbers.filter((n) => pending.has(n));
+  }
+
+  /**
+   * Settle the imported factory claims of these issues, just fetched from GitHub: kept when GitHub
+   * says the factory's own login opened the issue, dropped otherwise. GitHub logins are case-insensitive.
+   */
+  settleFactoryClaims(projectId: string, numbers: number[], login: string): void {
+    const settle = this.db.prepare(
+      "UPDATE issues SET created_by_factory = CASE WHEN lower(author) = lower(?) THEN 1 ELSE 0 END WHERE project_id = ? AND number = ? AND created_by_factory = ?",
+    );
+    for (const n of numbers) settle.run(login, projectId, n, FACTORY_CLAIM_PENDING);
   }
 
   // ---- issue drafts -------------------------------------------------------

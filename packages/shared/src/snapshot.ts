@@ -35,6 +35,11 @@ export const snapshotHeaderSchema = z.object({
   github_repo: z.string().min(1),
 });
 
+/**
+ * Only `number`, `state`, the queue fields and `created_by_factory` (as a claim) are imported. The
+ * GitHub fields (title, body, author, labels, url, times) are exported for reading but never
+ * written: GitHub fills them in, so a file cannot plant a link or an author.
+ */
 export const snapshotIssueSchema = z.object({
   number: int.positive(),
   title: z.string(),

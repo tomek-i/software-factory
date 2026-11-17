@@ -68,8 +68,11 @@ export function syncIssues(store: Store, project: Project, run: CommandRunner = 
     // A truncated list would wrongly close every issue past the limit.
     throw new GithubError(`more than ${limit} open issues; raise the sync limit`);
   }
+  const numbers = issues.map((i) => i.number);
+  const login = store.pendingFactoryClaims(project.id, numbers).length > 0 ? factoryLogin(project, run) : undefined;
   return store.transaction(() => {
     for (const issue of issues) store.upsertIssue(project.id, toInput(issue));
+    if (login !== undefined) store.settleFactoryClaims(project.id, numbers, login);
     const closed = store.closeIssuesExcept(
       project.id,
       issues.map((i) => i.number),
@@ -87,5 +90,17 @@ export function fetchIssue(store: Store, project: Project, number: number, run: 
   if (/\/pull\/\d+/.test(issue.url)) throw new GithubError(`#${number} is a pull request, not an issue`);
   // A transferred issue can resolve to a different number; don't silently store the wrong one.
   if (issue.number !== number) throw new GithubError(`#${number} resolved to #${issue.number}`);
+  const login = store.pendingFactoryClaims(project.id, [number]).length > 0 ? factoryLogin(project, run) : undefined;
   store.upsertIssue(project.id, toInput(issue));
+  if (login !== undefined) store.settleFactoryClaims(project.id, [number], login);
+}
+
+/**
+ * The gh login the factory opens issues as. Asked only to settle a factory claim from `factory
+ * import`: GitHub, not the file, says who opened an issue.
+ */
+function factoryLogin(project: Project, run: CommandRunner): string {
+  const user = gh<{ login?: unknown }>(["api", "user"], project.repo_path, run);
+  if (typeof user.login !== "string" || user.login === "") throw new GithubError("gh api user returned no login");
+  return user.login;
 }

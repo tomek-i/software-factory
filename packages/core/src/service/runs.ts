@@ -9,7 +9,7 @@ import { deleteMedia, MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { ghPort, type GithubPort } from "../github/port.js";
 import { approveTarget, nextAfterTriage, PipelineDriver, runDirOf, waitingCommit, type DriveOutcome } from "../pipeline/driver.js";
 import { resumeTargets, RunMachine } from "../pipeline/transitions.js";
-import type { Issue, Project, Run, Store } from "../store/store.js";
+import { fetchedFromGithub, type Issue, type Project, type Run, type Store } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
 import { killTree } from "../util/process.js";
 import { ServiceError } from "./errors.js";
@@ -79,7 +79,10 @@ export interface QueuedIssue {
 export function ensureQueued(ctx: ServiceContext, number: number, run?: CommandRunner): QueuedIssue {
   const { store, project, config } = ctx;
   const known = store.getIssue(project.id, number);
-  if (known?.queued_at) return { issue: known, queued: false, trusted: isTrustedIssue(config, known) };
+  // One `factory import` queued but GitHub never filled in, or with a factory claim from the file
+  // still to settle, is fetched like an unqueued one: until then its trust would rest on the file.
+  const fromImport = known !== undefined && (!fetchedFromGithub(known) || store.pendingFactoryClaims(project.id, [number]).length > 0);
+  if (known?.queued_at && !fromImport) return { issue: known, queued: false, trusted: isTrustedIssue(config, known) };
   // Fetch fresh before queueing: the local copy may be missing, or stale since the last sync
   // (closed or edited on GitHub), and this is about to start agents on it.
   try {
@@ -89,8 +92,9 @@ export function ensureQueued(ctx: ServiceContext, number: number, run?: CommandR
   }
   const issue = store.getIssue(project.id, number)!;
   if (issue.state !== "open") throw new ServiceError(`Issue #${number} is closed.`);
+  const queued = issue.queued_at === null;
   store.setQueued(project.id, number, true);
-  return { issue: store.getIssue(project.id, number)!, queued: true, trusted: isTrustedIssue(config, issue) };
+  return { issue: store.getIssue(project.id, number)!, queued, trusted: isTrustedIssue(config, issue) };
 }
 
 /** What driveIssue reports before the run moves, in this order. */

@@ -11,7 +11,7 @@ import {
   type SnapshotLesson,
 } from "@factory/shared";
 import { ServiceError } from "../service/errors.js";
-import type { Project, StoredLesson, Store } from "./store.js";
+import { FACTORY_CLAIM_PENDING, NEVER_SYNCED, type Project, type StoredLesson, type Store } from "./store.js";
 
 /**
  * `factory export` / `factory import`: move one project's local state (the queue, trust markers,
@@ -118,7 +118,7 @@ export interface ImportReport {
     added: number[];
     /** Existing issues the snapshot queued, or queued again later. */
     queued: number[];
-    /** Existing issues the snapshot says the factory opened. */
+    /** Existing issues the snapshot says the factory opened: a claim the next fetch from GitHub settles. */
     created_by_factory: number[];
   };
   lessons: {
@@ -160,7 +160,7 @@ class DryRunRollback extends Error {}
  * first, and the merge runs in one transaction, so an import that fails changes nothing.
  * `input` is the parsed JSON, untrusted until checked here.
  */
-export function importSnapshot(store: Store, project: Project, input: unknown, options: { dryRun?: boolean; now?: Date } = {}): ImportReport {
+export function importSnapshot(store: Store, project: Project, input: unknown, options: { dryRun?: boolean } = {}): ImportReport {
   const snapshot = validateSnapshot(store, project, input);
   const report: ImportReport = {
     header: snapshot.header,
@@ -175,11 +175,10 @@ export function importSnapshot(store: Store, project: Project, input: unknown, o
     draft_issues: 0,
     drafts_done: 0,
   };
-  const now = options.now ?? new Date();
   try {
     store.transaction(() => {
       mergeRuns(store, project, snapshot, report);
-      mergeIssues(store, project, snapshot.issues, report, now);
+      mergeIssues(store, project, snapshot.issues, report);
       mergeLessons(store, project, snapshot.lessons, report);
       mergeDrafts(store, project, snapshot, report);
       if (options.dryRun) throw new DryRunRollback();
@@ -284,7 +283,12 @@ function mergeRuns(store: Store, project: Project, snapshot: Snapshot, report: I
 
 /**
  * The queue and `created_by_factory` are local decisions, so they merge; the GitHub mirror fields
- * are left to `factory sync`. The schema keeps no time for an unqueue, so the rule is:
+ * are left to `factory sync`. A file can come from anywhere, so nothing in it is trusted as is:
+ * - an issue new to this store gets no title, body, author, labels or url from the file: they stay
+ *   empty, and `synced_at` stays `NEVER_SYNCED`, until a fetch from GitHub fills them (a run fetches first);
+ * - a `created_by_factory` marker only becomes a pending claim (`FACTORY_CLAIM_PENDING`), which the
+ *   next fetch from GitHub keeps only if the factory's own login opened the issue.
+ * The schema keeps no time for an unqueue, so the rule is:
  * - both sides queued: the later `queued_at` wins (queuing again after a run means "run it again");
  * - one side queued: the queued side wins, so an import never drops work from the queue;
  * - an issue closed here, or closed in the snapshot, is never queued by an import.
@@ -293,7 +297,7 @@ function mergeRuns(store: Store, project: Project, snapshot: Snapshot, report: I
  * also keeps an imported finished run from counting as "before it was queued", which would start
  * the issue again. Only `queue_seq` is local: a fresh MAX+1, so it never collides with a local one.
  */
-function mergeIssues(store: Store, project: Project, issues: SnapshotIssue[], report: ImportReport, now: Date): void {
+function mergeIssues(store: Store, project: Project, issues: SnapshotIssue[], report: ImportReport): void {
   const db = store.db;
   const nextSeq = () =>
     (db.prepare("SELECT COALESCE(MAX(queue_seq), 0) + 1 AS seq FROM issues WHERE project_id = ?").get(project.id) as { seq: number }).seq;
@@ -302,12 +306,11 @@ function mergeIssues(store: Store, project: Project, issues: SnapshotIssue[], re
      VALUES (@project_id, @number, @title, @body, @state, @author, @labels, @url, @gh_updated_at, @synced_at, @queued_at, @queue_seq, @created_by_factory)`,
   );
   const queue = db.prepare("UPDATE issues SET queued_at = ?, queue_seq = ? WHERE project_id = ? AND number = ?");
-  const markFactory = db.prepare("UPDATE issues SET created_by_factory = 1 WHERE project_id = ? AND number = ?");
+  const claimFactory = db.prepare("UPDATE issues SET created_by_factory = ? WHERE project_id = ? AND number = ? AND created_by_factory = 0");
   // In the snapshot's queue order, so the fresh queue_seq numbers keep the snapshot's ties in order.
   const ordered = [...issues].sort(
     (a, b) => (a.queued_at === null ? 1 : 0) - (b.queued_at === null ? 1 : 0) || time(a.queued_at) - time(b.queued_at) || (a.queue_seq ?? 0) - (b.queue_seq ?? 0) || a.number - b.number,
   );
-  const nowIso = now.toISOString();
   for (const issue of ordered) {
     const queuedThere = issue.state === "open" && issue.queued_at !== null;
     const local = store.getIssue(project.id, issue.number);
@@ -315,20 +318,25 @@ function mergeIssues(store: Store, project: Project, issues: SnapshotIssue[], re
       // Only what would otherwise be lost: other issues come with the next sync anyway.
       if (!queuedThere && !issue.created_by_factory) continue;
       insert.run({
-        ...issue,
         project_id: project.id,
-        labels: JSON.stringify(issue.labels),
-        // Never later than now, so the next sync can still close it if GitHub no longer lists it as open.
-        synced_at: time(issue.synced_at) > now.getTime() ? nowIso : issue.synced_at,
+        number: issue.number,
+        title: "",
+        body: "",
+        state: issue.state,
+        author: "",
+        labels: "[]",
+        url: "",
+        gh_updated_at: NEVER_SYNCED,
+        // Before any sync, so the next one can still close it if GitHub no longer lists it as open.
+        synced_at: NEVER_SYNCED,
         queued_at: queuedThere ? issue.queued_at : null,
         queue_seq: queuedThere ? nextSeq() : null,
-        created_by_factory: issue.created_by_factory ? 1 : 0,
+        created_by_factory: issue.created_by_factory ? FACTORY_CLAIM_PENDING : 0,
       });
       report.issues.added.push(issue.number);
       continue;
     }
-    if (issue.created_by_factory && !local.created_by_factory) {
-      markFactory.run(project.id, issue.number);
+    if (issue.created_by_factory && claimFactory.run(FACTORY_CLAIM_PENDING, project.id, issue.number).changes > 0) {
       report.issues.created_by_factory.push(issue.number);
     }
     if (queuedThere && local.state === "open" && (local.queued_at === null || time(issue.queued_at) > time(local.queued_at))) {

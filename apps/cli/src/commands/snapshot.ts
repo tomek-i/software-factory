@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { exportSnapshot, importChangeCount, importSnapshot, type CommandRunner, type ImportReport } from "@factory/core";
+import { exportSnapshot, importChangeCount, importSnapshot, ServiceError, type CommandRunner, type ImportReport } from "@factory/core";
 import { CliError, withProject } from "../context.js";
+import { printable } from "./lessons.js";
 
 export interface SnapshotDeps {
   /** Where warnings go; the result goes to stdout. */
@@ -39,6 +40,8 @@ export function runExport(cwd: string, file: string | undefined, deps: SnapshotD
       }
       try {
         writeFileSync(target, json, { mode: 0o600 });
+        // `mode` only applies to a file this creates: one overwritten keeps its old, maybe world-readable, permissions.
+        chmodSync(target, 0o600);
       } catch (err) {
         throw new CliError(`Could not write ${file}: ${(err as Error).message}`);
       }
@@ -72,7 +75,15 @@ export function runImport(cwd: string, file: string, options: { dryRun?: boolean
       } catch {
         throw new CliError(`${file} is not a factory snapshot: it is not JSON.`);
       }
-      return describeImport(importSnapshot(store, project, data, { dryRun: options.dryRun, now: deps.now }));
+      let report: ImportReport;
+      try {
+        report = importSnapshot(store, project, data, { dryRun: options.dryRun });
+      } catch (err) {
+        // A refusal can quote the file (the repo it names), which could hold a terminal escape.
+        if (err instanceof ServiceError) throw new CliError(printable(err.message));
+        throw err;
+      }
+      return describeImport(report);
     },
     deps.run,
   );
@@ -83,8 +94,9 @@ function inside(root: string, target: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** Text from the file (the host name) is printed with `printable`: the file may not be your own. */
 function describeImport(report: ImportReport): string {
-  const from = `the snapshot from ${report.header.host || "an unnamed machine"}, exported ${report.header.exported_at}`;
+  const from = `the snapshot from ${printable(report.header.host) || "an unnamed machine"}, exported ${report.header.exported_at}`;
   if (importChangeCount(report) === 0) {
     return [`Nothing to import: this database already has everything in ${from}.`, ...notes(report)].join("\n");
   }
@@ -102,14 +114,16 @@ function describeImport(report: ImportReport): string {
   row("issues", [
     report.issues.added.length > 0 && `${report.issues.added.length} added (${numbers(report.issues.added)})`,
     report.issues.queued.length > 0 && `${report.issues.queued.length} queued (${numbers(report.issues.queued)})`,
-    report.issues.created_by_factory.length > 0 && `${report.issues.created_by_factory.length} marked as opened by the factory (${numbers(report.issues.created_by_factory)})`,
+    report.issues.created_by_factory.length > 0 && `${report.issues.created_by_factory.length} claimed as opened by the factory, for GitHub to confirm (${numbers(report.issues.created_by_factory)})`,
   ]);
   row("lessons", [report.lessons.added > 0 && `${report.lessons.added} added`, report.lessons.decided > 0 && `${report.lessons.decided} decided`]);
   row("draft issues", [report.draft_issues > 0 && `${report.draft_issues} added`]);
   row("finished drafts", [report.drafts_done > 0 && `${report.drafts_done} added`]);
   lines.push(...notes(report));
   if (report.dryRun) lines.push("", "Nothing was written (--dry-run).");
-  else if (report.issues.added.length > 0 || report.issues.queued.length > 0) lines.push("", "Run `factory sync` to refresh the issues from GitHub.");
+  else if (report.issues.added.length > 0 || report.issues.queued.length > 0 || report.issues.created_by_factory.length > 0) {
+    lines.push("", "Run `factory sync` to refresh the issues from GitHub.");
+  }
   return lines.join("\n");
 }
 

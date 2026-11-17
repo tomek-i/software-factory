@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { api, type BacklogIssue, type ProjectInfo } from "../lib/api";
 import { useProject } from "../lib/project";
 import { ago } from "../lib/utils";
+import { githubUrl } from "./RunDetail";
 
 function QueueButton({ project, issue }: { project: string; issue: BacklogIssue }) {
   const queryClient = useQueryClient();
@@ -57,7 +58,8 @@ export function BacklogTable({ project, issues, label }: { project: string; issu
             <TableRow key={issue.number}>
               <TableCell className="max-w-lg xl:max-w-xl 2xl:max-w-3xl">
                 <div className="flex items-center gap-1.5">
-                  <a href={issue.url} target="_blank" rel="noreferrer" className="font-mono text-muted-foreground hover:underline">
+                  {/* Only a GitHub link: an issue `factory import` added has no url until it is synced. */}
+                  <a href={githubUrl(issue.url)} target="_blank" rel="noreferrer" className="font-mono text-muted-foreground hover:underline">
                     #{issue.number}
                   </a>
                   <span className="truncate">{issue.title}</span>

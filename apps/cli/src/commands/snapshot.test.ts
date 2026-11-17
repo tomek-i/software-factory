@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isUnprintable } from "@factory/shared";
 import { describe, expect, it, vi } from "vitest";
 import { GIT_TEST_TIMEOUT, tempDir } from "../../../../packages/core/test/helpers.js";
 import { setup } from "../../test/runs-setup.js";
@@ -53,6 +54,16 @@ describe("factory export", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toHaveProperty("header.github_repo", "o/r");
   });
 
+  // Windows has no owner-only mode bits for chmod to set.
+  it.skipIf(process.platform === "win32")("leaves the file readable by its owner only, also when it overwrites a world-readable one", () => {
+    const a = laptop();
+    const file = join(tempDir("factory-snapshot-"), "laptop.json");
+    writeFileSync(file, "old");
+    chmodSync(file, 0o644);
+    exportTo(a.dir, file);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
   it("warns when the file is inside the repository's working tree", () => {
     const a = laptop();
     const { warnings } = exportTo(a.dir, "snapshot.json");
@@ -83,7 +94,7 @@ describe("factory import", () => {
         `Would add or change from the snapshot from laptop, exported ${NOW.toISOString()}:`,
         "  runs: 1 added",
         "  run events: 1 added",
-        "  issues: 1 queued (#12), 1 marked as opened by the factory (#13)",
+        "  issues: 1 queued (#12), 1 claimed as opened by the factory, for GitHub to confirm (#13)",
         "  lessons: 1 added",
         "",
         "Nothing was written (--dry-run).",
@@ -99,7 +110,9 @@ describe("factory import", () => {
     expect(store.getRun(a.doneId)).toMatchObject({ state: "rejected", project_id: b.projectId });
     expect(store.getRun(a.activeId)).toBeUndefined();
     expect(store.getIssue(b.projectId, 12)?.queued_at).not.toBeNull();
-    expect(store.getIssue(b.projectId, 13)?.created_by_factory).toBe(true);
+    // Not trusted on the file's word: the next fetch from GitHub settles it.
+    expect(store.getIssue(b.projectId, 13)?.created_by_factory).toBe(false);
+    expect(store.pendingFactoryClaims(b.projectId, [13])).toEqual([13]);
     expect(store.listLessons({ project_id: b.projectId })).toEqual([expect.objectContaining({ status: "approved", pull_request: 8 })]);
     store.close();
 
@@ -118,6 +131,24 @@ describe("factory import", () => {
     expect(store.getIssue(b.projectId, 12)?.queued_at).toBeNull();
     expect(store.listRuns({ project_id: b.projectId })).toEqual([]);
     store.close();
+  });
+
+  it("prints no control characters from the file, in the preview, the import or a refusal", () => {
+    const { b, file } = carried();
+    const snapshot = JSON.parse(readFileSync(file, "utf8")) as { header: { host: string; github_repo: string } };
+    // A terminal escape that would clear the screen, and a right-to-left override.
+    snapshot.header.host = "lap\u001b[2Jtop\u202e";
+    writeFileSync(file, JSON.stringify(snapshot));
+    const dry = runImport(b.dir, file, { dryRun: true });
+    expect(dry.split("\n")[0]).toBe(`Would add or change from the snapshot from lap[U+001B][2Jtop[U+202E], exported ${NOW.toISOString()}:`);
+    const real = runImport(b.dir, file);
+    for (const out of [dry, real]) expect(Array.from(out).some((ch) => ch !== "\n" && isUnprintable(ch.codePointAt(0)!))).toBe(false);
+
+    snapshot.header.github_repo = "someone/\u001b[31melse";
+    writeFileSync(file, JSON.stringify(snapshot));
+    expect(() => runImport(b.dir, file)).toThrow(
+      new CliError("The snapshot is of someone/[U+001B][31melse, but this repository is o/r. Import it in a clone of someone/[U+001B][31melse."),
+    );
   });
 
   it("refuses a snapshot from a newer factory", () => {
