@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exportSnapshot, importChangeCount, importSnapshot, ServiceError, type CommandRunner, type ImportReport } from "@factory/core";
 import { CliError, withProject } from "../context.js";
+import { plain, type Style } from "../style.js";
 import { printable } from "./lessons.js";
 
 export interface SnapshotDeps {
@@ -11,6 +12,10 @@ export interface SnapshotDeps {
   run?: CommandRunner;
   now?: Date;
   host?: string;
+  /** How to style the result, for stdout; plain unless the caller decided colour is on. */
+  style?: Style;
+  /** How to style the warnings, for wherever `warn` writes them (stderr by default). */
+  warnStyle?: Style;
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -20,7 +25,8 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * draft progress) as JSON, to stdout or to `file`. Active runs stay: they belong to this machine.
  */
 export function runExport(cwd: string, file: string | undefined, deps: SnapshotDeps = {}): string {
-  const warn = deps.warn ?? ((line: string) => console.error(line));
+  const warnStyle = deps.warnStyle ?? plain;
+  const warn = (line: string) => (deps.warn ?? console.error)(warnStyle.warning(line));
   return withProject(
     cwd,
     ({ store, project, root }) => {
@@ -47,7 +53,7 @@ export function runExport(cwd: string, file: string | undefined, deps: SnapshotD
       }
       return [
         `Exported ${plural(snapshot.runs.length, "finished run")}, ${plural(snapshot.issues.length, "issue")} and ${plural(snapshot.lessons.length, "lesson")} to ${target}.`,
-        "On the other machine: `factory import <file>`, then `factory sync`.",
+        (deps.style ?? plain).hint("On the other machine: `factory import <file>`, then `factory sync`."),
       ].join("\n");
     },
     deps.run,
@@ -83,7 +89,7 @@ export function runImport(cwd: string, file: string, options: { dryRun?: boolean
         if (err instanceof ServiceError) throw new CliError(printable(err.message));
         throw err;
       }
-      return describeImport(report);
+      return describeImport(report, deps.style ?? plain);
     },
     deps.run,
   );
@@ -112,10 +118,10 @@ function realPath(path: string): string {
 }
 
 /** Text from the file (the host name) is printed with `printable`: the file may not be your own. */
-function describeImport(report: ImportReport): string {
+function describeImport(report: ImportReport, style: Style): string {
   const from = `the snapshot from ${printable(report.header.host) || "an unnamed machine"}, exported ${report.header.exported_at}`;
   if (importChangeCount(report) === 0) {
-    return [`Nothing to import: this database already has everything in ${from}.`, ...notes(report)].join("\n");
+    return [`Nothing to import: this database already has everything in ${from}.`, ...notes(report, style)].join("\n");
   }
   const verb = report.dryRun ? "Would add or change" : "Imported";
   const lines = [`${verb} from ${from}:`];
@@ -136,21 +142,21 @@ function describeImport(report: ImportReport): string {
   row("lessons", [report.lessons.added > 0 && `${report.lessons.added} added`, report.lessons.decided > 0 && `${report.lessons.decided} decided`]);
   row("draft issues", [report.draft_issues > 0 && `${report.draft_issues} added`]);
   row("finished drafts", [report.drafts_done > 0 && `${report.drafts_done} added`]);
-  lines.push(...notes(report));
-  if (report.dryRun) lines.push("", "Nothing was written (--dry-run).");
+  lines.push(...notes(report, style));
+  if (report.dryRun) lines.push("", style.detail("Nothing was written (--dry-run)."));
   else if (report.issues.added.length > 0 || report.issues.queued.length > 0 || report.issues.created_by_factory.length > 0) {
-    lines.push("", "Run `factory sync` to refresh the issues from GitHub.");
+    lines.push("", style.hint("Run `factory sync` to refresh the issues from GitHub."));
   }
   return lines.join("\n");
 }
 
 /** What was left out, whether or not anything changed. */
-function notes(report: ImportReport): string[] {
+function notes(report: ImportReport, style: Style): string[] {
   const lines: string[] = [];
-  if (report.runs.present > 0) lines.push(`${plural(report.runs.present, "run")} already here, left as they are.`);
-  if (report.lessons.missing_run > 0) lines.push(`${plural(report.lessons.missing_run, "lesson")} skipped: their run is not in this database.`);
+  if (report.runs.present > 0) lines.push(style.detail(`${plural(report.runs.present, "run")} already here, left as they are.`));
+  if (report.lessons.missing_run > 0) lines.push(style.attention(`${plural(report.lessons.missing_run, "lesson")} skipped: their run is not in this database.`));
   if (report.agent_run_conflicts.length > 0) {
-    lines.push(`${plural(report.agent_run_conflicts.length, "agent run")} skipped: the id is already used here (${report.agent_run_conflicts.join(", ")}).`);
+    lines.push(style.attention(`${plural(report.agent_run_conflicts.length, "agent run")} skipped: the id is already used here (${report.agent_run_conflicts.join(", ")}).`));
   }
   return lines;
 }

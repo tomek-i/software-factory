@@ -1,5 +1,6 @@
 import { sweepFinishedRuns, type CommandRunner } from "@factory/core";
 import { withProject } from "../context.js";
+import { plain, type Style } from "../style.js";
 
 /**
  * `factory cleanup [--dry-run]`: remove the worktrees and branches of finished runs that still have
@@ -7,13 +8,13 @@ import { withProject } from "../context.js";
  * finished in the last 2 minutes to their worker; unlike it, it looks again at runs it kept because
  * of unpushed work, in case that work has been pushed since.
  */
-export function runCleanup(cwd: string, options: { dryRun?: boolean } = {}, run?: CommandRunner): string {
+export function runCleanup(cwd: string, options: { dryRun?: boolean } = {}, run?: CommandRunner, style: Style = plain): string {
   return withProject(
     cwd,
     ({ store, project, config }) => {
       const lines = sweepFinishedRuns(store, project, config, { run, dryRun: options.dryRun, recheckKept: true });
       if (lines.length === 0) return "Nothing to clean up.";
-      return options.dryRun ? `${lines.join("\n")}\n\nNothing was removed (--dry-run).` : lines.join("\n");
+      return options.dryRun ? `${lines.join("\n")}\n\n${style.detail("Nothing was removed (--dry-run).")}` : lines.join("\n");
     },
     run,
   );

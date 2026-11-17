@@ -1,9 +1,11 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { describe, expect, it } from "vitest";
 import { registerWorker, takeUpgradeLock, upgradeLockPath, type CommandRunner, type ExecResult } from "@factory/core";
 import { CliError } from "../context.js";
+import { createStyle } from "../style.js";
 import { compareVersions, detectPackageManager, packageManagerCommand, PACKAGE, RELEASES_URL, runUpgrade, type UpgradeDeps } from "./upgrade.js";
 
 /** Global folders of npm, pnpm and yarn, each holding the package at version 0.5.0 like a real install. */
@@ -83,6 +85,21 @@ describe("factory upgrade --check", () => {
     expect(runUpgrade({ check: true }, t.deps)).toBe("Install it with `factory upgrade`.");
     expect(t.lines).toEqual([`0.6.0 is available (you have 0.5.0). Release notes: ${RELEASES_URL}`]);
     expect(t.calls).toEqual(["npm view @tomek-i/software-factory version"]);
+  });
+
+  it("colours up to date as good, a newer version as attention and the next step as a hint", () => {
+    const colour = createStyle(true);
+    const current = setup({ "npm view @tomek-i/software-factory version": { stdout: "0.5.0" } }, { style: colour });
+    expect(runUpgrade({ check: true }, current.deps)).toBe(colour.success("factory 0.5.0 is up to date."));
+
+    const t = setup({}, { style: colour });
+    const hint = runUpgrade({ check: true }, t.deps);
+    expect(hint).toBe(colour.hint("Install it with `factory upgrade`."));
+    expect(t.lines).toEqual([`${colour.attention("0.6.0 is available")} (you have 0.5.0). Release notes: ${RELEASES_URL}`]);
+    expect([hint, ...t.lines].map((line) => stripVTControlCharacters(line))).toEqual([
+      "Install it with `factory upgrade`.",
+      `0.6.0 is available (you have 0.5.0). Release notes: ${RELEASES_URL}`,
+    ]);
   });
 
   it("works from a source checkout too, and says to pull and rebuild", () => {

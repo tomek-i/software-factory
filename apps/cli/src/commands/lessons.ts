@@ -1,11 +1,14 @@
 import { approveLessons, listLessons, rejectLessons, type CommandRunner, type GithubPort, type LessonEntry, type Project, type Store } from "@factory/core";
 import { isUnprintable } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
+import { plain, type Style } from "../style.js";
 
 export interface LessonDeps {
   run?: CommandRunner;
   github?: GithubPort;
   now?: Date;
+  /** How to style output; plain unless the caller decided colour is on. */
+  style?: Style;
 }
 
 /** Lesson ids from the command line: whole numbers, each once. */
@@ -30,7 +33,7 @@ export function printable(text: string): string {
   }).join("");
 }
 
-function describeLesson(lesson: LessonEntry): string {
+function describeLesson(lesson: LessonEntry, style: Style): string {
   const issue = lesson.issue_number;
   const status =
     lesson.status === "approved" && lesson.pull_request !== null
@@ -39,7 +42,7 @@ function describeLesson(lesson: LessonEntry): string {
         ? `rejected: ${printable(lesson.comment)}`
         : lesson.status;
   return [
-    `${lesson.id}  ${status}  ${lesson.run_id}${issue ? ` (#${issue})` : ""}`,
+    `${style.detail(String(lesson.id))}  ${style.lesson(lesson.status, status)}  ${style.detail(lesson.run_id)}${issue ? ` (#${issue})` : ""}`,
     `    rule:      ${printable(lesson.rule)}`,
     `    observed:  ${printable(lesson.observation)}`,
     `    evidence:  ${printable(lesson.evidence)}`,
@@ -47,16 +50,16 @@ function describeLesson(lesson: LessonEntry): string {
 }
 
 /** `factory lessons`: the lessons waiting for a decision; with --all, every lesson. */
-export function runLessons(cwd: string, options: { all?: boolean } = {}, run?: CommandRunner): string {
+export function runLessons(cwd: string, options: { all?: boolean } = {}, run?: CommandRunner, style: Style = plain): string {
   return withProject(
     cwd,
     ({ store, project }) => {
       const lessons = listLessons(store, project, options);
-      if (lessons.length === 0) return options.all ? "No lessons yet." : "No lessons waiting. `factory lessons --all` shows decided ones.";
+      if (lessons.length === 0) return options.all ? "No lessons yet." : `No lessons waiting. ${style.hint("`factory lessons --all` shows decided ones.")}`;
       const waiting = lessons.some((l) => l.status === "proposed");
       return [
-        ...lessons.map(describeLesson),
-        ...(waiting ? ['Approve with `factory lessons approve <id...>`, or reject with `factory lessons reject <id...> -m "<why>"`.'] : []),
+        ...lessons.map((lesson) => describeLesson(lesson, style)),
+        ...(waiting ? [style.hint('Approve with `factory lessons approve <id...>`, or reject with `factory lessons reject <id...> -m "<why>"`.')] : []),
       ].join("\n\n");
     },
     run,
@@ -70,6 +73,7 @@ export function runLessons(cwd: string, options: { all?: boolean } = {}, run?: C
  */
 export function runLessonsApprove(cwd: string, values: string[], deps: LessonDeps = {}): string {
   const ids = parseIds(values);
+  const style = deps.style ?? plain;
   return withProject(
     cwd,
     (ctx) => {
@@ -84,7 +88,7 @@ export function runLessonsApprove(cwd: string, values: string[], deps: LessonDep
           ? `Approved ${which}. Added ${them} to the open lessons PR #${published.number}:${url}`
           : `Approved ${which}. PR #${published.number} adds ${them} to .factory/lessons.md:${url}`,
         `Agents read lessons from ${defaultBranch}, so ${ids.length === 1 ? "it applies" : "they apply"} to runs that start after the PR is merged.`,
-        ...(published.warning ? [`Warning: ${published.warning}`] : []),
+        ...(published.warning ? [style.warning(`Warning: ${published.warning}`)] : []),
       ].join("\n");
     },
     deps.run,

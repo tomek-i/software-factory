@@ -1,5 +1,5 @@
 import { styleText } from "node:util";
-import type { AgentRunStatus } from "@factory/core";
+import type { AgentRunStatus, LessonEntry } from "@factory/core";
 import type { RunState } from "@factory/shared";
 
 /**
@@ -26,6 +26,18 @@ export interface Style {
   verdict(value: string, text?: string): string;
   /** The title of a section, such as the verdict file it summarises. */
   title(text: string): string;
+  /** A lesson's status: proposed waits for a decision, approved and rejected are decided. `text` defaults to the status. */
+  lesson(status: LessonEntry["status"], text?: string): string;
+  /** Something that went through or needs nothing more, such as a finished upgrade. */
+  success(text: string): string;
+  /** A warning the person should read, such as a line starting `warning:`. */
+  warning(text: string): string;
+  /** The `error:` label of an error message. */
+  error(text: string): string;
+  /** A command or subcommand name in help. */
+  command(text: string): string;
+  /** An option flag or argument placeholder in help, such as `--all` or `<run>`. */
+  option(text: string): string;
 }
 
 type Format = Parameters<typeof styleText>[0];
@@ -93,6 +105,12 @@ export const VERDICT_FORMAT: Readonly<Record<string, Format>> = {
   NOT_CHECKED: WAITING,
 };
 
+export const LESSON_FORMAT: Record<LessonEntry["status"], Format> = {
+  proposed: WAITING,
+  approved: GOOD,
+  rejected: BAD,
+};
+
 export function createStyle(enabled: boolean): Style {
   // Empty text stays empty, so padding and trimming around a styled cell work as on plain text.
   // validateStream is off because colourEnabled already decided; that also makes Node versions
@@ -109,6 +127,13 @@ export function createStyle(enabled: boolean): Style {
     hint: (text) => paint("bold", text),
     verdict: (value, text = value) => paint(Object.hasOwn(VERDICT_FORMAT, value) ? VERDICT_FORMAT[value] : undefined, text),
     title: (text) => paint("bold", text),
+    lesson: (status, text = status) => paint(LESSON_FORMAT[status], text),
+    success: (text) => paint(GOOD, text),
+    warning: (text) => paint(WAITING, text),
+    error: (text) => paint(BAD, text),
+    // In help, commands are what you run and options what you add to them: two colours keep them apart.
+    command: (text) => paint(ACTIVE, text),
+    option: (text) => paint(GOOD, text),
   };
 }
 
