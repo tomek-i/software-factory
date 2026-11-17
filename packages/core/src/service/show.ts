@@ -122,6 +122,8 @@ export interface RunOverview {
    * seen before anyone approves. Their text comes from GitHub: show it as text only.
    */
   openFeedback?: FailureItem[];
+  /** Its issue was closed on GitHub while its PR is open; cancelling closes the PR too (see waitingOn). */
+  issueClosed?: { pr: number };
 }
 
 function sectionsOf(runDir: string, files: string[]): OverviewSection[] {
@@ -195,7 +197,7 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
   const files = listRunFiles(runDir);
   const issueTitle = run.issue_number ? store.getIssue(project.id, run.issue_number)?.title : undefined;
   const hasRunDir = existsSync(runDir);
-  const failure = waitingOn(store, project, run).failure;
+  const { failure, issueClosed } = waitingOn(store, project, run);
   return {
     run,
     issueTitle,
@@ -204,6 +206,7 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
     files,
     sections: hasRunDir ? sectionsOf(runDir, files) : [],
     ...(failure?.kind === "feedback" ? { openFeedback: failure.items } : {}),
+    ...(issueClosed ? { issueClosed } : {}),
   };
 }
 

@@ -295,11 +295,20 @@ export class Store {
     const stale = this.listIssues({ project_id: projectId, state: "open" }).filter(
       (i) => !open.has(i.number) && i.synced_at <= syncStartedAt,
     );
-    const close = this.db.prepare(
-      "UPDATE issues SET state = 'closed', queued_at = NULL, queue_seq = NULL, synced_at = ? WHERE project_id = ? AND number = ?",
-    );
-    for (const issue of stale) close.run(now(), projectId, issue.number);
+    for (const issue of stale) this.closeIssue(projectId, issue.number);
     return stale.length;
+  }
+
+  /** Mark one issue open again (reopened on GitHub). It stays off the queue until someone queues it. */
+  reopenIssue(projectId: string, number: number): void {
+    this.db.prepare("UPDATE issues SET state = 'open', synced_at = ? WHERE project_id = ? AND number = ?").run(now(), projectId, number);
+  }
+
+  /** Mark one issue closed on GitHub, and take it off the queue. */
+  closeIssue(projectId: string, number: number): void {
+    this.db
+      .prepare("UPDATE issues SET state = 'closed', queued_at = NULL, queue_seq = NULL, synced_at = ? WHERE project_id = ? AND number = ?")
+      .run(now(), projectId, number);
   }
 
   getIssue(projectId: string, number: number): Issue | undefined {

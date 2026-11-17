@@ -237,7 +237,7 @@ factory new --discard <draft>                # drop a draft
 Work is picked **locally**, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
 
 ```sh
-factory sync               # pull open issues from GitHub into .factory/factory.db; finishes runs whose PR was merged or closed
+factory sync               # pull open issues from GitHub into .factory/factory.db; finishes runs whose PR was merged or closed, or whose issue was closed
 factory issues             # list them (Q marks queued issues); -q/--queued, -a/--all
 factory queue 12 15 18     # queue issues for the factory (fetches unsynced ones)
 factory unqueue 15         # take one back out

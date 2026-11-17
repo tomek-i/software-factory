@@ -3,7 +3,7 @@
  * `runs*.int.test.ts` files so Vitest runs them in parallel: each test drives real git and fake `claude`.
  */
 import { join } from "node:path";
-import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort, type PullRequestState } from "@factory/core";
+import { findRepoRoot, runCommand, Store, type CommandRunner, type GithubPort, type IssueState, type PullRequestState } from "@factory/core";
 import { fakeClaude, repoWithRemote, type FakeStep } from "../../../packages/core/test/helpers.js";
 import { runRun } from "../src/commands/runs.js";
 
@@ -29,6 +29,10 @@ export const merged: { number: number; head: string }[] = [];
 export const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
 /** PR descriptions the fake GitHub replaced. */
 export const prEdits: { number: number; body: string }[] = [];
+/** Issue states the fake GitHub reports; an issue not listed is open. Reset by setup(). */
+export const issueStates = new Map<number, IssueState>();
+/** PRs the fake GitHub closed without merging, with the comment. */
+export const closedPrs: { number: number; comment: string }[] = [];
 export const github: GithubPort = {
   commentOnIssue: () => undefined,
   findComment: () => undefined,
@@ -61,6 +65,11 @@ export const github: GithubPort = {
     prStates.set(number, { number, state: "merged", draft: false, head, mergeCommit: "e".repeat(40) });
   },
   pullRequestState: (number) => prStates.get(number) ?? { number, state: "open", draft: true, head: "" },
+  issueState: (number) => issueStates.get(number) ?? { number, state: "open", closedBy: [] },
+  closePullRequest: (number, comment) => {
+    closedPrs.push({ number, comment });
+    prStates.set(number, { number, state: "closed", draft: false, head: "" });
+  },
 };
 
 export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "") {
@@ -68,6 +77,8 @@ export function setup(steps: FakeStep[], gates = "triage: auto", extraConfig = "
   merged.length = 0;
   readyPrs.length = 0;
   prEdits.length = 0;
+  issueStates.clear();
+  closedPrs.length = 0;
   // Unless `gates` sets it, the spec critic passes straight through, so a READY issue goes from triage to build.
   const critic = /\bcritic:/.test(gates) ? "" : "  critic: always\n";
   const config = `version: 1\nchecks:\n  - name: ok\n    run: node -e "process.exit(0)"\ntrust:\n  authors: [alice]\ngates:\n${critic}  review: human\n  ${gates}\n${extraConfig}`;

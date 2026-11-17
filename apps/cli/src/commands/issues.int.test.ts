@@ -132,6 +132,8 @@ describe("issue commands", () => {
       hasReview: () => false,
       createReview: () => undefined,
       pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
+      issueState: (number) => ({ number, state: "open", closedBy: [] }),
+      closePullRequest: () => undefined,
     };
 
     expect(runSync(dir, run, github)).toBe(`${created.id}: PR #3 merged -> done\nSynced acme/shop: 2 open, 0 closed since last sync, 0 queued.`);

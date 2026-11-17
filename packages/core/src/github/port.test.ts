@@ -71,6 +71,24 @@ describe("ghPort", () => {
     }
   });
 
+  it("reads an issue's state, why it was closed and the PRs that closed it", () => {
+    const closed = fakeGh(JSON.stringify({ number: 7, state: "CLOSED", stateReason: "COMPLETED", closedByPullRequestsReferences: [{ number: 221 }, { number: 224 }] }));
+    expect(ghPort(project, closed.run).issueState(7)).toEqual({ number: 7, state: "closed", reason: "completed", closedBy: [221, 224] });
+    expect(closed.calls[0]).toEqual(["issue", "view", "7", "-R", "o/r", "--json", "number,state,stateReason,closedByPullRequestsReferences"]);
+    const open = fakeGh(JSON.stringify({ number: 7, state: "OPEN", stateReason: "REOPENED", closedByPullRequestsReferences: [] }));
+    expect(ghPort(project, open.run).issueState(7)).toEqual({ number: 7, state: "open", closedBy: [] });
+    for (const out of ["nope", JSON.stringify({ number: 8, state: "OPEN" }), JSON.stringify({ number: 7, state: "WEIRD" })]) {
+      expect(() => ghPort(project, fakeGh(out).run).issueState(7)).toThrow(/unexpected output/);
+    }
+  });
+
+  it("closes a PR with a comment and deletes its branch", () => {
+    const { calls, run } = fakeGh("");
+    ghPort(project, run).closePullRequest(42, "Superseded by #221.");
+    expect(calls).toEqual([["pr", "close", "42", "-R", "o/r", "--comment", "Superseded by #221.", "--delete-branch"]]);
+    expect(() => ghPort(project, fakeGh("", 1).run).closePullRequest(42, "x")).toThrow(/gh pr close failed: boom/);
+  });
+
   it("marks a PR ready and merges it only at the commit that passed", () => {
     const { calls, run } = fakeGh("");
     ghPort(project, run).markReady(42);

@@ -16,6 +16,16 @@ export interface PullRequestState {
   mergeCommit?: string;
 }
 
+/** An issue as GitHub sees it now. */
+export interface IssueState {
+  number: number;
+  state: "open" | "closed";
+  /** Why it was closed, as GitHub words it (`completed`, `not_planned`, `duplicate`); only when closed. */
+  reason?: string;
+  /** The open PRs that link to it with a closing keyword (`Closes #n`), which may include the factory's own. */
+  closedBy: number[];
+}
+
 /** What the pipeline needs from GitHub. Faked in tests. */
 export interface GithubPort {
   commentOnIssue(issueNumber: number, body: string): void;
@@ -58,6 +68,12 @@ export interface GithubPort {
    */
   createReview(number: number, review: PullRequestReview): void;
   pullRequestState(number: number): PullRequestState;
+  issueState(number: number): IssueState;
+  /**
+   * Close a PR without merging, with a comment saying why, and delete its branch. A human decision
+   * only (`cancelRun` of a run whose issue was closed on GitHub).
+   */
+  closePullRequest(number: number, comment: string): void;
   /** Take a draft PR out of draft. */
   markReady(number: number): void;
   /**
@@ -377,6 +393,26 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       }
       const mergeCommit = typeof pr.mergeCommit?.oid === "string" ? pr.mergeCommit.oid : undefined;
       return { number, state, draft: pr.isDraft === true, head: pr.headRefOid, ...(mergeCommit ? { mergeCommit } : {}) };
+    },
+    issueState(number) {
+      const out = gh(["issue", "view", String(number), "-R", repo, "--json", "number,state,stateReason,closedByPullRequestsReferences"]);
+      let issue: { number?: unknown; state?: unknown; stateReason?: unknown; closedByPullRequestsReferences?: unknown };
+      try {
+        issue = JSON.parse(out) as typeof issue;
+      } catch {
+        throw new GithubError(`gh issue view returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      const state = typeof issue.state === "string" ? issue.state.toLowerCase() : "";
+      if (issue.number !== number || (state !== "open" && state !== "closed")) {
+        throw new GithubError(`gh issue view returned unexpected output: ${out.slice(0, 200)}`);
+      }
+      const refs = Array.isArray(issue.closedByPullRequestsReferences) ? (issue.closedByPullRequestsReferences as { number?: unknown }[]) : [];
+      const closedBy = refs.flatMap((r) => (typeof r?.number === "number" ? [r.number] : []));
+      const reason = state === "closed" && typeof issue.stateReason === "string" && issue.stateReason ? issue.stateReason.toLowerCase() : undefined;
+      return { number, state, ...(reason ? { reason } : {}), closedBy };
+    },
+    closePullRequest(number, comment) {
+      gh(["pr", "close", String(number), "-R", repo, "--comment", comment, "--delete-branch"]);
     },
     markReady(number) {
       gh(["pr", "ready", String(number), "-R", repo]);

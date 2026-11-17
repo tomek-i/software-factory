@@ -296,11 +296,16 @@ export function rejectRun(ctx: ServiceContext, ref: string, options: { message: 
 /**
  * Stop a run's agent (and everything the agent started) and end the run. Its worktree and branch
  * are cleaned up now when no worker drives it, or else by the worker once it stopped.
+ * When the run's issue was closed on GitHub, its open PR is closed first, with its branch: the work
+ * was done elsewhere or is not wanted (see reconcileWithGithub, which leaves that call to a human).
+ * If GitHub refuses, nothing changes and this throws, so no cancelled run is left with an open PR.
  */
-export function cancelRun(ctx: ServiceContext, ref: string, reason: string, run?: CommandRunner): Ended & { stopped: number } {
+export function cancelRun(ctx: ServiceContext, ref: string, reason: string, deps: ServiceDeps = {}): Ended & { stopped: number; closedPr?: number } {
   const { store, project, config } = ctx;
+  const { run } = deps;
   const target = findRun(store, project, ref);
   if (isTerminal(target.state)) throw new ServiceError(`Run ${target.id} is already ${target.state}.`);
+  const closedPr = closeStalePullRequest(ctx, target, deps);
   // A pid is only trusted while a worker holds the lease: after a crash the agent row can
   // still say "running" and its pid may since belong to an unrelated process.
   const driven = target.lease_expires_at !== null && target.lease_expires_at > new Date().toISOString();
@@ -310,5 +315,29 @@ export function cancelRun(ctx: ServiceContext, ref: string, reason: string, run?
   // A driven run's worker may still be stopping in the worktree; it cleans up once it has.
   const cleaned = driven ? [] : cleanUpNow(store, project, config, target.id, run);
   const media = dropMedia(project, target.id, run);
-  return { run: store.getRun(target.id)!, stopped: running.length, media, cleaned };
+  return { run: store.getRun(target.id)!, stopped: running.length, media, cleaned, ...(closedPr !== undefined ? { closedPr } : {}) };
+}
+
+/** Close the PR of a run whose issue was closed on GitHub, if it is still open; its number when it did. */
+function closeStalePullRequest(ctx: ServiceContext, target: Run, deps: ServiceDeps): number | undefined {
+  const { store, project } = ctx;
+  if (target.pr_number === null || target.issue_number === null) return undefined;
+  if (store.getIssue(project.id, target.issue_number)?.state !== "closed") return undefined;
+  const number = target.pr_number;
+  try {
+    const github = deps.github ?? ghPort(project, deps.run);
+    // The stored state can be stale (reopened since): only GitHub's word closes a PR.
+    if (github.issueState(target.issue_number).state === "open") {
+      store.reopenIssue(project.id, target.issue_number);
+      return undefined;
+    }
+    if (github.pullRequestState(number).state !== "open") return undefined;
+    github.closePullRequest(number, `Issue #${target.issue_number} was closed on GitHub, so the factory's run for it was cancelled.`);
+    return number;
+  } catch (err) {
+    // Cancelling anyway would hide the open PR: nothing points at it any more.
+    throw new ServiceError(
+      `Run ${target.id} was not cancelled: closing PR #${number} failed (${(err as Error).message.split("\n")[0]}). Close the PR on GitHub, and the next sync cancels the run.`,
+    );
+  }
 }

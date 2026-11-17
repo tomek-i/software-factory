@@ -392,7 +392,7 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
 ### Ticking the acceptance criteria
 
 - Only once the PR is merged, the engine ticks the `MET` criteria of the last review round on GitHub: `[ ]` becomes `[x]`.
-  - That is after the factory merges it, or when it finds the PR merged on GitHub (the merge stage or `reconcile`).
+  - That is after the factory merges it, or when it finds the PR merged on GitHub (the merge stage or `reconcileWithGithub`).
   - Nothing is ticked before the merge, or when the PR is closed without merging.
 - It changes only those checkboxes, on exactly the lines it read; no other text changes.
 - The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
