@@ -43,6 +43,9 @@ describe("waitingOn", () => {
 
     store.closeIssue(project.id, 1);
     expect(waitingOn(store, project, store.getRun(run.id)!)).toEqual({ issueClosed: { pr: 7 } });
+    // A stopped run says so too: cancelling it would close the PR all the same.
+    store.writeState(run.id, "build", { waiting_gate: null });
+    expect(waitingOn(store, project, store.getRun(run.id)!)).toEqual({ issueClosed: { pr: 7 } });
     // Without a PR, reconcile cancels the run rather than ask.
     store.writeState(run.id, "needs_human", { pr_number: null });
     expect(waitingOn(store, project, store.getRun(run.id)!).issueClosed).toBeUndefined();

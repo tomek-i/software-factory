@@ -247,8 +247,10 @@ describe("approve, resume, reject and cancel", () => {
     const { ctx, store, project, github } = context();
     const closed: { number: number; comment: string }[] = [];
     const prState = { state: "open" as "open" | "closed" };
+    const issue = { state: "closed" as "open" | "closed" };
     const port = {
       ...github,
+      issueState: (number: number) => ({ number, state: issue.state, closedBy: [] }),
       pullRequestState: (number: number) => ({ number, state: prState.state, draft: false, head: "h" }),
       closePullRequest: (number: number, comment: string) => void closed.push({ number, comment }),
     };
@@ -263,18 +265,27 @@ describe("approve, resume, reject and cancel", () => {
     expect(closed).toEqual([]);
 
     store.closeIssue(project.id, 12);
-    expect(cancelRun(ctx, parked(), "done elsewhere", { github: port }).closedPr).toEqual({ number: 7 });
+    expect(cancelRun(ctx, parked(), "done elsewhere", { github: port }).closedPr).toBe(7);
     expect(closed).toEqual([{ number: 7, comment: "Issue #12 was closed on GitHub, so the factory's run for it was cancelled." }]);
 
     // Already closed on GitHub: nothing to do.
     prState.state = "closed";
     expect(cancelRun(ctx, parked(), "again", { github: port }).closedPr).toBeUndefined();
 
-    // GitHub refuses: the run is cancelled anyway, and the caller hears why the PR is still open.
+    // GitHub refuses: the run stays as it was, so its open PR is not forgotten.
     prState.state = "open";
     const failing = { ...port, closePullRequest: () => { throw new Error("gh pr close failed: no access\nmore"); } };
-    const refused = cancelRun(ctx, parked(), "again", { github: failing });
-    expect(refused).toMatchObject({ run: { state: "cancelled" }, closedPr: { number: 7, error: "gh pr close failed: no access" } });
+    const kept = parked();
+    expect(() => cancelRun(ctx, kept, "again", { github: failing })).toThrow(
+      new ServiceError(`Run ${kept} was not cancelled: closing PR #7 failed: gh pr close failed: no access\nClose the PR on GitHub, and the next sync cancels the run.`),
+    );
+    expect(store.getRun(kept)!.state).toBe("needs_human");
+
+    // Reopened on GitHub since it was recorded closed: the PR stays, and the issue is open again.
+    issue.state = "open";
+    expect(cancelRun(ctx, parked(), "restart it", { github: port }).closedPr).toBeUndefined();
+    expect(closed).toHaveLength(1);
+    expect(store.getIssue(project.id, 12)!.state).toBe("open");
   });
 
   it("stops the running agent of a run a worker drives, and leaves its cleanup to that worker", async () => {

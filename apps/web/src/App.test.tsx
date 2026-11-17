@@ -448,9 +448,10 @@ describe("inbox", () => {
     await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cancel", body: { state: "needs_human", gate: "triage" } }]));
   });
 
-  it("says a run's issue was closed on GitHub and that cancelling closes its PR, and keeps the card when the PR stays open", async () => {
+  it("says a run's issue was closed on GitHub and that cancelling closes its PR, and keeps the card when GitHub refuses", async () => {
     server.runs = [runRow({ waitingGate: "merge", issueClosed: { pr: 7 } })];
-    server.answers.set("/cancel", { closedPr: { number: 7, error: "gh pr close failed: no access" } });
+    const refusal = "Run run-1 was not cancelled: closing PR #7 failed: gh pr close failed: no access";
+    server.failures.set("/cancel", { status: 400, error: refusal });
     renderAt("/inbox");
     const user = userEvent.setup();
 
@@ -461,7 +462,7 @@ describe("inbox", () => {
     expect(within(form).getByRole("note").textContent).toBe(note);
     await user.click(within(form).getByRole("button", { name: "Cancel run" }));
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Cancelled, but PR #7 is still open: gh pr close failed: no access");
+    expect((await screen.findByRole("alert")).textContent).toBe(refusal);
   });
 
   it("shows no closed-issue note for a run whose issue is open", async () => {

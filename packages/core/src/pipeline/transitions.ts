@@ -503,18 +503,18 @@ export class RunMachine {
 
   /**
    * The run's issue was closed on GitHub (done by hand in another PR, a duplicate, not planned):
-   * cancel the run. Only for a run without an open PR of its own, whose fate a human decides
-   * (`cancelRun` closes the PR too); `openPr` is what GitHub says about the run's PR, if it has one.
-   * A run another worker is driving is refused, as in closeByPullRequest.
+   * cancel the run. Only for a run without a PR: one with a PR finishes by that PR, and while it is
+   * open a human decides (`cancelRun` closes it too). A run another worker is driving is refused,
+   * as in closeByPullRequest.
    */
-  closeByIssue(runId: string, issue: Pick<IssueState, "number" | "state" | "reason" | "closedBy">, openPr: boolean, owner?: string): Run {
+  closeByIssue(runId: string, issue: Pick<IssueState, "number" | "state" | "reason" | "closedBy">, owner?: string): Run {
     const run = this.load(runId);
     this.checkLease(run, "cancelled", owner);
     const problems: string[] = [];
     if (isTerminal(run.state)) problems.push(`run is already ${run.state}`);
     if (run.issue_number !== issue.number) problems.push(`issue #${issue.number} is not the run's issue`);
     if (issue.state !== "closed") problems.push(`issue #${issue.number} is still open`);
-    if (openPr) problems.push(`PR #${run.pr_number} is still open: a human decides`);
+    if (run.pr_number !== null) problems.push(`run has PR #${run.pr_number}: it finishes by that PR, or a human decides`);
     if (problems.length) throw new TransitionError(runId, run.state, "cancelled", problems);
 
     const reason = closedIssueReason(issue);

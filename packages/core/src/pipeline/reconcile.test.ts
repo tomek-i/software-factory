@@ -153,15 +153,31 @@ describe("reconcileWithGithub", () => {
       expect(reconcile()).toEqual([]);
     });
 
-    it("leaves a run with an open PR for a human, and says so once", () => {
-      const { store, project, make, reconcile } = setup({ 3: { state: "open", draft: false, head: "h" } }, "/repo", { 4: { state: "closed", reason: "duplicate", closedBy: [] } });
+    it("leaves a run with an open PR for a human, records the issue closed, and asks GitHub only once", () => {
+      const { store, project, make, reconcile, askedIssues } = setup({ 3: { state: "open", draft: false, head: "h" } }, "/repo", {
+        4: { state: "closed", reason: "duplicate", closedBy: [3] },
+      });
       store.upsertIssue(project.id, { number: 4, title: "t", body: "", state: "open", author: "a", labels: [], url: "u", gh_updated_at: "2026-01-01T00:00:00Z" });
       const waiting = make(4, "needs_human", { pr_number: 3, waiting_gate: "merge" });
 
-      expect(reconcile()).toEqual([`${waiting}: issue #4 was closed on GitHub (duplicate); PR #3 is still open, cancel the run to close it`]);
+      expect(reconcile()).toEqual([]);
       expect(store.getRun(waiting)!.state).toBe("needs_human");
       expect(store.getIssue(project.id, 4)!.state).toBe("closed");
+      // Already known closed: the human decides, and cancelRun asks GitHub again before closing the PR.
       expect(reconcile()).toEqual([]);
+      expect(askedIssues).toEqual([4]);
+    });
+
+    it("records an issue reopened on GitHub as open again, and leaves its run alone", () => {
+      const issues: Record<number, Omit<IssueState, "number">> = {};
+      const { store, project, make, reconcile } = setup({}, "/repo", issues);
+      store.upsertIssue(project.id, { number: 4, title: "t", body: "", state: "open", author: "a", labels: [], url: "u", gh_updated_at: "2026-01-01T00:00:00Z" });
+      store.closeIssue(project.id, 4);
+      const parked = make(4, "needs_human", { waiting_gate: "triage" });
+
+      expect(reconcile()).toEqual([]);
+      expect(store.getIssue(project.id, 4)).toMatchObject({ state: "open", queued_at: null });
+      expect(store.getRun(parked)!.state).toBe("needs_human");
     });
 
     it("finishes by the PR first when it was merged or closed, without asking about the issue", () => {

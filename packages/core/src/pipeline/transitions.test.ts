@@ -704,7 +704,7 @@ describe("RunMachine.closeByIssue", () => {
     const { machine, store, run, at } = setup();
     at("needs_human", { waiting_gate: "triage", parked_from: "triage" });
 
-    const cancelled = machine.closeByIssue(run.id, CLOSED, false);
+    const cancelled = machine.closeByIssue(run.id, CLOSED);
 
     expect(cancelled).toMatchObject({ state: "cancelled", waiting_gate: null, parked_from: null });
     expect(store.listDecisions(run.id)).toMatchObject([
@@ -713,19 +713,19 @@ describe("RunMachine.closeByIssue", () => {
     expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "needs_human", to_state: "cancelled", data: { issue: 1, closedBy: [221] } });
   });
 
-  it("refuses an open issue, another issue, an open PR, a finished run and a run another worker drives", () => {
+  it("refuses an open issue, another issue, a run with a PR, a finished run and a run another worker drives", () => {
     const { machine, store, run, at } = setup();
     at("needs_human", { pr_number: 7, waiting_gate: "merge" });
-    expect(() => machine.closeByIssue(run.id, { ...CLOSED, state: "open" }, false)).toThrow(/still open/);
-    expect(() => machine.closeByIssue(run.id, { ...CLOSED, number: 2 }, false)).toThrow(/not the run's issue/);
-    expect(() => machine.closeByIssue(run.id, CLOSED, true)).toThrow(/PR #7 is still open: a human decides/);
+    expect(() => machine.closeByIssue(run.id, { ...CLOSED, state: "open" })).toThrow(/still open/);
+    expect(() => machine.closeByIssue(run.id, { ...CLOSED, number: 2 })).toThrow(/not the run's issue/);
+    expect(() => machine.closeByIssue(run.id, CLOSED)).toThrow(/run has PR #7: it finishes by that PR, or a human decides/);
     expect(store.getRun(run.id)!.state).toBe("needs_human");
 
-    at("build");
+    at("build", { pr_number: null });
     store.acquireLease(run.id, "worker-1", 60_000);
-    expect(() => machine.closeByIssue(run.id, CLOSED, false)).toThrow(/leased by worker-1/);
-    expect(machine.closeByIssue(run.id, CLOSED, false, "worker-1").state).toBe("cancelled");
-    expect(() => machine.closeByIssue(run.id, CLOSED, false)).toThrow(/already cancelled/);
+    expect(() => machine.closeByIssue(run.id, CLOSED)).toThrow(/leased by worker-1/);
+    expect(machine.closeByIssue(run.id, CLOSED, "worker-1").state).toBe("cancelled");
+    expect(() => machine.closeByIssue(run.id, CLOSED)).toThrow(/already cancelled/);
   });
 });
 

@@ -33,11 +33,7 @@ export function RunActions({ run }: { run: RunRow }) {
       if (m === "approve") return api.approve(run, message.trim() || undefined);
       if (m === "reject") return api.reject(run, message);
       if (m === "resume") return api.resume(run, to as RunState, message, resetLoops);
-      return api.cancel(run, message.trim() || undefined).then((done) => {
-        // The run is cancelled either way; keep the card up so the PR left open is not missed.
-        if (done.closedPr?.error) throw new Error(`Cancelled, but PR #${done.closedPr.number} is still open: ${done.closedPr.error}`);
-        return done;
-      });
+      return api.cancel(run, message.trim() || undefined);
     },
     onSuccess: () => {
       setMode(undefined);

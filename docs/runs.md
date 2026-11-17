@@ -97,9 +97,11 @@ Stopping:
 - An issue closed on GitHub (done in another PR, a duplicate, not planned) marks a run without an open PR `cancelled`.
   - The decision says how and by which PRs it was closed, e.g. `issue #173 was closed on GitHub (completed, by #221)`.
 - A run whose issue was closed while its PR is still open is left for you, since closing a PR is your call.
-  - `factory show` and the web app say so.
+  - `factory status` shows `issue closed` in its WAITING column; `factory show` and the web app say what cancelling does.
   - `factory cancel` (or Cancel run in the web app) then also closes the PR, with a comment, and deletes its branch.
-  - If GitHub refuses, the run is cancelled anyway and the output says the PR is still open.
+  - It asks GitHub first: an issue reopened since is recorded open again, and the PR stays.
+  - If GitHub refuses to close the PR, the run is not cancelled and the output says why; close the PR on GitHub and the next sync cancels the run.
+- An issue reopened on GitHub is recorded open again; it is not queued again until you queue it.
 - Runs whose PR and issue are both open are left alone.
 - If GitHub can't be reached, the command prints a warning and carries on.
 

@@ -10,7 +10,7 @@ import { closedIssueReason, RunMachine } from "./transitions.js";
  * cancelled. A run whose issue was closed (done in another PR, a duplicate, not planned) is cancelled
  * when it has no open PR; with an open PR it stays for a human, who sees the closed issue on the run
  * (`waitingOn`) and whose cancel closes the PR too. A run another worker is driving is left for next
- * time. Returns one line per run that moved or was newly flagged, and a warning instead of throwing
+ * time. Returns one line per run that moved, and a warning instead of throwing
  * when GitHub cannot be asked (offline, not logged in).
  * A merged run's MET acceptance criteria are ticked on the issue (see tickMetCriteria).
  * `onMoved` is told each run it finished, e.g. to clean it up.
@@ -51,6 +51,9 @@ export function reconcileWithGithub(store: Store, project: Project, github: Gith
       }
     }
     if (run.issue_number === null) continue;
+    const stored = store.getIssue(project.id, run.issue_number)?.state;
+    // Already flagged for a human; cancelRun asks GitHub again before it closes the PR. Saves a gh call per parked run.
+    if (openPr && stored === "closed") continue;
 
     let issue;
     try {
@@ -59,17 +62,18 @@ export function reconcileWithGithub(store: Store, project: Project, github: Gith
       lines.push(`warning: could not check issue #${run.issue_number} of ${run.id}: ${(err as Error).message}`);
       continue;
     }
-    if (issue.state === "open") continue;
-    // A sync only lists open issues; record this one closed so the backlog and the inbox agree.
-    const wasOpen = store.getIssue(project.id, issue.number)?.state === "open";
-    store.closeIssue(project.id, issue.number);
-    if (openPr) {
-      // Closing a PR is the human's call. Said once, when the issue is first seen closed.
-      if (wasOpen) lines.push(`${run.id}: ${closedIssueReason(issue)}; PR #${run.pr_number} is still open, cancel the run to close it`);
+    if (issue.state === "open") {
+      // Reopened on GitHub since a sync or a reconcile recorded it closed.
+      if (stored === "closed") store.reopenIssue(project.id, issue.number);
       continue;
     }
+    // A sync only lists open issues; record this one closed so the backlog and the inbox agree.
+    store.closeIssue(project.id, issue.number);
+    // Closing a PR is the human's call: the run shows its issue closed (waitingOn) until then.
+    if (openPr) continue;
     try {
-      const moved = machine.closeByIssue(run.id, issue, false);
+      // Only runs without a PR get here, so `closedBy` never names the factory's own.
+      const moved = machine.closeByIssue(run.id, issue);
       lines.push(`${run.id}: ${closedIssueReason(issue)} -> ${moved.state}`);
       onMoved?.(run.id);
     } catch (err) {

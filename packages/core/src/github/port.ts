@@ -22,7 +22,7 @@ export interface IssueState {
   state: "open" | "closed";
   /** Why it was closed, as GitHub words it (`completed`, `not_planned`, `duplicate`); only when closed. */
   reason?: string;
-  /** The PRs that closed it by linking to it; empty when it was closed by hand. */
+  /** The open PRs that link to it with a closing keyword (`Closes #n`), which may include the factory's own. */
   closedBy: number[];
 }
 

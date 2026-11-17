@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findRepoRoot, runDirOf, Store } from "@factory/core";
 import { repoWithRemote } from "../../../../packages/core/test/helpers.js";
-import { ESC, strip } from "../../test/runs-setup.js";
+import { ESC, github, issueStates, strip } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { createStyle, styleFor } from "../style.js";
 import { runStatus, showHint } from "./runs.js";
@@ -133,13 +133,13 @@ describe("factory show <run>", () => {
   it("shows the re-sync counter in the overview and in factory status once there is one", () => {
     const { dir, root, runId } = setup({ "triage.md": TRIAGE });
     expect(runShow(dir, "16")).not.toContain("resyncs:");
-    expect(runStatus(dir)).toMatch(/#16\s+intake\s+b1 r1\s+\$0\.00/);
+    expect(runStatus(dir, {}, { github })).toMatch(/#16\s+intake\s+b1 r1\s+\$0\.00/);
 
     const store = new Store(join(root, ".factory", "factory.db"));
     store.writeState(runId, "build", { resync_rounds: 2, review_rounds: 1 });
     store.close();
     expect(runShow(dir, "16")).toMatch(/\n {2}resyncs: 2\n/);
-    expect(runStatus(dir)).toMatch(/#16\s+build\s+b1 r2, 2 re-syncs\s+\$0\.00/);
+    expect(runStatus(dir, {}, { github })).toMatch(/#16\s+build\s+b1 r2, 2 re-syncs\s+\$0\.00/);
   });
 
   it("lists the open review threads and failed checks the merge gate waits on, with what to do", () => {
@@ -178,6 +178,12 @@ describe("factory show <run>", () => {
     expect(runShow(dir, "16")).toContain(
       ["", "Issue #16 was closed on GitHub, so this work may be done elsewhere.", `\`factory cancel ${runId}\` also closes PR #7 and deletes its branch.`].join("\n"),
     );
+    issueStates.set(16, { number: 16, state: "closed", closedBy: [] });
+    try {
+      expect(runStatus(dir, {}, { github })).toMatch(/#16\s+needs_human\s+b1 r1\s+\$0\.00\s+merge, issue closed$/m);
+    } finally {
+      issueStates.delete(16);
+    }
   });
 
   it("shows the latest round's reviews with their blocking findings, and the verifier's judgement", () => {

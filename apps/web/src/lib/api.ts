@@ -288,7 +288,7 @@ export const api = {
   checks: (run: Pick<RunRow, "project" | "id">) => request<RunChecks>("GET", runPath(run, "checks")),
   dismiss: (run: RunRow, alert: number, reason: DismissReason, comment: string) =>
     request<Dismissed>("POST", runPath(run, "dismiss"), { ...shown(run), alert, reason, comment }),
-  cancel: (run: RunRow, message?: string) => request<{ closedPr?: { number: number; error?: string } }>("POST", runPath(run, "cancel"), { ...shown(run), message }),
+  cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
   drafts: (project?: string) => request<DraftView[]>("GET", `/api/drafts${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   draft: (project: string, id: string) => request<DraftDetail>("GET", draftPath(project, id)),
   startDraft: (project: string, idea: string, queue: boolean) => request<{ id: string; ignored: string[] }>("POST", `/api/projects/${project}/drafts`, { idea, queue }),

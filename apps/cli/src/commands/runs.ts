@@ -15,6 +15,7 @@ import {
   resumeRun,
   runCost,
   trustedConfig,
+  waitingOn,
   type CommandRunner,
   type DriveOutcome,
   type DroppedMedia,
@@ -276,7 +277,8 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
         r.state,
         `b${r.build_iterations + 1} r${r.review_rounds + 1}${r.resync_rounds ? `, ${r.resync_rounds} re-sync${r.resync_rounds > 1 ? "s" : ""}` : ""}`,
         `$${runCost(store, r.id).toFixed(2)}`,
-        r.waiting_gate ?? "",
+        // A closed issue outranks the gate: the work may be done elsewhere (see `factory show`).
+        [r.waiting_gate, waitingOn(store, project, r).issueClosed ? "issue closed" : undefined].filter(Boolean).join(", "),
       ]);
       const widths = header.map((_, i) => Math.max(...[header, ...rows].map((row) => row[i]!.length)));
       // Widths and padding come from the plain text; only the cell content is styled, never the padding.
@@ -450,11 +452,7 @@ export function runCancel(cwd: string, ref: string, options: { message?: string 
       const { stopped: count, closedPr } = cancelled;
       const stopped = count ? ` Stopped ${count} agent process${count > 1 ? "es" : ""}.` : "";
       // Its issue was closed on GitHub, so its PR went with it.
-      const pr = !closedPr
-        ? ""
-        : closedPr.error
-          ? `\nCould not close PR #${closedPr.number}: ${closedPr.error}`
-          : `\nClosed PR #${closedPr.number} and deleted its branch: the issue was closed on GitHub.`;
+      const pr = closedPr === undefined ? "" : `\nClosed PR #${closedPr} and deleted its branch: the issue was closed on GitHub.`;
       return `Cancelled ${cancelled.run.id}.${stopped}${describeMedia(cancelled.media)}${pr}${cancelled.cleaned.map((l) => `\n${l}`).join("")}`;
     },
     deps.run,

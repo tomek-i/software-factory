@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isTerminal } from "@factory/shared";
 import { feedbackDataOf, feedbackFile, oneLine } from "../pipeline/feedback.js";
 import { bullets, readValid, runDirOf, section } from "../pipeline/shared.js";
 import type { Project, Run, RunEvent, Store } from "../store/store.js";
@@ -46,11 +47,14 @@ export function parkingEvent(events: RunEvent[]): RunEvent | undefined {
   return undefined;
 }
 
-/** What a run waiting for a human is stuck on; nothing for a run that is not waiting. */
+/** What a run waiting for a human is stuck on; for a run that is not waiting, only whether its issue was closed. */
 export function waitingOn(store: Store, project: Project, run: Run): Waiting {
-  if (run.state !== "needs_human") return {};
   const issueClosed =
-    run.pr_number !== null && run.issue_number !== null && store.getIssue(project.id, run.issue_number)?.state === "closed" ? { issueClosed: { pr: run.pr_number } } : {};
+    !isTerminal(run.state) && run.pr_number !== null && run.issue_number !== null && store.getIssue(project.id, run.issue_number)?.state === "closed"
+      ? { issueClosed: { pr: run.pr_number } }
+      : {};
+  // A stopped run can have its issue closed too, and cancelling it closes its PR: say so whatever its state.
+  if (run.state !== "needs_human") return issueClosed;
   const parked = parkingEvent(store.listEvents(run.id));
   if (!parked) return issueClosed;
   // The loops' guards word every cap the same way (capProblem in transitions.ts).

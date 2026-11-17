@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLEANUP_MARKER, MEDIA_MARKER, mediaTag, runCommand, Store, type CommandRunner } from "@factory/core";
 import { git, reviewsPass } from "../../../../packages/core/test/helpers.js";
-import { BUILD, closedPrs, github, merged, setup, TRIAGE } from "../../test/runs-setup.js";
+import { BUILD, closedPrs, github, issueStates, merged, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { runApprove, runCancel, runReject, runResume, runStatus } from "./runs.js";
 
@@ -16,6 +16,7 @@ describe("approve / reject / cancel", () => {
     const s = new Store(join(root, ".factory", "factory.db"));
     s.closeIssue(projectId, 12);
     s.close();
+    issueStates.set(12, { number: 12, state: "closed", closedBy: [] });
 
     const message = runCancel(dir, "12", {}, { github });
 
