@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { exportSnapshot, importChangeCount, importSnapshot, ServiceError, type CommandRunner, type ImportReport } from "@factory/core";
 import { CliError, withProject } from "../context.js";
 import { plain, type Style } from "../style.js";
@@ -30,9 +30,13 @@ export function runExport(cwd: string, file: string | undefined, deps: SnapshotD
   return withProject(
     cwd,
     ({ store, project, root }) => {
-      const { snapshot, skipped } = exportSnapshot(store, project, { now: deps.now, host: deps.host });
+      const { snapshot, skipped, unqueued } = exportSnapshot(store, project, { now: deps.now, host: deps.host });
       if (skipped.length > 0) {
-        warn(`${plural(skipped.length, "active run")} not exported: finish or cancel them on this machine first (${skipped.join(", ")}).`);
+        warn(`${plural(skipped.length, "active run")} not exported: finish or cancel ${skipped.length === 1 ? "it" : "them"} on this machine first (${skipped.join(", ")}).`);
+      }
+      if (unqueued.length > 0) {
+        const numbers = unqueued.map((n) => `#${n}`).join(" ");
+        warn(`Exported as not queued, so the other machine does not start ${unqueued.length === 1 ? "it" : "them"} again: ${numbers}, still being worked on here.`);
       }
       const json = `${JSON.stringify(snapshot, null, 2)}\n`;
       if (file === undefined) return json;
@@ -97,7 +101,8 @@ export function runImport(cwd: string, file: string, options: { dryRun?: boolean
 
 function inside(root: string, target: string): boolean {
   const rel = relative(realPath(root), realPath(target));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  // `..` as a whole first segment, not a name that starts with two dots such as `..snapshot.json`.
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 /**
@@ -153,7 +158,7 @@ function describeImport(report: ImportReport, style: Style): string {
 /** What was left out, whether or not anything changed. */
 function notes(report: ImportReport, style: Style): string[] {
   const lines: string[] = [];
-  if (report.runs.present > 0) lines.push(style.detail(`${plural(report.runs.present, "run")} already here, left as they are.`));
+  if (report.runs.present > 0) lines.push(style.detail(`${plural(report.runs.present, "run")} already here, left as ${report.runs.present === 1 ? "it is" : "they are"}.`));
   if (report.lessons.missing_run > 0) lines.push(style.attention(`${plural(report.lessons.missing_run, "lesson")} skipped: their run is not in this database.`));
   if (report.agent_run_conflicts.length > 0) {
     lines.push(style.attention(`${plural(report.agent_run_conflicts.length, "agent run")} skipped: the id is already used here (${report.agent_run_conflicts.join(", ")}).`));
