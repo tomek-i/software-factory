@@ -40,7 +40,7 @@ export function githubProfileDir(env: NodeJS.ProcessEnv = process.env, platform:
 
 /**
  * The factory's per-user folder (the GitHub browser profile, the project list). `FACTORY_DATA_DIR`
- * moves it, which tests use so they never touch the real one.
+ * moves it, which tests use so they never touch the real one; under Vitest without it, this throws.
  */
 export function factoryDataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home = homedir()): string {
   if (env.FACTORY_DATA_DIR) return env.FACTORY_DATA_DIR;
