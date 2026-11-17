@@ -86,6 +86,7 @@ Stopping:
 - A worker obeys only a request made after it started.
 - Ctrl+C in the worker's terminal interrupts its runs like `factory stop --now` and exits.
 - A running worker keeps a file in `workers/` in the same folder, so `factory upgrade` knows not to replace the factory under it.
+- While `factory upgrade` checks and installs, it holds an `upgrading.json` there, and a worker refuses to start.
 
 ## Merging or closing on GitHub
 

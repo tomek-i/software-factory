@@ -152,9 +152,13 @@ factory init
 
 - **Update** with `factory upgrade`; `factory upgrade --check` only says whether a newer version is out.
   - It installs with the package manager that installed the factory (npm, pnpm or yarn).
-  - It refuses while `factory work`, `factory serve` or a run is going on.
+    When it can't tell which one did, it prints the commands to run by hand.
+  - It refuses while a `factory work` or `factory serve` is running, or a run is being driven (by them or by `factory run`).
     Windows can't replace files a running factory has open, and the engine must not change under a run.
+  - It looks for nothing else: close other factory commands, such as `factory logs -f` or `factory new`, before upgrading.
+  - While it installs, `factory work` and `factory serve` refuse to start.
   - It refuses a copy built from a checkout: update that with `git pull` and `pnpm build`.
+  - On Windows the running `factory.cmd` is replaced during the upgrade: if the shell prints an error after it finishes, open a new terminal.
   - Each project's database is migrated forward when the new version first opens it, so an older factory can't read it afterwards.
   - By hand: `npm i -g @tomek-i/software-factory@latest`.
 - **Remove** with `npm rm -g @tomek-i/software-factory`.
