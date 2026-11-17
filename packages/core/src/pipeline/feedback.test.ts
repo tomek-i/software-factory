@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import type { GithubPort, ReviewThread } from "../github/port.js";
 import type { RunEvent } from "../store/store.js";
-import { acknowledgedBy, actionable, feedbackKeys, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
+import { acknowledgedBy, actionable, feedbackKeys, feedbackReasons, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
 
 const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["@Alice"] } });
 const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, ...extra });
@@ -44,6 +44,18 @@ describe("open feedback", () => {
     expect(report).toContain("### Check CodeQL was cancelled\nhttps://x/run\n\n(no summary)");
     expect(report.match(/<<<END FEEDBACK/g)).toHaveLength(1);
     expect(report.trimEnd().endsWith("<<<END FEEDBACK abc123abc123>>>")).toBe(true);
+  });
+
+  it("names each thread and each failed or cancelled check for the merge gate's reasons", () => {
+    const checks = [
+      { name: "CodeQL", bucket: "fail" as const, link: "https://github.com/o/r/runs/3", summary: "2 new alerts\nincluding 2 high severity" },
+      { name: "e2e", bucket: "cancel" as const },
+    ];
+    expect(feedbackReasons({ threads: [thread("T1", "bob", { path: "src/a.ts", line: 4 })], checks })).toEqual([
+      "unresolved review thread by bob at src/a.ts:4 (https://x/T1)",
+      "check CodeQL failed: 2 new alerts including 2 high severity (https://github.com/o/r/runs/3)",
+      "check e2e was cancelled",
+    ]);
   });
 
   it("makes GitHub text one plain line", () => {
