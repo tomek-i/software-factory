@@ -171,6 +171,7 @@ export function verdictPath(runDir: string, kind: VerdictKind, round: number): s
     case "checks":
     case "verify":
     case "capture":
+    case "acceptance":
       return join(runDir, `round-${round}`, `${kind}.md`);
     case "approver":
       return join(runDir, "approval.md");

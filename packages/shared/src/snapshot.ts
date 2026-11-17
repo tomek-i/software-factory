@@ -63,6 +63,8 @@ export const snapshotRunSchema = z.object({
   build_iterations: count,
   review_rounds: count,
   critic_rounds: count,
+  /** Added after the first snapshots: files from older factories have none. */
+  resync_rounds: count.default(0),
   round: count,
   waiting_gate: z.enum(GATES).nullable(),
   parked_from: z.enum(RUN_STATES).nullable(),

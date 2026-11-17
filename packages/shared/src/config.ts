@@ -31,7 +31,11 @@ const protectedPath = z
     message: "use a repo-relative glob with forward slashes and only *, ** and ? (no {a,b}, [abc], leading / or backslashes)",
   });
 
-export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui"] as const;
+/**
+ * `acceptance` checks the issue's and the spec's acceptance criteria one by one. The engine runs it in
+ * every review round whatever `reviews.always` and `reviews.ui` say (see `reviewLenses` in core).
+ */
+export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui", "acceptance"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
 
 export const AGENT_ROLES = [
@@ -174,6 +178,9 @@ export const factoryConfigSchema = z.object({
       max_build_iterations: z.number().int().min(1).default(5),
       max_review_rounds: z.number().int().min(1).default(3),
       max_critic_rounds: z.number().int().min(1).default(2),
+      // Times the merge stage may go back to the builder because the default branch conflicted or
+      // broke the quality gate; counted apart from review rounds.
+      max_resyncs: z.number().int().min(1).default(3),
     })
     .prefault({}),
   reviews: z

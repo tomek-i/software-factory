@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, DraftDetail, DraftView, ProjectInfo, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, ProjectInfo, RunChecks, RunDetail, RunRow } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -21,6 +21,7 @@ function runRow(patch: Partial<RunRow> = {}): RunRow {
     waitingGate: "triage",
     build: 1,
     review: 1,
+    resyncs: 0,
     cost: 0.42,
     held: false,
     updatedAt: new Date().toISOString(),
@@ -47,6 +48,8 @@ class FakeServer {
   projectsStatus = 200;
   /** Run files by path, served for every run. */
   files: Record<string, string> = {};
+  /** The failed checks of each run's PR, by run id. */
+  checks: Record<string, RunChecks> = {};
   /** The detail of a run is built from its row in runs. */
   detail = (run: RunRow): RunDetail => ({
     run,
@@ -113,6 +116,11 @@ data: ${JSON.stringify(event)}
     if (file) {
       const path = file[2]!.split("/").map(decodeURIComponent).join("/");
       return path in this.files ? json(200, { path, text: this.files[path] }) : json(400, { error: `No file "${path}".` });
+    }
+    const checks = /^\/api\/projects\/p1\/runs\/([^/]+)\/checks$/.exec(url.pathname);
+    if (checks) {
+      const found = this.checks[decodeURIComponent(checks[1]!)];
+      return found ? json(200, found) : json(502, { error: "GitHub: gh api failed" });
     }
     const detail = /^\/api\/projects\/p1\/runs\/([^/]+)$/.exec(url.pathname);
     const run = detail && this.runs.find((r) => r.id === decodeURIComponent(detail[1]!));
@@ -220,7 +228,177 @@ describe("inbox", () => {
     await user.type(screen.getByLabelText("Reason"), "try again");
     await user.click(screen.getByRole("button", { name: "Resume" }));
 
-    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/resume", body: { state: "needs_human", to: "triage", message: "try again" } }]));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/resume", body: { state: "needs_human", to: "triage", message: "try again", resetLoops: false } }]));
+  });
+
+  it("sends a run at a gate back to an earlier stage, explaining each target, with the loops reset when a cap stopped it", async () => {
+    server.runs = [
+      runRow({
+        waitingGate: "review",
+        reason: "waiting at review gate: review round cap reached (3)",
+        resumeTargets: ["refine", "build"],
+        capReached: "review round cap reached (3)",
+      }),
+    ];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    expect(await screen.findByRole("button", { name: /Approve/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Send back to/ }));
+    const select = screen.getByRole("combobox", { name: /Send it to/ }) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["refine", "build"]);
+    expect(select.value).toBe("build");
+    expect(screen.getByText("build: the builder gets your message, then checks and reviews run again")).toBeTruthy();
+    const reset = screen.getByRole("checkbox", { name: /Reset loop counters/ }) as HTMLInputElement;
+    expect(reset.checked).toBe(true);
+    expect(screen.getByText("It stopped because the review round cap reached (3): without fresh counters it stops again at once.")).toBeTruthy();
+    await user.selectOptions(select, "refine");
+    expect(screen.getByText(/^refine: refine gets your message/)).toBeTruthy();
+    const send = screen.getByRole("button", { name: "Send back" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await user.type(screen.getByLabelText("Reason"), "split the spec");
+    await user.click(send);
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/resume", body: { state: "needs_human", gate: "review", to: "refine", message: "split the spec", resetLoops: true } }]),
+    );
+  });
+
+  it("offers no way back at a gate with no earlier working stage, and warns before starting over", async () => {
+    server.runs = [runRow(), runRow({ id: "run-2", issue: 13, waitingGate: null, reason: "the build agent failed", resumeTargets: ["intake", "triage", "build"] })];
+    server.failures.set("/resume", { status: 400, error: "Run run-2 can resume to: intake, build." });
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await screen.findAllByRole("button", { name: /Cancel run/ });
+    expect(screen.queryByRole("button", { name: /Send back to/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Resume/ }));
+    expect(screen.queryByRole("note")).toBeNull();
+    expect((screen.getByRole("checkbox", { name: /Reset loop counters/ }) as HTMLInputElement).checked).toBe(false);
+    await user.selectOptions(screen.getByRole("combobox", { name: /Send it to/ }), "intake");
+    expect(screen.getByText("intake: starts over: triage, the spec and the build run again")).toBeTruthy();
+    expect(screen.getByRole("note").textContent).toMatch(/Costs more: triage, the spec critic and the build all run again/);
+    await user.type(screen.getByLabelText("Reason"), "start over");
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Run run-2 can resume to: intake, build.");
+  });
+
+  it("sends the failure the run waits on to the builder, prefilled and editable", async () => {
+    server.runs = [
+      runRow({
+        waitingGate: null,
+        reason: "quality gate still failing after round 2: build iteration cap reached (5)",
+        resumeTargets: ["intake", "triage", "build", "gate"],
+        failure: { kind: "quality_gate", source: "round-2/checks.md", items: [{ name: "test", summary: "FAILED (exit 1) in 2.0s" }] },
+      }),
+    ];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Send to builder with this failure/ }));
+
+    expect((screen.getByRole("combobox", { name: /Send it to/ }) as HTMLSelectElement).value).toBe("build");
+    expect((screen.getByRole("checkbox", { name: /Reset loop counters/ }) as HTMLInputElement).checked).toBe(true);
+    const reason = screen.getByLabelText("Reason") as HTMLTextAreaElement;
+    expect(reason.value).toBe("Fix what failed the quality gate (see round-2/checks.md in the run folder):\n- test: FAILED (exit 1) in 2.0s");
+    await user.type(reason, "\nThe fixture is flaky.");
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        {
+          path: "/api/projects/p1/runs/run-1/resume",
+          body: {
+            state: "needs_human",
+            to: "build",
+            message: "Fix what failed the quality gate (see round-2/checks.md in the run folder):\n- test: FAILED (exit 1) in 2.0s\nThe fixture is flaky.",
+            resetLoops: true,
+          },
+        },
+      ]),
+    );
+  });
+
+  it("prefills confirmed findings with their file and line", async () => {
+    server.runs = [
+      runRow({
+        waitingGate: "review",
+        resumeTargets: ["refine", "build"],
+        failure: { kind: "findings", source: "round-3/verify.md", items: [{ name: "code-1 (major)", summary: "the limiter is skipped", file: "src/a.ts", line: 12 }] },
+      }),
+    ];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Send to builder with this failure/ }));
+
+    expect((screen.getByLabelText("Reason") as HTMLTextAreaElement).value).toBe(
+      "Fix the findings the verifier confirmed (see round-3/verify.md in the run folder):\n- code-1 (major): the limiter is skipped at src/a.ts:12",
+    );
+    expect(screen.getByRole("button", { name: "Send back" })).toBeTruthy();
+  });
+
+  it("lists a failed code scanning check's alerts, dismisses one with a reason and a comment, and sends the rest to the builder", async () => {
+    const alert = { number: 26, rule: "js/missing-rate-limiting", description: "Missing rate limiting", severity: "high", tool: "CodeQL", file: "src/drafts.ts", line: 296, url: "https://github.com/acme/shop/security/code-scanning/26" };
+    server.runs = [
+      runRow({
+        waitingGate: null,
+        reason: "required checks failed on PR #7: CodeQL; test",
+        resumeTargets: ["build", "merge"],
+        failure: { kind: "checks", items: [{ name: "CodeQL", link: "https://github.com/acme/shop/runs/1" }, { name: "test", link: "javascript:alert(1)" }] },
+      }),
+    ];
+    server.checks = { "run-1": { pr: 7, failed: [{ name: "CodeQL", alerts: [alert] }, { name: "test", link: "javascript:alert(1)", alerts: [] }], otherAlerts: [] } };
+    server.answers.set("/dismiss", { check: "CodeQL", failing: ["CodeQL", "test"], continued: false });
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Failed checks/ }));
+    const panel = await screen.findByRole("region", { name: "Failed checks" });
+    expect(await within(panel).findByText("Missing rate limiting")).toBeTruthy();
+    expect(within(panel).getByText("src/drafts.ts:296")).toBeTruthy();
+    expect(within(panel).getByRole("link", { name: "Alert on GitHub" }).getAttribute("href")).toBe(alert.url);
+    expect(within(panel).getByText(/A required check can't be accepted here/)).toBeTruthy();
+    // Only the code scanning check can be dismissed; the other's script link stays text.
+    expect(within(panel).getAllByRole("button", { name: "Dismiss…" })).toHaveLength(1);
+    expect(within(panel).queryByRole("link", { name: "test" })).toBeNull();
+
+    await user.click(within(panel).getByRole("button", { name: "Dismiss…" }));
+    const form = screen.getByRole("form", { name: "Dismiss alert #26" });
+    const submit = within(form).getByRole("button", { name: "Dismiss alert" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    await user.selectOptions(within(form).getByRole("combobox", { name: /Reason/ }), "used in tests");
+    await user.type(within(form).getByLabelText("Comment"), "only the test server calls it");
+    await user.click(submit);
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        { path: "/api/projects/p1/runs/run-1/dismiss", body: { state: "needs_human", alert: 26, reason: "used in tests", comment: "only the test server calls it" } },
+      ]),
+    );
+    expect((await screen.findByRole("status")).textContent).toBe("Dismissed alert #26. Still failing: CodeQL, test. The run keeps waiting.");
+
+    await user.click(within(panel).getByRole("button", { name: /Send to builder with this failure/ }));
+    expect((screen.getByLabelText("Reason") as HTMLTextAreaElement).value).toBe(
+      "Fix the required checks that failed on the pull request:\n" +
+        "- CodeQL: Missing rate limiting (js/missing-rate-limiting) at src/drafts.ts:296 (https://github.com/acme/shop/security/code-scanning/26)\n" +
+        "- test (javascript:alert(1))",
+    );
+  });
+
+  it("prefills a failed check with its name and link when GitHub can't list the alerts", async () => {
+    server.runs = [
+      runRow({ id: "run-9", waitingGate: null, resumeTargets: ["build"], failure: { kind: "checks", items: [{ name: "CodeQL", link: "https://github.com/acme/shop/runs/1" }] } }),
+    ];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Send to builder with this failure/ }));
+
+    expect(((await screen.findByLabelText("Reason")) as HTMLTextAreaElement).value).toBe(
+      "Fix the required checks that failed on the pull request:\n- CodeQL (https://github.com/acme/shop/runs/1)",
+    );
   });
 
   it("cancels a run without a reason", async () => {
@@ -281,11 +459,42 @@ describe("run details", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: /Send it to/ }), "triage");
     await user.type(screen.getByLabelText("Reason"), "try again");
     await user.click(screen.getByRole("button", { name: "Resume" }));
-    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-2/resume", body: { state: "needs_human", to: "triage", message: "try again" } }]));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-2/resume", body: { state: "needs_human", to: "triage", message: "try again", resetLoops: false } }]));
 
     await user.click(screen.getByRole("button", { name: /Cancel run/ }));
     await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
     await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-2/cancel", body: { state: "needs_human" } }));
+  });
+
+  it("sends a run at a gate to the builder with its failure from the detail view", async () => {
+    server.runs = [
+      runRow({
+        waitingGate: "review",
+        resumeTargets: ["refine", "build"],
+        capReached: "review round cap reached (3)",
+        failure: { kind: "findings", source: "round-3/verify.md", items: [{ name: "code-1 (major)", summary: "the limiter is skipped" }] },
+      }),
+    ];
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Send to builder with this failure/ }));
+    await user.click(screen.getByRole("button", { name: "Send back" }));
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        {
+          path: "/api/projects/p1/runs/run-1/resume",
+          body: {
+            state: "needs_human",
+            gate: "review",
+            to: "build",
+            message: "Fix the findings the verifier confirmed (see round-3/verify.md in the run folder):\n- code-1 (major): the limiter is skipped",
+            resetLoops: true,
+          },
+        },
+      ]),
+    );
   });
 
   it("opens from a run row, read-only for a run that isn't waiting, and shows a file's script tag as text", async () => {
@@ -307,6 +516,47 @@ describe("run details", () => {
 
     await user.click(screen.getByRole("button", { name: "round-1/checks.md" }));
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
+  });
+
+  it("lists each acceptance criterion with its status and evidence, wrapping long paths", async () => {
+    const evidence = "packages/core/src/pipeline/driver.acceptance.test.ts:123";
+    server.runs = [runRow({ state: "build", waitingGate: null })];
+    const detail = server.detail;
+    server.detail = (run) => ({
+      ...detail(run),
+      sections: [
+        {
+          kind: "acceptance",
+          path: "round-1/acceptance.json",
+          count: "1/1 met, 1 for you to check",
+          criteria: [
+            { id: "AC-1", source: "issue", text: "ticks the met criteria", status: "MET", evidence },
+            { id: "AC-2", source: "spec", text: "fits a phone screen", status: "CANNOT_CHECK", evidence: "needs a browser" },
+          ],
+        },
+      ],
+    });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /Add the feature/ }));
+
+    expect(await screen.findByText("Acceptance criteria: 1/1 met, 1 for you to check")).toBeTruthy();
+    const items = within(screen.getByRole("list", { name: "Acceptance criteria" })).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual([`AC-1metticks the met criteria${evidence}`, "AC-2for you to checkfits a phone screenneeds a browser"]);
+    // A long path is one token: without break-words it would overflow the card at phone width.
+    for (const li of items) expect(li.className.split(/\s+/)).toContain("break-words");
+  });
+
+  it("shows a run's re-syncs with the default branch next to its rounds, only once it has any", async () => {
+    server.runs = [runRow({ id: "run-1", title: "Synced", state: "build", waitingGate: null, review: 3, resyncs: 2 }), runRow({ id: "run-2", title: "Plain", state: "build", waitingGate: null })];
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("b1 r3, 2 re-syncs")).toBeTruthy();
+    expect(screen.getByText("b1 r1")).toBeTruthy();
+    await user.click(screen.getByRole("link", { name: /Synced/ }));
+    expect(await screen.findByText("b1 r3, 2 re-syncs")).toBeTruthy();
   });
 });
 

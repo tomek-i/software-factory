@@ -302,6 +302,21 @@ describe("importSnapshot", () => {
     });
   });
 
+  it("carries the re-sync counter, and takes 0 from a file made before it existed", () => {
+    const a = laptop();
+    const id = a.store.listRuns({ project_id: a.project.id }).find((r) => r.state === "done")!.id;
+    a.store.writeState(id, "done", { resync_rounds: 2 });
+    const snapshot = carry(exportSnapshot(a.store, a.project).snapshot) as Snapshot;
+    const b = machine("/b");
+    importSnapshot(b.store, b.project, snapshot);
+    expect(b.store.getRun(id)!.resync_rounds).toBe(2);
+
+    for (const run of snapshot.runs) delete (run as { resync_rounds?: number }).resync_rounds;
+    const c = machine("/c");
+    importSnapshot(c.store, c.project, snapshot);
+    expect(c.store.getRun(id)!.resync_rounds).toBe(0);
+  });
+
   it("skips an agent run whose id this store has under another run", () => {
     const a = laptop();
     const b = machine("/b");

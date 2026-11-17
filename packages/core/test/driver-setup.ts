@@ -7,7 +7,7 @@ import { createAgentRunner } from "../src/agents/runner.js";
 import type { CapturePort } from "../src/capture/capture.js";
 import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
-import type { GithubPort, MergeMethod, RequiredCheck } from "../src/github/port.js";
+import type { CodeScanningAlert, DismissReason, GithubPort, MergeMethod, RequiredCheck } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
@@ -69,6 +69,10 @@ export function setup(
     capture?: CapturePort;
     /** More files on the default branch, e.g. a `CLAUDE.md`. */
     files?: Record<string, string>;
+    /** The issue's body (synced and on the fake GitHub); "Please add feature.txt." by default. */
+    issueBody?: string;
+    /** Whether the factory's account wrote the issue, so it may edit its body. */
+    ownIssue?: boolean;
   } = {},
 ) {
   const config = passCritic(
@@ -88,7 +92,7 @@ export function setup(
   store.upsertIssue(project.id, {
     number: 12,
     title: "Add the feature",
-    body: "Please add feature.txt.",
+    body: options.issueBody ?? "Please add feature.txt.",
     state: "open",
     author: options.author ?? "alice",
     labels: [],
@@ -99,6 +103,8 @@ export function setup(
 
   // Every comment the factory posted, with its current body; `id` is what findComment/editComment use.
   const comments: { issue: number; body: string; id: number; edits: number }[] = [];
+  // The issue's body on the fake GitHub, and every edit the factory made to it.
+  const issueBody = { text: options.issueBody ?? "Please add feature.txt.", own: options.ownIssue ?? false, edits: 0 };
   const prs: { head: string; base: string; title: string; body: string }[] = [];
   const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
   const closedReady = new Set<number>();
@@ -115,6 +121,10 @@ export function setup(
     checksError?: string;
     /** The PR's head as GitHub reports it; by default what the run's branch has on the remote. */
     head?: string;
+    /** Open code scanning alerts; a dismissed one leaves the list. */
+    alerts?: CodeScanningAlert[];
+    /** What the required checks become once no alert is left (GitHub updates the check in place). */
+    checksWhenClear?: RequiredCheck[];
   } = {
     state: "open",
     draft: true,
@@ -122,6 +132,7 @@ export function setup(
   let views = 0;
   const merges: { number: number; head: string; method?: MergeMethod }[] = [];
   let checkViews = 0;
+  const dismissals: { alert: number; reason: DismissReason; comment: string }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body, id: 100 + comments.length, edits: 0 }),
     findComment: (issue, marker) => comments.findLast((c) => c.issue === issue && c.body.startsWith(marker))?.id,
@@ -130,6 +141,17 @@ export function setup(
       if (!comment) throw new Error(`no comment ${id}`);
       comment.body = body;
       comment.edits++;
+    },
+    commentBody: (id) => {
+      const comment = comments.find((c) => c.id === id);
+      if (!comment) throw new Error(`no comment ${id}`);
+      return comment.body;
+    },
+    ownIssueBody: () => (issueBody.own ? issueBody.text : undefined),
+    editIssueBody: (_number, body) => {
+      if (!issueBody.own) throw new Error("the factory edited an issue it did not write");
+      issueBody.text = body;
+      issueBody.edits++;
     },
     findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
     createDraftPullRequest: (pr) => {
@@ -155,8 +177,14 @@ export function setup(
     },
     requiredChecks: () => {
       if (pr.checksError) throw new Error(pr.checksError);
+      if (pr.checksWhenClear && pr.alerts?.length === 0) return pr.checksWhenClear;
       const all = pr.checks ?? [[]];
       return all[Math.min(checkViews++, all.length - 1)]!;
+    },
+    codeScanningAlerts: () => [...(pr.alerts ?? [])],
+    dismissCodeScanningAlert: (alert, reason, comment) => {
+      dismissals.push({ alert, reason, comment });
+      pr.alerts = pr.alerts?.filter((a) => a.number !== alert);
     },
     mergePullRequest: (number, head, method) => {
       if (pr.mergeError) throw new Error(pr.mergeError);
@@ -185,7 +213,7 @@ export function setup(
     checksGraceMs: 200,
     capture: options.capture,
   });
-  return { root, remote, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges };
+  return { root, remote, store, project, driver, fake, github, comments, issueBody, prs, readyPrs, closedReady, edits, seen, pr, merges, dismissals };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */

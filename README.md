@@ -63,7 +63,8 @@ flowchart TD
     capture --> pr["PR"]
     pr --> resync["Re-sync"]
     resync -->|"conflict or failed re-check"| build
-    resync --> mergegate["Merge gate"]
+    resync --> checks["Required checks"]
+    checks --> mergegate["Merge gate"]
     mergegate --> merge["Merge"]
     merge --> learn["Learn"]
     learn --> done(["Done: merged"])
@@ -72,7 +73,7 @@ flowchart TD
     critic -->|"questions"| ask
     ask -->|"author answers"| triage
 
-    writer & triage & critic & gate & reviews & pr & mergegate -.-> you{{"Waits for you"}}
+    writer & triage & critic & gate & reviews & pr & checks & mergegate -.-> you{{"Waits for you"}}
     you -->|"factory reject"| rejected(["Rejected"])
     you -->|"factory cancel"| cancelled(["Cancelled"])
     triage -->|"REJECT"| rejected
@@ -87,14 +88,15 @@ flowchart TD
 Triage reads the issue, refine fills in what it leaves open, and a spec critic checks the spec against the code.
 A builder then works in its own worktree, and the quality gate runs your checks on its commit.
 Reviewers look at the change through several lenses at once, and a verifier checks the findings they raise.
-Capture shows a UI change in the PR, re-sync merges the default branch in, and the merge gate decides.
+One lens checks the issue's acceptance criteria one by one; the met ones are ticked on the issue once the PR is merged.
+Capture shows a UI change in the PR, re-sync merges the default branch in, the PR's required checks must pass, and then the merge gate decides.
 After the merge, a learner proposes lessons.
 Each stage is described in [docs/pipeline.md](docs/pipeline.md).
 
 Yellow hexagons are where the run stops for a person.
 Dotted lines show where it can wait for you: a gate in `human` mode, a hard-rule hit, a loop cap or a stall.
 
-- **Stages**: issue writer (only for `factory new`), triage, refine (only for an INCOMPLETE issue), spec critic, build, quality gate, parallel reviews, verifier, capture, PR, re-sync, merge gate, merge, learn.
+- **Stages**: issue writer (only for `factory new`), triage, refine (only for an INCOMPLETE issue), spec critic, build, quality gate, parallel reviews, verifier, capture, PR, re-sync, required checks, merge gate, merge, learn.
 - **Gates**: `issue_writer`, `triage`, `critic`, `review`, `pr` and `merge`. Each has a mode:
   - `always`: pass through.
   - `auto`: the agent decides, or escalates with reasons.
@@ -105,7 +107,7 @@ Dotted lines show where it can wait for you: a gate in `human` mode, a hard-rule
   - critic REVISE → refine, up to `loops.max_critic_rounds` (default 2);
   - failed checks → build, up to `loops.max_build_iterations` (default 5);
   - confirmed review findings → build, up to `loops.max_review_rounds` (default 3);
-  - re-sync conflict or failed re-check → build, which costs a review round.
+  - re-sync conflict or failed re-check → build, up to `loops.max_resyncs` (default 3), counted apart from review rounds.
 - **Stalls**: a loop that fails the same way twice in a row escalates early, so a stuck builder does not use up the cap.
 - **Hard rules** (protected paths, new dependencies, secret/env changes) always escalate to you, whatever the gate mode.
   - Only a per-run `--unsafe` flag lifts them.
@@ -248,6 +250,7 @@ factory serve --port 4181 --max-runs 2 --no-open
 ```
 
 - It does what `factory work` does and serves a web app for every project in the project list.
+- From the Inbox or a run's details you can approve, reject, send a run back to a stage (with the failure it waits on and fresh loop counters), dismiss a false-positive code scanning alert, or cancel.
 - It prints a link with a session token and opens it in your browser (`--no-open` only prints it).
 - Its screens are Inbox, Runs, Run details, Backlog and New issue; click a run to open its details.
 - The screens, the actions and how it stays private: [Web mode](docs/web-mode.md).
@@ -263,7 +266,9 @@ factory show 12            # overview: state, gate, branch, PR, verdict summarie
 factory show 12 triage     # one file in full: triage, refine and critic (latest spec round), build, checks or capture (latest round), approval, learn, or a path like round-2/checks.md
 factory approve <run>      # let a run waiting at a gate continue and keep running it; -m "why", --no-run to only record it
 factory reject <run> -m "why"   # end a run waiting at a gate
-factory resume <run> --to build -m "why"   # send an escalated run back to a stage and keep running it; --reset-loops, --no-run
+factory resume <run> --to build -m "why"   # send a run that waits for you (at a gate too) back to a stage and keep running it; --reset-loops, --no-run
+factory checks <run>       # the required checks that failed on the run's PR, with their open code scanning alerts
+factory dismiss <run> <alert> --reason false-positive -m "why"   # dismiss a code scanning alert; the run goes back to merge once the check passes
 factory cancel <run>       # stop the run, its agent and running checks; -m "why" is optional (see Cleaning up finished runs)
 factory cleanup            # remove the worktrees and branches finished runs left behind; --dry-run lists them first
 factory lessons            # lessons the learner proposed, waiting for you; -a/--all includes approved and rejected ones
@@ -292,8 +297,8 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `gates` | `always` / `auto` / `human` per gate (see [Pipeline](#pipeline) for the defaults) |
 | `hard_rules` | Paths and triggers that always escalate to a human (see [Hard rules](docs/pipeline.md#hard-rules)) |
 | `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
-| `loops` | Caps for build iterations, review rounds and spec critic rounds |
-| `reviews` | Which review lenses run always and which only for UI changes |
+| `loops` | Caps for build iterations (`max_build_iterations`), review rounds (`max_review_rounds`), spec critic rounds (`max_critic_rounds`) and merge-stage re-syncs that went back to the builder (`max_resyncs`, default 3) |
+| `reviews` | Which review lenses run always and which only for UI changes; the `acceptance` lens always runs |
 | `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). Whatever the file sets wins over every recommendation: `default` and `effort` reach every agent it does not name, and the recommendations only fill in the rest |
 | `concurrency` | `max_runs`: how many runs `factory run` drives at once, and how many the worker drives per project (default 2) |
 | `trust` | Whose issues and comments count as the spec (see [Trust](docs/trust.md)) |

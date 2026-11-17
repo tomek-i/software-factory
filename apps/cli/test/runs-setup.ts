@@ -33,6 +33,9 @@ export const github: GithubPort = {
   commentOnIssue: () => undefined,
   findComment: () => undefined,
   editComment: () => undefined,
+  commentBody: () => "",
+  ownIssueBody: () => undefined,
+  editIssueBody: () => undefined,
   findPullRequest: () => undefined,
   createDraftPullRequest: () => 7,
   // Numbered 8, 9, ...; open unless prStates says otherwise.
@@ -47,6 +50,8 @@ export const github: GithubPort = {
   },
   markReady: () => undefined,
   requiredChecks: () => [],
+  codeScanningAlerts: () => [],
+  dismissCodeScanningAlert: () => undefined,
   mergePullRequest: (number, head) => {
     merged.push({ number, head });
     prStates.set(number, { number, state: "merged", draft: false, head, mergeCommit: "e".repeat(40) });

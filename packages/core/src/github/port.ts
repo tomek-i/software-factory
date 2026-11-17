@@ -27,6 +27,15 @@ export interface GithubPort {
   findComment(issueNumber: number, marker: string): number | undefined;
   /** Replace a comment's body. */
   editComment(commentId: number, body: string): void;
+  /** A comment's current body. */
+  commentBody(commentId: number): string;
+  /**
+   * The issue's current body, only when the account the factory runs as wrote the issue; undefined
+   * otherwise. The factory edits only its own issues' text (ticking acceptance criteria).
+   */
+  ownIssueBody(issueNumber: number): string | undefined;
+  /** Replace an issue's body. */
+  editIssueBody(issueNumber: number, body: string): void;
   /** The open pull request whose head is this branch, if any. */
   findPullRequest(branch: string): number | undefined;
   /** Open pull requests whose head branch starts with `prefix`, e.g. `factory/lessons-`. */
@@ -47,9 +56,42 @@ export interface GithubPort {
   mergePullRequest(number: number, head: string, method?: MergeMethod): void;
   /** The status checks branch protection requires on the PR's head; empty when none are required. */
   requiredChecks(number: number): RequiredCheck[];
+  /**
+   * Open code scanning alerts on the PR's head ref (`refs/pull/<n>/head`; its merge ref lists none in
+   * practice). Empty when the repository has no code scanning.
+   */
+  codeScanningAlerts(number: number): CodeScanningAlert[];
+  /**
+   * Dismiss a code scanning alert. A human decision only (`dismissAlert` in the run service): no
+   * agent or stage may call it.
+   */
+  dismissCodeScanningAlert(alert: number, reason: DismissReason, comment: string): void;
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";
+
+/** GitHub's reasons for dismissing a code scanning alert. */
+export const DISMISS_REASONS = ["false positive", "won't fix", "used in tests"] as const;
+export type DismissReason = (typeof DISMISS_REASONS)[number];
+/** GitHub refuses a longer dismissal comment. */
+export const DISMISS_COMMENT_MAX = 280;
+
+/** An open code scanning alert, as a human needs it to judge whether it is real. */
+export interface CodeScanningAlert {
+  number: number;
+  /** The rule's id, e.g. `js/missing-rate-limiting`. */
+  rule: string;
+  /** The rule's short description, e.g. "Missing rate limiting". */
+  description: string;
+  /** The security severity when the rule has one (critical, high, ...), otherwise the rule's severity. */
+  severity: string;
+  /** The tool that raised it, e.g. `CodeQL`. */
+  tool: string;
+  file?: string;
+  line?: number;
+  /** The alert on GitHub. */
+  url: string;
+}
 
 export interface RequiredCheck {
   name: string;
@@ -70,6 +112,8 @@ export interface IssueWriterPort {
   /** Link `child` as a GitHub sub-issue of `parent`. */
   addSubIssue(parent: number, child: number): void;
 }
+
+const OWN_ISSUE_BODY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){body viewerDidAuthor}}}";
 
 const ADD_SUB_ISSUE = "mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}";
 
@@ -156,6 +200,32 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    },
+    commentBody(commentId) {
+      const out = gh(["api", `repos/${repo}/issues/comments/${commentId}`]);
+      let body: unknown;
+      try {
+        body = (JSON.parse(out) as { body?: unknown }).body;
+      } catch {
+        throw new GithubError(`gh api returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      if (typeof body !== "string") throw new GithubError(`gh api returned no body for comment ${commentId}`);
+      return body;
+    },
+    ownIssueBody(issueNumber) {
+      const [owner, name] = repo.split("/");
+      const out = gh(["api", "graphql", "-f", `query=${OWN_ISSUE_BODY}`, "-f", `o=${owner}`, "-f", `r=${name}`, "-F", `n=${issueNumber}`]);
+      let issue: { body?: unknown; viewerDidAuthor?: unknown } | undefined;
+      try {
+        issue = (JSON.parse(out) as { data?: { repository?: { issue?: typeof issue } } }).data?.repository?.issue;
+      } catch {
+        throw new GithubError(`gh api graphql returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      if (typeof issue?.body !== "string") throw new GithubError(`gh api graphql returned no body for issue #${issueNumber}`);
+      return issue.viewerDidAuthor === true ? issue.body : undefined;
+    },
+    editIssueBody(issueNumber, body) {
+      withBodyFile(body, (file) => gh(["issue", "edit", String(issueNumber), "-R", repo, "--body-file", file]));
     },
     findPullRequest(branch) {
       const out = gh(["pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number", "--limit", "1"]);
@@ -248,8 +318,66 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
         return { name: c.name, bucket: c.bucket as RequiredCheck["bucket"], ...(typeof c.link === "string" && c.link ? { link: c.link } : {}) };
       });
     },
+    codeScanningAlerts(number) {
+      const args = ["api", "-X", "GET", `repos/${repo}/code-scanning/alerts`, "-f", `ref=refs/pull/${number}/head`, "-f", "state=open", "-F", "per_page=100"];
+      const result = run("gh", args, { cwd: project.repo_path });
+      // A repository without code scanning answers 404 (or 403 without Advanced Security): it has no alerts.
+      if (result.code !== 0 && /no analysis found|code scanning is not enabled|advanced security must be enabled/i.test(result.stderr + result.stdout)) return [];
+      if (result.code !== 0) throw new GithubError(`gh api code-scanning/alerts failed: ${result.stderr.trim() || "unknown error"}`);
+      let alerts: unknown;
+      try {
+        alerts = JSON.parse(result.stdout);
+        if (!Array.isArray(alerts)) throw new Error("not a list");
+      } catch {
+        throw new GithubError(`gh api code-scanning/alerts returned unexpected output: ${result.stdout.slice(0, 200) || "(empty)"}`);
+      }
+      return alerts.map((a: Record<string, unknown>) => parseAlert(a));
+    },
+    dismissCodeScanningAlert(alert, reason, comment) {
+      if (!Number.isInteger(alert) || alert <= 0) throw new GithubError(`${alert} is not an alert number`);
+      if (!DISMISS_REASONS.includes(reason)) throw new GithubError(`"${reason}" is not a reason GitHub accepts`);
+      // -f, never -F: a comment starting with @ must stay text, not name a file to upload.
+      gh([
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repo}/code-scanning/alerts/${alert}`,
+        "-f",
+        "state=dismissed",
+        "-f",
+        `dismissed_reason=${reason}`,
+        "-f",
+        `dismissed_comment=${comment}`,
+        "--silent",
+      ]);
+    },
     updatePullRequest(number, body) {
       withBodyFile(body, (file) => gh(["pr", "edit", String(number), "-R", repo, "--body-file", file]));
     },
+  };
+}
+
+/** One alert of GitHub's code scanning API, checked field by field. */
+function parseAlert(a: Record<string, unknown>): CodeScanningAlert {
+  const rule = (a.rule ?? {}) as Record<string, unknown>;
+  const tool = (a.tool ?? {}) as Record<string, unknown>;
+  const instance = (a.most_recent_instance ?? {}) as { location?: Record<string, unknown> };
+  const location = instance.location ?? {};
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const number = a.number;
+  const url = str(a.html_url);
+  if (typeof number !== "number" || !Number.isInteger(number) || !url || !str(rule.id) || !str(tool.name)) {
+    throw new GithubError(`gh api code-scanning/alerts returned unexpected output: ${JSON.stringify(a).slice(0, 200)}`);
+  }
+  const line = location.start_line;
+  return {
+    number,
+    rule: str(rule.id)!,
+    description: str(rule.description) ?? str(rule.name) ?? str(rule.id)!,
+    severity: str(rule.security_severity_level) ?? str(rule.severity) ?? "unknown",
+    tool: str(tool.name)!,
+    ...(str(location.path) ? { file: str(location.path) } : {}),
+    ...(typeof line === "number" && Number.isInteger(line) && line > 0 ? { line } : {}),
+    url,
   };
 }

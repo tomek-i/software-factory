@@ -6,7 +6,7 @@ import { GIT_TEST_TIMEOUT, repoWithRemote } from "../../../../packages/core/test
 import { ESC, strip } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { createStyle, styleFor } from "../style.js";
-import { showHint } from "./runs.js";
+import { runStatus, showHint } from "./runs.js";
 import { runShow } from "./show.js";
 
 // Each test drives real git repos and child processes; a busy machine makes them slow, not failing.
@@ -75,6 +75,18 @@ describe("factory show <run>", () => {
     expect(runShow(dir, "16", "learn")).toContain("Run lint first.");
   });
 
+  it("lists each acceptance criterion with its status and evidence", () => {
+    const criteria = [
+      { id: "AC-1", source: "issue", text: "shows a run", status: "MET", evidence: "show.test.ts" },
+      { id: "AC-2", source: "issue", text: "looks right on a phone", status: "NOT_CHECKED" },
+    ];
+    const { dir } = setup({ "round-1/checks.md": checks("PASS", "round one"), "round-1/acceptance.json": JSON.stringify({ criteria }) });
+
+    expect(runShow(dir, "16")).toContain(
+      "round-1/acceptance.json (acceptance criteria: 1/1 met, 1 for you to check)\n  AC-1 MET: shows a run\n    show.test.ts\n  AC-2 NOT_CHECKED: looks right on a phone\n",
+    );
+  });
+
   it("lists the latest capture report with its summary, and shows it as `capture`", () => {
     const report = (what: string) => `# Capture\n\n## Summary\n- ${what}\n- no new browser errors\n\n## Pages\n| a |\n`;
     const { dir } = setup({
@@ -119,6 +131,18 @@ describe("factory show <run>", () => {
     expect(text).toContain(
       ["  agent/builder.log", "  build.md", "  round-10/checks.md", "  round-9/checks.md", "  triage.md"].join("\n"),
     );
+  });
+
+  it("shows the re-sync counter in the overview and in factory status once there is one", () => {
+    const { dir, root, runId } = setup({ "triage.md": TRIAGE });
+    expect(runShow(dir, "16")).not.toContain("resyncs:");
+    expect(runStatus(dir)).toMatch(/#16\s+intake\s+b1 r1\s+\$0\.00/);
+
+    const store = new Store(join(root, ".factory", "factory.db"));
+    store.writeState(runId, "build", { resync_rounds: 2, review_rounds: 1 });
+    store.close();
+    expect(runShow(dir, "16")).toMatch(/\n {2}resyncs: 2\n/);
+    expect(runStatus(dir)).toMatch(/#16\s+build\s+b1 r2, 2 re-syncs\s+\$0\.00/);
   });
 
   it("shows the latest round's reviews with their blocking findings, and the verifier's judgement", () => {

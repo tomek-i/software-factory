@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict, type RunState } from "@factory/shared";
 import { Store, type StatePatch } from "../store/store.js";
-import { allowedTargets, resumeTargets, RunMachine, TransitionError, type Evidence } from "./transitions.js";
+import { allowedTargets, resumeTargets, RunMachine, sendBackTargets, TransitionError, type Evidence } from "./transitions.js";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -24,11 +24,13 @@ function fakeEvidence(
     ahead?: number;
     pushed?: boolean;
     gateFingerprint?: string;
+    resyncFingerprint?: string;
   } = {},
 ): Evidence {
   const files: Record<string, string | undefined> = { ...FILES, ...overrides.files };
   return {
     ...(overrides.gateFingerprint !== undefined ? { gateFingerprint: () => overrides.gateFingerprint! } : {}),
+    ...(overrides.resyncFingerprint !== undefined ? { resyncFingerprint: () => overrides.resyncFingerprint! } : {}),
     verdict: (kind) => {
       const text = files[kind];
       if (text === undefined) throw new Error(`${kind} output missing`);
@@ -247,12 +249,23 @@ describe("RunMachine.transition", () => {
     expect(move("learn", pr("merged")).state).toBe("learn");
   });
 
-  it("caps review rounds, including failed merge attempts", () => {
+  it("counts failed re-syncs in the merge stage apart from review rounds and builds, with their own cap", () => {
+    const { at, move } = setup({ loops: { max_review_rounds: 1, max_build_iterations: 1, max_resyncs: 3 } });
+    for (let i = 1; i <= 2; i++) {
+      at("merge");
+      expect(move("build")).toMatchObject({ resync_rounds: i, review_rounds: 0, build_iterations: 0 });
+    }
+    at("merge");
+    expect(() => move("build")).toThrow(/re-sync round cap reached \(3\)/);
+  });
+
+  it("does not let failed re-syncs use up the review round cap", () => {
     const { at, move } = setup({ loops: { max_review_rounds: 2 } });
     at("merge");
-    expect(move("build").review_rounds).toBe(1);
-    at("merge");
-    expect(() => move("build")).toThrow(/review round cap reached/);
+    move("build");
+    at("review");
+    const confirmed = `VERDICT: CONFIRMED\n\n## Findings\n${major}\n`;
+    expect(move("build", fakeEvidence({ files: { verify: confirmed } }))).toMatchObject({ review_rounds: 1, resync_rounds: 1 });
   });
 
   it("caps spec critic rounds and needs a REVISE verdict to loop", () => {
@@ -474,6 +487,39 @@ describe("stall detection", () => {
     expect(store.getRun(run.id)!.review_rounds).toBe(1);
   });
 
+  it("refuses a second re-sync that failed the same way, naming the kind's files", () => {
+    const { at, move } = setup({ loops: { max_resyncs: 10 } });
+    at("gate");
+    at("merge");
+    move("build", fakeEvidence({ resyncFingerprint: "conflict:A" }));
+    at("gate");
+    at("merge");
+    const err = stallOf(() => move("build", fakeEvidence({ resyncFingerprint: "conflict:A" })));
+    expect(err.stall).toMatchObject({ edge: "merge->build", rounds: [1, 2], files: ["round-1/resync/conflicts.md", "round-2/resync/conflicts.md"] });
+    expect(err.problems).toEqual([
+      "stalled: bringing in the default branch failed the same way in rounds 1 and 2 (see round-1/resync/conflicts.md and round-2/resync/conflicts.md)",
+    ]);
+    // The gate failing after a re-sync points at the re-run's report instead.
+    const gate = setup({ loops: { max_resyncs: 10 } });
+    gate.at("gate");
+    gate.at("merge");
+    gate.move("build", fakeEvidence({ resyncFingerprint: "gate:B" }));
+    gate.at("gate");
+    gate.at("merge");
+    expect(stallOf(() => gate.move("build", fakeEvidence({ resyncFingerprint: "gate:B" }))).stall?.files).toEqual([
+      "round-1/resync/checks.md",
+      "round-2/resync/checks.md",
+    ]);
+  });
+
+  it("keeps re-syncing when the default branch fails in a different way", () => {
+    const { at, move } = setup({ loops: { max_resyncs: 10 } });
+    at("merge");
+    move("build", fakeEvidence({ resyncFingerprint: "conflict:A" }));
+    at("merge");
+    expect(move("build", fakeEvidence({ resyncFingerprint: "gate:A" })).resync_rounds).toBe(2);
+  });
+
   it("loops review back to the builder when the confirmed findings differ", () => {
     const { at, move } = setup({ loops: { max_review_rounds: 10 } });
     at("review");
@@ -529,9 +575,9 @@ describe("RunMachine.resume", () => {
 
   it("can send work back with a fresh loop budget", () => {
     const { machine, store, run } = parked();
-    store.writeState(run.id, "needs_human", { build_iterations: 4 });
+    store.writeState(run.id, "needs_human", { build_iterations: 4, resync_rounds: 2 });
     const resumed = machine.resume(run.id, "build", { comment: "try a different approach", resetLoops: true });
-    expect(resumed.build_iterations).toBe(0);
+    expect(resumed).toMatchObject({ build_iterations: 0, resync_rounds: 0 });
   });
 
   it("requires a comment and a parked run", () => {
@@ -542,10 +588,43 @@ describe("RunMachine.resume", () => {
     expect(() => other.machine.resume(other.run.id, "triage", { comment: "x" })).toThrow(/not waiting for a human/);
   });
 
+  it("lets a human send a run waiting at a gate back to an earlier working stage, resetting the loops", () => {
+    const { machine, store, run, at } = setup();
+    at("review");
+    store.writeState(run.id, "review", { review_rounds: 2, build_iterations: 3, critic_rounds: 1 });
+    machine.transition(run.id, "needs_human", { reason: "review round cap reached (3)", patch: { waiting_gate: "review" } });
+
+    const resumed = machine.resume(run.id, "build", { comment: "fix the race in feature.txt", resetLoops: true });
+
+    expect(resumed).toMatchObject({ state: "build", waiting_gate: null, parked_from: null, review_rounds: 0, build_iterations: 0, critic_rounds: 0 });
+    expect(store.listDecisions(run.id).at(-1)).toMatchObject({ gate: "review", outcome: "approve", actor: "human", comment: "fix the race in feature.txt" });
+    expect(store.listEvents(run.id).at(-1)).toMatchObject({ from_state: "needs_human", to_state: "build", data: { gate: "review", resetLoops: true } });
+  });
+
+  it("carries extra facts about the decision on the resume event", () => {
+    const { machine, store, run } = parked(null);
+    machine.resume(run.id, "build", { comment: "go", data: { dismissed: { alert: 26 } } });
+    expect(store.listEvents(run.id).at(-1)!.data).toEqual({ dismissed: { alert: 26 }, gate: "escalation", resetLoops: false });
+  });
+
   it("records rejections as escalation decisions when no gate was waiting", () => {
     const { machine, store, run } = parked(null);
     expect(machine.resume(run.id, "rejected", { comment: "not worth it" }).state).toBe("rejected");
     expect(store.listDecisions(run.id)).toMatchObject([{ gate: "escalation", outcome: "reject" }]);
+  });
+});
+
+describe("sendBackTargets", () => {
+  it("lists the working stages before the gate, never the gate's own stage or where approving leads", () => {
+    expect(sendBackTargets({ parked_from: "triage" })).toEqual([]);
+    expect(sendBackTargets({ parked_from: "critic" })).toEqual(["refine"]);
+    expect(sendBackTargets({ parked_from: "review" })).toEqual(["refine", "build"]);
+    expect(sendBackTargets({ parked_from: "pr" })).toEqual(["refine", "build", "review"]);
+    expect(sendBackTargets({ parked_from: "merge" })).toEqual(["refine", "build", "review"]);
+    expect(sendBackTargets({ parked_from: null })).toEqual([]);
+    for (const parked of ["critic", "review", "pr", "merge"] as const) {
+      for (const to of sendBackTargets({ parked_from: parked })) expect(resumeTargets({ parked_from: parked })).toContain(to);
+    }
   });
 });
 

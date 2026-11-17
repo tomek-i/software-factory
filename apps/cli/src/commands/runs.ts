@@ -274,7 +274,7 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
         r.id,
         r.issue_number ? `#${r.issue_number}` : "-",
         r.state,
-        `b${r.build_iterations + 1} r${r.review_rounds + 1}`,
+        `b${r.build_iterations + 1} r${r.review_rounds + 1}${r.resync_rounds ? `, ${r.resync_rounds} re-sync${r.resync_rounds > 1 ? "s" : ""}` : ""}`,
         `$${runCost(store, r.id).toFixed(2)}`,
         r.waiting_gate ?? "",
       ]);

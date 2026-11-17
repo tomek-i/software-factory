@@ -76,10 +76,12 @@ loops:
   max_build_iterations: 5
   max_review_rounds: 3
   max_critic_rounds: 2
+  max_resyncs: 3        # merge attempts that conflicted with the default branch or failed its checks
 
 reviews:
   always: [code, security, docs]
   ui: [ux, ui]          # only when the change touches the UI
+  # The acceptance lens always runs: it checks the issue's acceptance criteria one by one.
 
 # Model and effort per agent. Left out, every agent uses the recommended model below, and a better
 # recommendation reaches this project with the next factory update. To change one, uncomment

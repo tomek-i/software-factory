@@ -10,6 +10,8 @@ function fileList(files: string[], style: Style): string {
 function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOverview, style: Style): string {
   const lines = [`Run ${style.detail(run.id)}`, `  state:   ${style.state(run.state)}`];
   if (run.waiting_gate) lines.push(`  waiting: ${style.attention(`${run.waiting_gate} gate`)}`);
+  // Times merging the default branch sent the run back to the builder, apart from review rounds (loops.max_resyncs).
+  if (run.resync_rounds) lines.push(`  resyncs: ${run.resync_rounds}`);
   lines.push(
     `  issue:   ${run.issue_number ? `#${run.issue_number} ${issueTitle ?? run.title}` : `- ${run.title}`}`,
     `  branch:  ${run.branch ? style.detail(run.branch) : "-"}`,
@@ -38,6 +40,13 @@ function overview({ run, issueTitle, runDir, hasRunDir, files, sections }: RunOv
         break;
       case "capture":
         lines.push(style.title(section.path), ...summary(section.summary));
+        break;
+      case "acceptance":
+        lines.push(`${style.title(section.path)} (acceptance criteria: ${section.count})`);
+        for (const c of section.criteria) {
+          lines.push(`  ${c.id} ${style.verdict(c.status)}: ${c.text}`);
+          if (c.evidence) lines.push(`    ${c.evidence}`);
+        }
     }
   }
 

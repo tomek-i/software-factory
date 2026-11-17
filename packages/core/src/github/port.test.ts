@@ -125,6 +125,64 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).requiredChecks(42)).toThrow(/unexpected output/);
   });
 
+  it("lists the open code scanning alerts on the PR's head ref, and none for a repo without code scanning", () => {
+    const listed = [
+      {
+        number: 26,
+        state: "open",
+        html_url: "https://github.com/o/r/security/code-scanning/26",
+        rule: { id: "js/missing-rate-limiting", severity: "error", security_severity_level: "high", description: "Missing rate limiting" },
+        tool: { name: "CodeQL" },
+        most_recent_instance: { location: { path: "apps/server/src/drafts.ts", start_line: 317 } },
+      },
+      { number: 3, html_url: "https://github.com/o/r/security/code-scanning/3", rule: { id: "x/y", severity: "warning" }, tool: { name: "Semgrep" }, most_recent_instance: {} },
+    ];
+    const { calls, run } = fakeGh(JSON.stringify(listed));
+    expect(ghPort(project, run).codeScanningAlerts(172)).toEqual([
+      {
+        number: 26,
+        rule: "js/missing-rate-limiting",
+        description: "Missing rate limiting",
+        severity: "high",
+        tool: "CodeQL",
+        file: "apps/server/src/drafts.ts",
+        line: 317,
+        url: "https://github.com/o/r/security/code-scanning/26",
+      },
+      { number: 3, rule: "x/y", description: "x/y", severity: "warning", tool: "Semgrep", url: "https://github.com/o/r/security/code-scanning/3" },
+    ]);
+    expect(calls[0]).toEqual(["api", "-X", "GET", "repos/o/r/code-scanning/alerts", "-f", "ref=refs/pull/172/head", "-f", "state=open", "-F", "per_page=100"]);
+
+    const disabled: CommandRunner = () => ({ code: 1, stdout: "", stderr: "gh: no analysis found (HTTP 404)" });
+    expect(ghPort(project, disabled).codeScanningAlerts(172)).toEqual([]);
+    const forbidden: CommandRunner = () => ({ code: 1, stdout: "", stderr: "gh: Resource not accessible by integration (HTTP 403)" });
+    expect(() => ghPort(project, forbidden).codeScanningAlerts(172)).toThrow(/code-scanning\/alerts failed: gh: Resource not accessible/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify([{ number: "x" }])).run).codeScanningAlerts(172)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("{}").run).codeScanningAlerts(172)).toThrow(/unexpected output/);
+  });
+
+  it("dismisses a code scanning alert with GitHub's reason and the comment as plain text", () => {
+    const { calls, run } = fakeGh("");
+    ghPort(project, run).dismissCodeScanningAlert(26, "false positive", "@file: a limiter covers every draft route");
+    expect(calls[0]).toEqual([
+      "api",
+      "-X",
+      "PATCH",
+      "repos/o/r/code-scanning/alerts/26",
+      "-f",
+      "state=dismissed",
+      "-f",
+      "dismissed_reason=false positive",
+      "-f",
+      "dismissed_comment=@file: a limiter covers every draft route",
+      "--silent",
+    ]);
+    expect(() => ghPort(project, run).dismissCodeScanningAlert(0, "won't fix", "x")).toThrow(/not an alert number/);
+    expect(() => ghPort(project, run).dismissCodeScanningAlert(4, "nah" as "won't fix", "x")).toThrow(/not a reason/);
+    expect(calls).toHaveLength(1);
+    expect(() => ghPort(project, fakeGh("", 1).run).dismissCodeScanningAlert(4, "used in tests", "x")).toThrow(/gh api -X failed: boom/);
+  });
+
   it("opens an issue from a body file, which it removes afterwards, and returns its number", () => {
     let sent = "";
     const calls: string[][] = [];
@@ -212,6 +270,38 @@ describe("ghPort", () => {
     expect(sent).toBe("new text");
     expect(existsSync(calls[0]![5]!.slice("body=@".length))).toBe(false);
     expect(() => ghPort(project, fakeGh("", 1).run).editComment(12, "x")).toThrow(/gh api -X failed: boom/);
+  });
+
+  it("reads a comment's body through the API", () => {
+    const { calls, run } = fakeGh(JSON.stringify({ id: 12, body: "- [ ] one\r\n" }));
+    expect(ghPort(project, run).commentBody(12)).toBe("- [ ] one\r\n");
+    expect(calls[0]).toEqual(["api", "repos/o/r/issues/comments/12"]);
+    expect(() => ghPort(project, fakeGh("nope").run).commentBody(12)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("{}").run).commentBody(12)).toThrow(/no body/);
+  });
+
+  it("reads an issue's body only when the factory's account wrote the issue", () => {
+    const issue = (viewerDidAuthor: boolean) => JSON.stringify({ data: { repository: { issue: { body: "text", viewerDidAuthor } } } });
+    const own = fakeGh(issue(true));
+    expect(ghPort(project, own.run).ownIssueBody(3)).toBe("text");
+    expect(own.calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*viewerDidAuthor/), "-f", "o=o", "-f", "r=r", "-F", "n=3"]);
+    expect(ghPort(project, fakeGh(issue(false)).run).ownIssueBody(3)).toBeUndefined();
+    expect(() => ghPort(project, fakeGh("nope").run).ownIssueBody(3)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ data: { repository: { issue: null } } })).run).ownIssueBody(3)).toThrow(/no body/);
+  });
+
+  it("edits an issue's body from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).editIssueBody(3, "- [x] one\n");
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "edit", "3", "-R", "o/r", "--body-file"]);
+    expect(sent).toBe("- [x] one\n");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
   });
 
   it("marks factory comments", () => {

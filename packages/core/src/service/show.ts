@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { isBlocking, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
+import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
 import { refutedFindings, runDirOf } from "../pipeline/driver.js";
 import type { Project, Run, Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
@@ -97,7 +98,9 @@ export type OverviewSection =
   /** A verdict file that does not parse: the first problem. */
   | { kind: "unparsed"; path: string; problem: string }
   /** The capture report: the items of its summary. */
-  | { kind: "capture"; path: string; summary: string[] };
+  | { kind: "capture"; path: string; summary: string[] }
+  /** The acceptance lens's result: each criterion with its status and evidence, and the count line. */
+  | { kind: "acceptance"; path: string; count: string; criteria: CriterionResult[] };
 
 export interface RunOverview {
   run: Run;
@@ -133,7 +136,14 @@ function sectionsOf(runDir: string, files: string[]): OverviewSection[] {
   // The reviews of the latest gated round, each lens with its verdict and the findings that block,
   // then the verifier's judgement of those: the findings it confirmed and how many it refuted.
   const round = checks?.split("/")[0];
-  const judged = files.filter((f) => round && ((f.startsWith(`${round}/review-`) && f.endsWith(".md")) || f === `${round}/verify.md`));
+  // The acceptance lens is shown per criterion from the engine's record rather than as a review.
+  const acceptance = round ? readAcceptanceRecord(join(runDir, round)) : undefined;
+  if (acceptance) {
+    sections.push({ kind: "acceptance", path: `${round}/acceptance.json`, count: acceptanceCount(acceptance.criteria), criteria: acceptance.criteria });
+  }
+  const judged = files.filter(
+    (f) => round && ((f.startsWith(`${round}/review-`) && f.endsWith(".md") && !(acceptance && f === `${round}/review-acceptance.md`)) || f === `${round}/verify.md`),
+  );
   for (const path of judged) {
     try {
       const kind = path.endsWith("/verify.md") ? "verify" : "review";

@@ -114,6 +114,9 @@ describe("issue commands", () => {
       commentOnIssue: () => undefined,
       findComment: () => undefined,
       editComment: () => undefined,
+      commentBody: () => "",
+      ownIssueBody: () => undefined,
+      editIssueBody: () => undefined,
       findPullRequest: () => undefined,
       createDraftPullRequest: () => 1,
       createPullRequest: () => 1,
@@ -122,6 +125,8 @@ describe("issue commands", () => {
     markReady: () => undefined,
     mergePullRequest: () => undefined,
     requiredChecks: () => [],
+      codeScanningAlerts: () => [],
+      dismissCodeScanningAlert: () => undefined,
       pullRequestState: (number) => ({ number, state: "merged", draft: false, head: "h", mergeCommit: "c".repeat(40) }),
     };
 

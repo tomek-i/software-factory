@@ -13,6 +13,7 @@ Back to the [README](../README.md); the stages that write them are in [Pipeline]
 - `round-N/checks.md` and `checks.log`, the quality gate's report and output;
 - `round-N/change.diff`, the change the reviewers and verifier read;
 - `round-N/review-<lens>.md`, one per review lens;
+- `round-N/acceptance.md`, the acceptance lens's answers, and `round-N/acceptance.json`, each criterion with its status;
 - `round-N/verify.md`, the verifier's verdict;
 - `round-N/capture.md`, the capture agent's plan;
 - `round-N/capture-report.md`, the capture report;

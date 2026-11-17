@@ -22,11 +22,12 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `pipeline/stages/<stage>.ts`: one module per stage (`triage` with intake, `refine`, `critic`, `build`, `gate`, `review` with the verifier, `capture`, `pr`, `merge` with re-sync and approver, `learn`), each a function `(ctx, run) => StepResult`
 - `pipeline/stages/context.ts`: `StageContext`, what every stage gets (store, project, config, ports, run machine, the abort signal, and helpers such as `move`, `waitForHuman`, `escalate`, `loopBack`, `agentBase`); `DriverDeps`, `DriveOutcome`
 - `pipeline/shared.ts`: helpers that need no driver: `approveTarget`, `nextAfterTriage`, `runDirOf`, `prBody`, `verdictPath`, `runEvidence`, spec rounds, `readValid`, `section`; `pipeline/reviews.ts`: blocking findings, what the verifier must judge, review notes
+- `pipeline/acceptance.ts`: the acceptance lens's criteria (`extractCriteria`), its result file, the PR checklist, and `tickMetCriteria`, which ticks the met ones on GitHub after the merge
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
 - `pipeline/cleanup.ts`: removes finished runs' worktrees and branches
-- `pipeline/fingerprint.ts`: detects stalls (the same gate failure or findings twice)
+- `pipeline/fingerprint.ts`: detects stalls (the same gate failure, findings or failed re-sync twice); `issueFingerprint` for carrying a triage approval over a restart
 - `agents/runner.ts`: spawns `claude` with `claudeArgs` and `agentEnv`
 - `agents/prompts.ts`: `PromptRole`, `rolePrompt`, `permissionProfile`, `issueBlock`, `renderTask`
 - `agents/turn.ts`: one agent turn plus parsing its output file; `agents/stream.ts`: stream-json summary
@@ -41,6 +42,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `drafts/`: issue writer drafts for `factory new`
 - `init/`: `factory init`, project detection and the config template
 - `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
+- `service/waiting.ts`: `waitingOn`, what a run waiting for a human is stuck on (a loop cap, failed checks, a failed gate, confirmed findings); `service/checks.ts`: `runChecks` and `dismissAlert`, the human-only dismissal of a code scanning alert
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
 - `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `stop.ts` for `factory stop`

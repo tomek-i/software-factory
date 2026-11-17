@@ -86,6 +86,11 @@ export const VERDICT_FORMAT: Readonly<Record<string, Format>> = {
   INCOMPLETE: WAITING,
   REVISE: WAITING,
   ESCALATE: WAITING,
+  // An acceptance criterion's status.
+  MET: GOOD,
+  NOT_MET: BAD,
+  CANNOT_CHECK: WAITING,
+  NOT_CHECKED: WAITING,
 };
 
 export function createStyle(enabled: boolean): Style {
