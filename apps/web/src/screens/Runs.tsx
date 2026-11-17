@@ -58,7 +58,7 @@ export function Runs() {
                       </div>
                     </TableCell>
                     <TableCell className="max-w-md xl:max-w-xl 2xl:max-w-3xl">
-                      <Link to={runPath(run)} className="block truncate hover:underline">
+                      <Link to={runPath(run)} className="block truncate underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-current">
                         {run.issue !== null && <span className="mr-1.5 font-mono text-muted-foreground">#{run.issue}</span>}
                         {run.title}
                       </Link>

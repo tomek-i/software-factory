@@ -139,6 +139,8 @@ export interface RunDetail {
   issue: { number: number; title: string; url: string | null } | null;
   hasRunDir: boolean;
   files: string[];
+  /** The files with no text to show (screenshots, videos): listed, but not opened. */
+  binaryFiles: string[];
   sections: OverviewSection[];
 }
 
@@ -278,9 +280,11 @@ async function request<T>(method: "GET" | "POST", path: string, body?: object): 
   return data as T;
 }
 
-const runPath = (run: Pick<RunRow, "project" | "id">, action: string) => `/api/projects/${run.project}/runs/${encodeURIComponent(run.id)}/${action}`;
+// The project key can come from the page's URL, so every path encodes it, as it does a run id.
+const projectPath = (project: string) => `/api/projects/${encodeURIComponent(project)}`;
+const runPath = (run: Pick<RunRow, "project" | "id">, action: string) => `${projectPath(run.project)}/runs/${encodeURIComponent(run.id)}/${action}`;
 const draftPath = (project: string, id: string, action?: string) =>
-  `/api/projects/${project}/drafts/${encodeURIComponent(id)}${action ? `/${action}` : ""}`;
+  `${projectPath(project)}/drafts/${encodeURIComponent(id)}${action ? `/${action}` : ""}`;
 // What the page showed, so the server refuses a decision about a run that has moved on since.
 const shown = (run: RunRow) => ({ state: run.state, gate: run.waitingGate ?? undefined });
 
@@ -289,13 +293,13 @@ export const api = {
   scheduler: () => request<SchedulerStatus | null>("GET", "/api/scheduler"),
   runs: (view: RunView, project?: string) =>
     request<RunRow[]>("GET", `/api/runs?view=${view}${project ? `&project=${encodeURIComponent(project)}` : ""}`),
-  run: (project: string, id: string) => request<RunDetail>("GET", `/api/projects/${project}/runs/${encodeURIComponent(id)}`),
+  run: (project: string, id: string) => request<RunDetail>("GET", `${projectPath(project)}/runs/${encodeURIComponent(id)}`),
   mergeGate: (run: Pick<RunRow, "project" | "id">) => request<MergeGateDetails>("GET", runPath(run, "merge-gate")),
   runFile: (project: string, id: string, path: string) =>
     request<RunFile>("GET", runPath({ project, id }, `files/${path.split("/").map(encodeURIComponent).join("/")}`)),
-  backlog: (project: string) => request<Backlog>("GET", `/api/projects/${project}/issues`),
-  sync: (project: string) => request<SyncResult>("POST", `/api/projects/${project}/sync`),
-  queue: (project: string, issue: number, queued: boolean) => request<object>("POST", `/api/projects/${project}/issues/${issue}/${queued ? "queue" : "unqueue"}`),
+  backlog: (project: string) => request<Backlog>("GET", `${projectPath(project)}/issues`),
+  sync: (project: string) => request<SyncResult>("POST", `${projectPath(project)}/sync`),
+  queue: (project: string, issue: number, queued: boolean) => request<object>("POST", `${projectPath(project)}/issues/${issue}/${queued ? "queue" : "unqueue"}`),
   approve: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "approve"), { ...shown(run), message }),
   reject: (run: RunRow, message: string) => request<object>("POST", runPath(run, "reject"), { ...shown(run), message }),
   resume: (run: RunRow, to: RunState, message: string, resetLoops: boolean) =>
@@ -306,7 +310,7 @@ export const api = {
   cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
   drafts: (project?: string) => request<DraftView[]>("GET", `/api/drafts${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   draft: (project: string, id: string) => request<DraftDetail>("GET", draftPath(project, id)),
-  startDraft: (project: string, idea: string, queue: boolean) => request<{ id: string; ignored: string[] }>("POST", `/api/projects/${project}/drafts`, { idea, queue }),
+  startDraft: (project: string, idea: string, queue: boolean) => request<{ id: string; ignored: string[] }>("POST", `${projectPath(project)}/drafts`, { idea, queue }),
   saveDraft: (project: string, id: string, edit: DraftEdit) => request<DraftView>("POST", draftPath(project, id, "save"), edit),
   publishDraft: (project: string, id: string, queue: boolean) => request<PublishedDraft>("POST", draftPath(project, id, "publish"), { queue }),
   discardDraft: (project: string, id: string) => request<{ id: string; created: number[] }>("POST", draftPath(project, id, "discard")),

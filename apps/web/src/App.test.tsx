@@ -2,7 +2,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
 import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, RunChecks, RunDetail, RunRow } from "./lib/api";
@@ -59,6 +59,7 @@ class FakeServer {
     issue: run.issue === null ? null : { number: run.issue, title: `Issue ${run.issue}`, url: `https://github.com/acme/shop/issues/${run.issue}` },
     hasRunDir: true,
     files: Object.keys(this.files),
+    binaryFiles: [],
     sections: [
       { kind: "verdict", path: "triage.md", key: "DECISION", value: "APPROVE", summary: ["risk is HIGH: it touches auth"], blocking: [], refuted: 0 },
       { kind: "verdict", path: "spec-1/critic.md", key: "VERDICT", value: "ACCEPT", summary: ["the spec holds"], blocking: [], refuted: 0 },
@@ -151,14 +152,23 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** Hands the router's navigate to a test, to change the URL while a screen stays mounted. */
+function Navigator({ onReady }: { onReady: (navigate: NavigateFunction) => void }) {
+  onReady(useNavigate());
+  return null;
+}
+
 function renderAt(path: string) {
   const client = newQueryClient();
   client.setDefaultOptions({ queries: { retry: false } });
+  let go: NavigateFunction | undefined;
   render(
     <MemoryRouter initialEntries={[path]}>
+      <Navigator onReady={(n) => (go = n)} />
       <App client={client} />
     </MemoryRouter>,
   );
+  return { navigate: (to: string) => act(() => void go!(to)) };
 }
 
 describe("layout", () => {
@@ -688,6 +698,51 @@ describe("run details", () => {
 
     await user.click(screen.getByRole("button", { name: "round-1/checks.md" }));
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
+  });
+
+  it("closes the open file and forgets a confirmation when the page moves to another run", async () => {
+    server.runs = [runRow(), runRow({ id: "run-2", issue: 13 })];
+    server.files = { "triage.md": "DECISION: APPROVE" };
+    const { navigate } = renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(within(await screen.findByRole("list", { name: "Run files" })).getByRole("button", { name: "triage.md" }));
+    expect(await screen.findByLabelText("Contents of triage.md")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Approve/ }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Approved.")).toBeTruthy();
+
+    await navigate("/runs/p1/run-2");
+
+    expect(await screen.findByRole("heading", { name: /#13/ })).toBeTruthy();
+    expect(screen.queryByLabelText("Contents of triage.md")).toBeNull();
+    expect(screen.queryByText("Approved.")).toBeNull();
+  });
+
+  it("says it is loading, encodes the project in the URL, and does not offer to open a binary file", async () => {
+    server.runs = [runRow({ project: "p 1" })];
+    server.files = { "triage.md": "x", "shot.png": "" };
+    const detail = server.detail;
+    server.detail = (run) => ({ ...detail(run), binaryFiles: ["shot.png"] });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      // The fake knows project "p1" only: answer for "p 1", but only if it arrived encoded.
+      const url = String(input);
+      if (url.includes("/api/projects/p%201/runs/run-1")) {
+        await held;
+        return server.fetch(url.replace("p%201", "p1"), init);
+      }
+      return server.fetch(input, init);
+    });
+    renderAt("/runs/p%201/run-1");
+
+    expect(await screen.findByText("Loading the run...")).toBeTruthy();
+    release();
+    const files = await screen.findByRole("list", { name: "Run files" });
+    expect(within(files).getByRole("button", { name: "triage.md" })).toBeTruthy();
+    expect(within(files).queryByRole("button", { name: /shot\.png/ })).toBeNull();
+    expect(within(files).getByText("(not text, open it from the run folder)")).toBeTruthy();
   });
 
   it("lists each acceptance criterion with its status and evidence, wrapping long paths", async () => {

@@ -71,7 +71,7 @@ The runs going on across projects, live.
 
 - Each shows its state, round, cost, whether a worker drives it and the agent's latest activity.
 - "All" shows finished runs too.
-- Click a run to open its details.
+- Click a run's title to open its details.
 
 ### Run details
 
@@ -82,8 +82,10 @@ What `factory show <run>` prints, in the browser.
 - The verdicts of its run folder: triage, spec, build, checks, reviews with their blocking findings, approval, learn.
 - Its files, each opened as plain text.
   They hold agent output that read untrusted issue text, so the page never renders it as HTML.
+  - Screenshots, videos and other files with no text are listed but not opened; open them from the run folder.
+  - A file over 1 MB is not shown either; `factory show <run> <file>` prints it.
 - Local paths in it are shortened: relative to the repo or worktree, and the home folder as `~`.
-- A run waiting for you has the same actions as in the Inbox.
+- A run waiting for you has the same actions as in the Inbox, and says what was done once it went through.
 
 ### Backlog
 
