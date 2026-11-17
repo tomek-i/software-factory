@@ -7,6 +7,7 @@ import { runQualityGate } from "../../gate/gate.js";
 import { gitEvidence, type GitEvidence, type Worktree } from "../../git/worktrees.js";
 import type { PullRequestState, RequiredCheck } from "../../github/port.js";
 import type { Run } from "../../store/store.js";
+import { gateFingerprint, resyncFingerprint } from "../fingerprint.js";
 import { resolveGate, type GateInput } from "../gates.js";
 import { changeReport, freshBase } from "../hard-rules.js";
 import { bullets, pause, readValid, reviewPath, runEvidence, section, verdictPath } from "../shared.js";
@@ -14,8 +15,9 @@ import type { StageContext, StepResult } from "./context.js";
 
 /**
  * Merge the run's PR: bring the branch up to date with the default branch, run the quality gate
- * again if that changed it, decide the merge gate, then merge exactly the commit that passed. A
- * conflict or a failing gate goes back to the builder, which costs a review round.
+ * again if that changed it, wait for the PR's required checks, decide the merge gate, then read the
+ * checks once more and merge exactly the commit that passed. A conflict or a failing gate goes back
+ * to the builder, which costs a re-sync round (loops.max_resyncs), not a review round.
  */
 export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
   const { github, config } = ctx.deps;
@@ -32,12 +34,20 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
   const round = run.round;
   const resyncDir = join(dir, `round-${round}`, "resync");
   const git = gitEvidence(worktree, ctx.defaultBranch, ctx.exec);
-  const evidence = runEvidence(dir, round, git);
-  const backToBuild = (reason: string, data: Record<string, unknown>) =>
-    ctx.loopBack(run, reason, { round, ...data }, evidence, "merge", `still cannot merge after round ${round}`, (why) => ctx.escalate(run, why));
+  // A failed re-sync counts against loops.max_resyncs, not the review rounds: the change itself may be fine.
+  const backToBuild = (reason: string, data: Record<string, unknown>, fingerprint: string) =>
+    ctx.loopBack(
+      run,
+      reason,
+      { round, ...data },
+      { ...runEvidence(dir, round, git), resyncFingerprint: () => fingerprint },
+      "merge",
+      `still cannot merge after round ${round}`,
+      (why, stall) => ctx.escalate(run, why, stall),
+    );
 
   const conflicts = resync(ctx, worktree, resyncDir);
-  if (conflicts) return backToBuild(`merging ${ctx.defaultBranch} into the branch conflicts in ${conflicts.join(", ")}`, { conflicts });
+  if (conflicts) return backToBuild(`merging ${ctx.defaultBranch} into the branch conflicts in ${conflicts.join(", ")}`, { conflicts }, resyncFingerprint({ conflicts }));
   let head = git.head();
   if (!passedOn(ctx, dir, round, head)) {
     const result = await runQualityGate({
@@ -50,7 +60,10 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
       events: ctx.deps.events,
       signal: ctx.signal,
     });
-    if (!result.passed) return backToBuild(`quality gate failed after merging ${ctx.defaultBranch} (round ${round})`, { resync: true });
+    if (!result.passed) {
+      const fingerprint = resyncFingerprint({ gate: gateFingerprint(result, worktree.path) });
+      return backToBuild(`quality gate failed after merging ${ctx.defaultBranch} (round ${round})`, { resync: true }, fingerprint);
+    }
     head = git.head();
     if (head !== result.head || !git.isClean()) return ctx.escalate(run, "the worktree changed while the quality gate ran after merging the default branch");
   }
@@ -58,6 +71,17 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
   // on a push that failed in an earlier attempt.
   const justPushed = !git.isPushed();
   if (justPushed) ctx.push(worktree);
+
+  // Read the checks before anyone is asked: an approval given while a required check has failed,
+  // or is about to, would only be wasted. A failure goes to a human as it is, never to the gate.
+  let checks: ChecksOutcome;
+  try {
+    checks = await awaitRequiredChecks(ctx, run, number, head, justPushed);
+  } catch (err) {
+    return ctx.escalate(run, `could not merge PR #${number}: ${(err as Error).message}`);
+  }
+  if ("result" in checks) return checks.result;
+  const checksNote = checks.passed.length ? [`required checks passed on ${head.slice(0, 7)}: ${checks.passed.join(", ")}`] : [];
 
   if (!approvalCovers(ctx, run, worktree, head)) {
     let hits: string[];
@@ -76,14 +100,40 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
       agentDecision = { decision: turn.verdict.header.DECISION, reasons: bullets(section(turn.verdict.body, "reasons")) };
     }
     const gate = resolveGate({ mode, agentDecision, hardRuleHits: hits, unsafe: run.unsafe });
-    if (gate.outcome === "wait_human") return ctx.waitForHuman(run, "merge", [...gate.reasons, ...lifted], { commit: head });
-    ctx.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted].join("; "), head);
+    if (gate.outcome === "wait_human") {
+      const since = approvalSince(ctx, run);
+      return ctx.waitForHuman(run, "merge", [...gate.reasons, ...lifted, ...(since ? [since] : []), ...checksNote], { commit: head });
+    }
+    ctx.recordProceed(run, "merge", mode, [mode === "auto" ? "the approver said PROCEED" : "gate is set to always", ...lifted, ...checksNote].join("; "), head);
   }
-  return await mergePullRequest(ctx, run, number, head, git, justPushed);
+  // The checks are read again right before the merge (no second grace period): a commit pushed or a
+  // check re-run while the gate was decided must still be caught.
+  return await mergePullRequest(ctx, run, number, head, git);
+}
+
+/**
+ * What became of the last human approval of the merge gate, when a failed re-sync sent the run back
+ * to the builder after it: the builder's commits need a fresh approval, and the human should know why.
+ */
+function approvalSince(ctx: StageContext, run: Run): string | undefined {
+  const events = ctx.deps.store.listEvents(run.id);
+  const approval = events.findLastIndex((e) => {
+    const data = e.data as { gate?: unknown; commit?: unknown } | null;
+    return e.from_state === "needs_human" && e.to_state === "merge" && data?.gate === "merge" && typeof data.commit === "string";
+  });
+  if (approval < 0) return undefined;
+  const commit = (events[approval]!.data as { commit: string }).commit.slice(0, 7);
+  const back = events.slice(approval + 1).find((e) => e.from_state === "merge" && e.to_state === "build");
+  const data = back?.data as { conflicts?: unknown; resync?: unknown } | null | undefined;
+  if (Array.isArray(data?.conflicts)) {
+    return `approved at ${commit}, then ${ctx.defaultBranch} conflicted in ${data.conflicts.join(", ")}; the builder resolved it`;
+  }
+  if (data?.resync === true) return `approved at ${commit}, then the quality gate failed after merging ${ctx.defaultBranch}; the builder fixed it`;
+  return undefined;
 }
 
 /** Merge exactly `head`, which passed the quality gate and is what GitHub has, then move on to learn. */
-async function mergePullRequest(ctx: StageContext, run: Run, number: number, head: string, git: GitEvidence, justPushed: boolean): Promise<StepResult> {
+async function mergePullRequest(ctx: StageContext, run: Run, number: number, head: string, git: GitEvidence): Promise<StepResult> {
   const { github, config } = ctx.deps;
   const problems: string[] = [];
   if (!passedOn(ctx, ctx.runDir(run), run.round, head)) problems.push(`no passing quality gate on ${head.slice(0, 7)}`);
@@ -92,8 +142,8 @@ async function mergePullRequest(ctx: StageContext, run: Run, number: number, hea
   if (problems.length) return ctx.escalate(run, `will not merge PR #${number}: ${problems.join("; ")}`);
   try {
     if (github.pullRequestState(number).draft) github.markReady(number);
-    const waited = await awaitRequiredChecks(ctx, run, number, head, justPushed);
-    if (waited) return waited.result;
+    const waited = await awaitRequiredChecks(ctx, run, number, head, false);
+    if ("result" in waited) return waited.result;
     // The last moment to notice a cancel (or a lost lease) before something that cannot be undone.
     if (ctx.load(run.id).state !== run.state) return undefined;
     if (ctx.signal?.aborted) return { kind: "stopped", state: run.state, reason: "this worker lost the run before merging" };
@@ -111,13 +161,16 @@ async function mergePullRequest(ctx: StageContext, run: Run, number: number, hea
   return undefined;
 }
 
+/** `result`: stop with it. `passed`: every required check is done and none failed; their names. */
+type ChecksOutcome = { result: StepResult } | { passed: string[] };
+
 /**
- * Wait until the checks that branch protection requires on the PR have passed, so a merge is not
- * refused only because CI is still running. Undefined means go on and merge. A failed check, or
- * one still running after `merge.checks_timeout_min`, needs a human; a cancel stops the wait.
+ * Wait until the checks that branch protection requires on the PR have passed, so nobody approves
+ * a commit CI is about to fail, and a merge is not refused only because CI is still running. A failed
+ * check, or one still running after `merge.checks_timeout_min`, needs a human; a cancel stops the wait.
  * Throws when gh cannot read the checks.
  */
-async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, head: string, justPushed: boolean): Promise<{ result: StepResult } | undefined> {
+async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, head: string, justPushed: boolean): Promise<ChecksOutcome> {
   const { github, config } = ctx.deps;
   const minutes = config.merge.checks_timeout_min;
   const started = Date.now();
@@ -129,7 +182,7 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
   let told = false;
   for (;;) {
     const checks = github.requiredChecks(number);
-    if (checks.length === 0 && Date.now() >= graceUntil) return undefined;
+    if (checks.length === 0 && Date.now() >= graceUntil) return { passed: [] };
     // gh reads the checks of the PR's current head: a commit pushed meanwhile is not ours to judge.
     const prHead = checks.length ? github.pullRequestState(number).head : head;
     if (prHead !== head) {
@@ -137,10 +190,13 @@ async function awaitRequiredChecks(ctx: StageContext, run: Run, number: number, 
     }
     const failed = checks.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
     if (failed.length) {
-      return { result: ctx.escalate(run, `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`) };
+      // A plain escalation for now. This is where a builder "fix" round or recovery actions for a
+      // failed check would hook in.
+      const reason = `required check${failed.length > 1 ? "s" : ""} failed on PR #${number}: ${failed.map(describe).join("; ")}`;
+      return { result: ctx.escalate(run, reason, { failedChecks: failed.map((c) => ({ name: c.name, ...(c.link ? { link: c.link } : {}) })) }) };
     }
     const pending = checks.filter((c) => c.bucket === "pending");
-    if (checks.length && pending.length === 0) return undefined;
+    if (checks.length && pending.length === 0) return { passed: checks.map((c) => (c.bucket === "skipping" ? `${c.name} (skipped)` : c.name)) };
     const names = pending.length ? pending.map((c) => c.name).join(", ") : "none reported yet";
     if (Date.now() >= deadline) return { result: ctx.escalate(run, `required checks still running on PR #${number} after ${minutes} min: ${names}`) };
     if (!told && pending.length) {

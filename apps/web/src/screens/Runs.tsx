@@ -8,7 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { api, type RunView } from "../lib/api";
 import { useLive } from "../lib/events";
 import { useProject } from "../lib/project";
-import { ago, cn, money } from "../lib/utils";
+import { ago, cn, money, rounds } from "../lib/utils";
 import { runPath } from "./RunDetail";
 
 export function Runs() {
@@ -66,9 +66,7 @@ export function Runs() {
                       <div className="font-mono text-xs text-muted-foreground">{run.id}</div>
                     </TableCell>
                     <TableCell>{run.projectName}</TableCell>
-                    <TableCell className="font-mono text-xs">
-                      b{run.build} r{run.review}
-                    </TableCell>
+                    <TableCell className="font-mono text-xs">{rounds(run)}</TableCell>
                     <TableCell className="text-right font-mono text-xs">{money(run.cost)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground" title={run.updatedAt}>
                       {ago(run.updatedAt)}

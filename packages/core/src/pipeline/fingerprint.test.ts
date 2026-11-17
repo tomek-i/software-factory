@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Finding } from "@factory/shared";
 import type { CheckResult, SecretScan } from "../gate/gate.js";
-import { findingsFingerprint, gateFingerprint, normaliseOutput } from "./fingerprint.js";
+import { findingsFingerprint, gateFingerprint, normaliseOutput, resyncFingerprint } from "./fingerprint.js";
 
 const WORKTREE = "C:\\Users\\dev\\repo\\.worktrees\\run-1";
 const SHA = "3f2c9e1d4b5a6789012345678901234567890abc";
@@ -113,5 +113,20 @@ describe("findingsFingerprint", () => {
     expect(findingsFingerprint([finding({ file: "src/c.ts" })])).not.toBe(base);
     expect(findingsFingerprint([finding({ severity: "critical" })])).not.toBe(base);
     expect(findingsFingerprint([finding(), finding({ id: "F2", claim: "another bug" })])).not.toBe(base);
+  });
+});
+
+describe("resyncFingerprint", () => {
+  it("matches the same conflicting files in any order and with either separator", () => {
+    expect(resyncFingerprint({ conflicts: ["README.md", "apps\\web\\App.test.tsx"] })).toBe(resyncFingerprint({ conflicts: ["apps/web/App.test.tsx", "README.md"] }));
+    expect(resyncFingerprint({ conflicts: ["README.md"] })).not.toBe(resyncFingerprint({ conflicts: ["README.md", "docs/a.md"] }));
+  });
+
+  it("never matches a conflict with a gate failure", () => {
+    const conflict = resyncFingerprint({ conflicts: ["README.md"] });
+    const gate = resyncFingerprint({ gate: "abc" });
+    expect(conflict).toMatch(/^conflict:/);
+    expect(gate).toBe("gate:abc");
+    expect(conflict).not.toBe(gate);
   });
 });
