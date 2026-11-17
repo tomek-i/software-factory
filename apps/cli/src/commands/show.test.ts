@@ -145,6 +145,30 @@ describe("factory show <run>", () => {
     expect(runStatus(dir)).toMatch(/#16\s+build\s+b1 r2, 2 re-syncs\s+\$0\.00/);
   });
 
+  it("lists the open review threads and failed checks the merge gate waits on, with what to do", () => {
+    const { dir, root, runId } = setup({ "triage.md": TRIAGE }, { pr_number: 7 });
+    const store = new Store(join(root, ".factory", "factory.db"));
+    store.writeState(runId, "needs_human", { parked_from: "merge", waiting_gate: "merge" });
+    store.appendEvent(runId, "merge", "needs_human", "waiting at merge gate: unresolved review thread by bob", {
+      commit: SHA,
+      openFeedback: {
+        threads: [{ id: "T1", author: "bob", path: "src/a.ts", line: 3, url: "https://github.com/o/r/pull/7#discussion_r1", excerpt: "rename this" }],
+        checks: [{ name: "CodeQL", bucket: "fail", summary: "2 new alerts", link: "https://github.com/o/r/runs/3" }],
+      },
+    });
+    store.close();
+
+    const text = runShow(dir, "16");
+    expect(text).toContain(
+      [
+        "Open on PR #7",
+        "  - review thread by bob at src/a.ts:3: rename this (https://github.com/o/r/pull/7#discussion_r1)",
+        "  - CodeQL: failed: 2 new alerts (https://github.com/o/r/runs/3)",
+        `Merge anyway with \`factory approve ${runId}\`, or send it to the builder with \`factory resume ${runId} --to build -m "fix the open review threads and checks"\`.`,
+      ].join("\n"),
+    );
+  });
+
   it("shows the latest round's reviews with their blocking findings, and the verifier's judgement", () => {
     const findings = (severity: string) =>
       `## Findings\n\`\`\`json\n[{ "id": "x-1", "severity": "${severity}", "file": "src/a.ts", "line": 3, "claim": "breaks on empty input", "evidence": "a(\\"\\")" }]\n\`\`\`\n`;

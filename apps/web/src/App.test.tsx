@@ -320,6 +320,42 @@ describe("inbox", () => {
     );
   });
 
+  it("lists the open review threads and checks at the merge gate with their links, and merges anyway or sends them to the builder", async () => {
+    server.runs = [
+      runRow({
+        waitingGate: "merge",
+        reason: "waiting at merge gate: unresolved review thread by bob at src/a.ts:3 (https://github.com/acme/shop/pull/7#discussion_r1)",
+        resumeTargets: ["refine", "build", "review"],
+        failure: {
+          kind: "feedback",
+          source: "round-1/resync/feedback.md",
+          items: [
+            { name: "review thread by bob", summary: "rename this", file: "src/a.ts", line: 3, link: "https://github.com/acme/shop/pull/7#discussion_r1" },
+            { name: "CodeQL", summary: "failed: 2 new alerts", link: "javascript:alert(1)" },
+          ],
+        },
+      }),
+    ];
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const list = await screen.findByRole("list", { name: "Open on the pull request" });
+    expect(within(list).getByRole("link", { name: "review thread by bob" }).getAttribute("href")).toBe("https://github.com/acme/shop/pull/7#discussion_r1");
+    expect(within(list).getByText(": rename this")).toBeTruthy();
+    // A link GitHub or anyone else wrote is only followed when it is a web link.
+    expect(within(list).queryByRole("link", { name: "CodeQL" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /Send to builder with this failure/ }));
+    expect((screen.getByLabelText("Reason") as HTMLTextAreaElement).value).toBe(
+      "Deal with the open review threads and failed checks on the pull request (see round-1/resync/feedback.md in the run folder):\n- review thread by bob: rename this at src/a.ts:3 (https://github.com/acme/shop/pull/7#discussion_r1)\n- CodeQL: failed: 2 new alerts (javascript:alert(1))",
+    );
+    await user.click(screen.getByRole("button", { name: "Back" }));
+
+    await user.click(screen.getByRole("button", { name: /Merge anyway/ }));
+    await user.click(screen.getByRole("button", { name: "Merge anyway" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/approve", body: { state: "needs_human", gate: "merge" } }]));
+  });
+
   it("prefills confirmed findings with their file and line", async () => {
     server.runs = [
       runRow({
