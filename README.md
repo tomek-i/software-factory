@@ -88,6 +88,7 @@ flowchart TD
 Triage reads the issue, refine fills in what it leaves open, and a spec critic checks the spec against the code.
 A builder then works in its own worktree, and the quality gate runs your checks on its commit.
 Reviewers look at the change through several lenses at once, and a verifier checks the findings they raise.
+One lens checks the issue's acceptance criteria one by one; the met ones are ticked on the issue once the PR is merged.
 Capture shows a UI change in the PR, re-sync merges the default branch in, the PR's required checks must pass, and then the merge gate decides.
 After the merge, a learner proposes lessons.
 Each stage is described in [docs/pipeline.md](docs/pipeline.md).
@@ -297,7 +298,7 @@ See the comments in the generated `.factory/config.yaml`. The main sections:
 | `hard_rules` | Paths and triggers that always escalate to a human (see [Hard rules](docs/pipeline.md#hard-rules)) |
 | `merge` | `method`: `merge` (default), `squash` or `rebase`, as the repo allows; `checks_timeout_min`: how long to wait for required status checks before asking you (default 30) |
 | `loops` | Caps for build iterations (`max_build_iterations`), review rounds (`max_review_rounds`), spec critic rounds (`max_critic_rounds`) and merge-stage re-syncs that went back to the builder (`max_resyncs`, default 3) |
-| `reviews` | Which review lenses run always and which only for UI changes |
+| `reviews` | Which review lenses run always and which only for UI changes; the `acceptance` lens always runs |
 | `models` | Model and effort per agent role and review lens, with overrides when triage rates the risk HIGH. Left out, every agent uses the recommended model (`DEFAULT_MODELS` in `packages/shared/src/config.ts`, shown commented out in a new config). Whatever the file sets wins over every recommendation: `default` and `effort` reach every agent it does not name, and the recommendations only fill in the rest |
 | `concurrency` | `max_runs`: how many runs `factory run` drives at once, and how many the worker drives per project (default 2) |
 | `trust` | Whose issues and comments count as the spec (see [Trust](docs/trust.md)) |

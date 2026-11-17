@@ -33,6 +33,9 @@ export const github: GithubPort = {
   commentOnIssue: () => undefined,
   findComment: () => undefined,
   editComment: () => undefined,
+  commentBody: () => "",
+  ownIssueBody: () => undefined,
+  editIssueBody: () => undefined,
   findPullRequest: () => undefined,
   createDraftPullRequest: () => 7,
   // Numbered 8, 9, ...; open unless prStates says otherwise.

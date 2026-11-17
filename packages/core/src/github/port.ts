@@ -27,6 +27,15 @@ export interface GithubPort {
   findComment(issueNumber: number, marker: string): number | undefined;
   /** Replace a comment's body. */
   editComment(commentId: number, body: string): void;
+  /** A comment's current body. */
+  commentBody(commentId: number): string;
+  /**
+   * The issue's current body, only when the account the factory runs as wrote the issue; undefined
+   * otherwise. The factory edits only its own issues' text (ticking acceptance criteria).
+   */
+  ownIssueBody(issueNumber: number): string | undefined;
+  /** Replace an issue's body. */
+  editIssueBody(issueNumber: number, body: string): void;
   /** The open pull request whose head is this branch, if any. */
   findPullRequest(branch: string): number | undefined;
   /** Open pull requests whose head branch starts with `prefix`, e.g. `factory/lessons-`. */
@@ -125,6 +134,7 @@ export interface IssueWriterPort {
 }
 
 const PR_REVIEWS = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){nodes{body viewerDidAuthor}}}}}";
+const OWN_ISSUE_BODY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){body viewerDidAuthor}}}";
 
 const ADD_SUB_ISSUE = "mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}";
 
@@ -211,6 +221,32 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    },
+    commentBody(commentId) {
+      const out = gh(["api", `repos/${repo}/issues/comments/${commentId}`]);
+      let body: unknown;
+      try {
+        body = (JSON.parse(out) as { body?: unknown }).body;
+      } catch {
+        throw new GithubError(`gh api returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      if (typeof body !== "string") throw new GithubError(`gh api returned no body for comment ${commentId}`);
+      return body;
+    },
+    ownIssueBody(issueNumber) {
+      const [owner, name] = repo.split("/");
+      const out = gh(["api", "graphql", "-f", `query=${OWN_ISSUE_BODY}`, "-f", `o=${owner}`, "-f", `r=${name}`, "-F", `n=${issueNumber}`]);
+      let issue: { body?: unknown; viewerDidAuthor?: unknown } | undefined;
+      try {
+        issue = (JSON.parse(out) as { data?: { repository?: { issue?: typeof issue } } }).data?.repository?.issue;
+      } catch {
+        throw new GithubError(`gh api graphql returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
+      }
+      if (typeof issue?.body !== "string") throw new GithubError(`gh api graphql returned no body for issue #${issueNumber}`);
+      return issue.viewerDidAuthor === true ? issue.body : undefined;
+    },
+    editIssueBody(issueNumber, body) {
+      withBodyFile(body, (file) => gh(["issue", "edit", String(issueNumber), "-R", repo, "--body-file", file]));
     },
     findPullRequest(branch) {
       const out = gh(["pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number", "--limit", "1"]);

@@ -12,6 +12,7 @@ import { factoryComment, type GithubPort } from "../../github/port.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../../store/store.js";
 import { runCommand, type CommandRunner } from "../../util/exec.js";
 import { diffHardRuleHits } from "../hard-rules.js";
+import { acceptanceChecklist, readAcceptanceRecord } from "../acceptance.js";
 import { latestSpecRound, prBody, readValid, refined, runDirOf, specFile } from "../shared.js";
 import { RunMachine, TransitionError, type Evidence } from "../transitions.js";
 
@@ -195,18 +196,21 @@ export class StageContext {
     if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
   }
 
-  /** `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. */
+  /**
+   * `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. The acceptance
+   * lens always runs: it is how the run's acceptance criteria get checked one by one.
+   */
   reviewLenses(run: Run): ReviewLens[] {
     const { reviews } = this.deps.config;
     const path = join(this.runDir(run), "triage.md");
     const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
-    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : [])]);
+    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : []), "acceptance"]);
     return REVIEW_LENSES.filter((lens) => wanted.has(lens));
   }
 
   /**
-   * Rewrite the PR description from this round's files: build.md and the capture stage's screenshots,
-   * once it ran. The review notes are a review on the PR, not part of the description.
+   * Rewrite the PR description from this round's files: build.md, the acceptance checklist and the
+   * capture stage's screenshots, once it ran. The review notes are a review on the PR, not part of it.
    */
   updatePrDescription(run: Run): void {
     if (run.pr_number === null) return;
@@ -214,9 +218,11 @@ export class StageContext {
       const dir = this.runDir(run);
       const roundDir = join(dir, `round-${run.round}`);
       const build = parseVerdict("build", readFileSync(join(dir, "build.md"), "utf8"));
+      // The acceptance checklist, rebuilt every time; the review notes are a review on the PR.
+      const checklist = acceptanceChecklist(readAcceptanceRecord(roundDir));
       const screenshotsFile = join(roundDir, "capture", "screenshots.md");
       const screenshots = existsSync(screenshotsFile) ? readFileSync(screenshotsFile, "utf8") : undefined;
-      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, screenshots));
+      this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, checklist, screenshots));
     } catch (err) {
       // A convenience; the review and capture files hold the same and `factory show` lists them.
       this.info(run, `could not update the description of PR #${run.pr_number}: ${(err as Error).message}`);

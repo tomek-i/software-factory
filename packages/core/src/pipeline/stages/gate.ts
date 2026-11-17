@@ -17,7 +17,7 @@ export async function gate(ctx: StageContext, run: Run): Promise<StepResult> {
   // one be left over anyway (runs from before the round counter), it is for another commit and must
   // not be reused for whatever this gate passes.
   for (const lens of REVIEW_LENSES) rmSync(reviewPath(join(dir, `round-${round}`), lens), { force: true });
-  rmSync(join(dir, `round-${round}`, "verify.md"), { force: true });
+  for (const file of ["verify.md", "acceptance.md", "acceptance.json"]) rmSync(join(dir, `round-${round}`, file), { force: true });
   const result = await runQualityGate({
     runId: run.id,
     worktreePath: worktree.path,

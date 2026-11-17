@@ -220,9 +220,9 @@ describe("prBody", () => {
     expect(prBody("STATUS: READY\n\n## Summary\n- done\n", 3)).toBe("## What\n- done\n\nCloses #3\n");
     expect(prBody("STATUS: READY\n", 3)).toBe("Closes #3\n");
   });
-  it("puts the screenshots after the testing notes, and never any review notes", () => {
-    const body = prBody("STATUS: READY\n\n## Summary\n- done\n", 3, false, "## Screenshots\n- x\n");
-    expect(body).toBe("## What\n- done\n\n## Screenshots\n- x\n\nCloses #3\n");
+  it("puts the screenshots after the testing notes and the checklist before the closing line, never any review notes", () => {
+    const body = prBody("STATUS: READY\n\n## Summary\n- done\n", 3, false, "## Acceptance criteria\n- [x] one\n", "## Screenshots\n- x\n");
+    expect(body).toBe("## What\n- done\n\n## Screenshots\n- x\n\n## Acceptance criteria\n- [x] one\n\nCloses #3\n");
     expect(body).not.toContain("Review notes");
   });
 });

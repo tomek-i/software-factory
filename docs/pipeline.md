@@ -106,6 +106,21 @@ Related docs:
 - Minor ones and nits never hold the run up.
 - If your usage limit is hit mid-review, `factory run` later only runs the lenses that have not written a review yet.
 
+### Acceptance criteria
+
+- The `acceptance` lens runs in every review round, whatever `reviews.always` and `reviews.ui` say.
+- The engine, not the agent, reads the criteria.
+  - They are the `- [ ]` / `- [x]` lines (or `*` bullets) under an "Acceptance criteria" heading (`##` to `####`).
+  - It reads the issue body first, then the accepted refine spec (`spec-N/refine.md`).
+  - It numbers them `AC-1`, `AC-2`, ... and hands that exact list to the agent, framed as data for untrusted authors.
+- The agent (`review-acceptance.md` with `reviewer.md`) writes `round-N/acceptance.md`: `VERDICT: PASS | CHANGES` and a `## Criteria` JSON list.
+  - Each id is `MET` (evidence: a test name or `file:line`), `NOT_MET` (what is missing) or `CANNOT_CHECK` (it needs an app, a browser or a person).
+  - It can't add, reword or drop a criterion: unknown ids are ignored, and an id it leaves out counts as not checked.
+- The engine records the result in `round-N/acceptance.json` and writes `round-N/review-acceptance.md` for the rest of the review.
+  - Each `NOT_MET` becomes a major finding (`acceptance-AC-n`), so the verifier, the round cap and the stall check treat it like any other.
+  - `CANNOT_CHECK` and not-checked criteria never block; they are listed for you.
+- An issue without checkbox criteria skips the agent and passes with "no criteria".
+
 ## Verifier
 
 - When a lens asks for changes, a verifier agent checks every critical and major finding against the code.
@@ -129,6 +144,9 @@ Related docs:
 - Approving it moves the run on.
 - The reason has each lens's verdict.
   - For example `reviews: code CHANGES (1 blocking), security PASS, docs PASS; the verifier refuted all 1 blocking findings`.
+  - With acceptance criteria it adds `acceptance PASS (8/8 met, 1 for you to check)`.
+- The draft PR's description gets an **Acceptance criteria** checklist: each criterion with its status and evidence, and the count.
+  - It is rebuilt every round, never stacked.
 - The factory leaves the review notes on the draft PR as a review (a comment, not an approval), for you to judge:
   - the minor findings and nits per lens;
   - the refuted findings, with the verifier's reason;
@@ -138,6 +156,7 @@ Related docs:
 - One review per round, on the reviewed commit. A marker in its body keeps a resumed or restarted run from posting it twice.
 - Mentions are quoted and local paths removed. The PR description holds no review notes.
 - `factory show <run>` lists each review's summary and blocking findings, and the verifier's confirmed findings.
+- `factory show <run>` and the web Run details list each acceptance criterion with its status and evidence.
 
 ### Hard rules
 
@@ -301,6 +320,7 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
 - `approval.md` says `DECISION: PROCEED`, or `ESCALATE` with its reasons.
   - Reasons are product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, or low confidence.
 - Hard-rule hits need you at the merge gate too, whatever its mode.
+- When the merge gate waits for you, its reason lists the acceptance criteria for you to check (`CANNOT_CHECK` or not checked).
 
 ## Merge
 
@@ -321,6 +341,17 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
 - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
 - How this repo protects its own `main`: [docs/repo-settings.md](repo-settings.md).
 - The run's worktree and branches are removed once the run is done (see [Cleaning up finished runs](runs.md#cleaning-up-finished-runs)).
+
+### Ticking the acceptance criteria
+
+- Only once the PR is merged, the engine ticks the `MET` criteria of the last review round on GitHub: `[ ]` becomes `[x]`.
+  - That is after the factory merges it, or when it finds the PR merged on GitHub (the merge stage or `reconcile`).
+  - Nothing is ticked before the merge, or when the PR is closed without merging.
+- It changes only those checkboxes, on exactly the lines it read; no other text changes.
+- The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
+- The refine spec's criteria are ticked in the factory's refine comment.
+- `CANNOT_CHECK`, not-checked and `NOT_MET` criteria stay unticked.
+- A line that was edited since is left alone and noted; a GitHub failure is a warning and never reopens the run.
 
 ## Learn
 

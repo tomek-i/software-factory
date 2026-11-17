@@ -27,10 +27,10 @@ describe("colour scheme", () => {
 
   it("maps every verdict header value by meaning", () => {
     const by = (format: string) => Object.keys(VERDICT_FORMAT).filter((v) => VERDICT_FORMAT[v] === format).sort();
-    expect(by("green")).toEqual(["ACCEPT", "APPROVE", "NONE_CONFIRMED", "PASS", "PROCEED", "READY", "REFINED"]);
-    expect(by("red")).toEqual(["BLOCKED", "CHANGES", "CONFIRMED", "FAIL", "REJECT"]);
-    expect(by("yellow")).toEqual(["ESCALATE", "INCOMPLETE", "NEEDS_INFO", "REVISE"]);
-    expect(Object.keys(VERDICT_FORMAT)).toHaveLength(16);
+    expect(by("green")).toEqual(["ACCEPT", "APPROVE", "MET", "NONE_CONFIRMED", "PASS", "PROCEED", "READY", "REFINED"]);
+    expect(by("red")).toEqual(["BLOCKED", "CHANGES", "CONFIRMED", "FAIL", "NOT_MET", "REJECT"]);
+    expect(by("yellow")).toEqual(["CANNOT_CHECK", "ESCALATE", "INCOMPLETE", "NEEDS_INFO", "NOT_CHECKED", "REVISE"]);
+    expect(Object.keys(VERDICT_FORMAT)).toHaveLength(20);
   });
 
   it("styles text by what it is when colour is on", () => {

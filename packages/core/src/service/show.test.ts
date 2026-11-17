@@ -66,6 +66,23 @@ describe("runOverview", () => {
     ]);
   });
 
+  it("shows the acceptance lens per criterion, in place of its review file", () => {
+    const criteria = [
+      { id: "AC-1", source: "issue", text: "shows a run", status: "MET", evidence: "show.test.ts" },
+      { id: "AC-2", source: "spec", text: "looks right on a phone", status: "CANNOT_CHECK", evidence: "needs a browser" },
+    ];
+    const { store, project } = setup({
+      "round-1/checks.md": checks("PASS", "one"),
+      "round-1/acceptance.json": JSON.stringify({ criteria }),
+      "round-1/review-acceptance.md": "VERDICT: PASS\n\n## Summary\n- Acceptance criteria: 1/1 met\n\n## Findings\n```json\n[]\n```\n",
+    });
+
+    expect(runOverview(store, project, "#16").sections).toEqual([
+      { kind: "verdict", path: "round-1/checks.md", key: "GATE", value: "PASS", summary: ["one"], blocking: [], refuted: 0 },
+      { kind: "acceptance", path: "round-1/acceptance.json", count: "1/1 met, 1 for you to check", criteria },
+    ]);
+  });
+
   it("has no files or sections before the run folder exists", () => {
     const { store, project, run } = setup();
     expect(runOverview(store, project, run.id)).toMatchObject({ hasRunDir: false, files: [], sections: [] });

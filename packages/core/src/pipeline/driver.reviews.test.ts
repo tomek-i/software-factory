@@ -64,7 +64,8 @@ describe("PipelineDriver", () => {
       const run = driver.startRun(12);
       expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS; gate is set to human" });
       expect(fake.calls().some((c) => c.role === "verifier")).toBe(false);
-      expect(edits).toEqual([]);
+      expect(edits.length).toBeGreaterThan(0);
+      expect(edits.every((e) => !e.body.includes("Review notes"))).toBe(true);
       expect(prs[0]!.body).not.toContain("Review notes");
       const commit = /^COMMIT: (\w+)$/m.exec(readFileSync(join(runDirOf(root, run.id), "round-1", "checks.md"), "utf8"))![1]!;
       expect(reviews).toEqual([
