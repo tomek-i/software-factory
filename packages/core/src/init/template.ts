@@ -76,6 +76,7 @@ loops:
   max_build_iterations: 5
   max_review_rounds: 3
   max_critic_rounds: 2
+  max_resyncs: 3        # merge attempts that conflicted with the default branch or failed its checks
 
 reviews:
   always: [code, security, docs]

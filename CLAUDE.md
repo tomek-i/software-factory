@@ -27,7 +27,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [README: Development
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
 - `pipeline/cleanup.ts`: removes finished runs' worktrees and branches
-- `pipeline/fingerprint.ts`: detects stalls (the same gate failure or findings twice)
+- `pipeline/fingerprint.ts`: detects stalls (the same gate failure, findings or failed re-sync twice); `issueFingerprint` for carrying a triage approval over a restart
 - `agents/runner.ts`: spawns `claude` with `claudeArgs` and `agentEnv`
 - `agents/prompts.ts`: `PromptRole`, `rolePrompt`, `permissionProfile`, `issueBlock`, `renderTask`
 - `agents/turn.ts`: one agent turn plus parsing its output file; `agents/stream.ts`: stream-json summary

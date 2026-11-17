@@ -71,3 +71,18 @@ export function findingsFingerprint(findings: Finding[]): string {
     .sort();
   return hash(keys);
 }
+
+/**
+ * Fingerprint of a failed re-sync in the merge stage. The kind comes first, so a conflict and a
+ * gate failure never match each other: `conflict:` with the conflicting files in any order, or
+ * `gate:` with the quality gate's fingerprint after the merge.
+ */
+export function resyncFingerprint(failure: { conflicts: string[] } | { gate: string }): string {
+  if ("conflicts" in failure) return `conflict:${hash([...new Set(failure.conflicts.map((f) => f.replace(/\\/g, "/")))].sort())}`;
+  return `gate:${failure.gate}`;
+}
+
+/** Fingerprint of an issue's text as triage read it, so a human's triage approval is only reused for the same text. */
+export function issueFingerprint(issue: { title: string; body: string }): string {
+  return hash({ title: issue.title, body: issue.body });
+}

@@ -8,7 +8,7 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { api, type AcceptanceCriterion, type OverviewSection, type RunRow } from "../lib/api";
-import { ago, money } from "../lib/utils";
+import { ago, money, rounds } from "../lib/utils";
 
 /** Where a run's detail view lives: the Inbox and Runs screens link here. */
 export const runPath = (run: Pick<RunRow, "project" | "id">) => `/runs/${encodeURIComponent(run.project)}/${encodeURIComponent(run.id)}`;
@@ -147,9 +147,7 @@ export function RunDetail() {
               <StateBadge state={run.state} />
               <code className="font-mono">{run.id}</code>
               <span>{run.projectName}</span>
-              <span>
-                b{run.build} r{run.review}
-              </span>
+              <span>{rounds(run)}</span>
               <span>{money(run.cost)}</span>
               <span title={run.updatedAt}>{ago(run.updatedAt)}</span>
               {url && (

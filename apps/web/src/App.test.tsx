@@ -21,6 +21,7 @@ function runRow(patch: Partial<RunRow> = {}): RunRow {
     waitingGate: "triage",
     build: 1,
     review: 1,
+    resyncs: 0,
     cost: 0.42,
     held: false,
     updatedAt: new Date().toISOString(),
@@ -307,6 +308,17 @@ describe("run details", () => {
 
     await user.click(screen.getByRole("button", { name: "round-1/checks.md" }));
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
+  });
+
+  it("shows a run's re-syncs with the default branch next to its rounds, only once it has any", async () => {
+    server.runs = [runRow({ id: "run-1", title: "Synced", state: "build", waitingGate: null, review: 3, resyncs: 2 }), runRow({ id: "run-2", title: "Plain", state: "build", waitingGate: null })];
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("b1 r3, 2 re-syncs")).toBeTruthy();
+    expect(screen.getByText("b1 r1")).toBeTruthy();
+    await user.click(screen.getByRole("link", { name: /Synced/ }));
+    expect(await screen.findByText("b1 r3, 2 re-syncs")).toBeTruthy();
   });
 });
 
