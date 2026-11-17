@@ -30,7 +30,7 @@ export function refuseRunningOnItself(cwd: string, cliFile: string = CLI_FILE, r
       "A global `factory` installed with `pnpm add -g` from this checkout is a link to it, so it counts too.",
       "Install the published package, then run `factory` in this checkout again:",
       "  npm i -g @tomek-i/software-factory",
-      "See Dogfooding in the README.",
+      "See Dogfooding in CONTRIBUTING.md.",
     ].join("\n"),
   );
 }

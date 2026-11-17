@@ -1,7 +1,6 @@
 # Run artifacts
 
 Every run keeps its files in `.factory/runs/<run>/`.
-Back to the [README](../README.md); the stages that write them are in [Pipeline](pipeline.md).
 
 ## Files
 
@@ -31,3 +30,5 @@ Back to the [README](../README.md); the stages that write them are in [Pipeline]
 - When a run waits at a gate, `factory run` names the file to read.
   - For example `factory show <run> critic` at the `critic` gate.
 - The run folder is never removed when a run ends (see [Cleaning up finished runs](runs.md#cleaning-up-finished-runs)).
+
+[All docs](README.md)

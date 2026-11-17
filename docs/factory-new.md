@@ -1,7 +1,7 @@
 # Writing issues from an idea
 
 How `factory new` turns an idea into GitHub issues.
-Back to the [README](../README.md#writing-issues-from-an-idea) for the commands.
+The commands are in [Using the factory](usage.md#write-issues-from-an-idea).
 
 ## The issue writer
 
@@ -20,7 +20,7 @@ Back to the [README](../README.md#writing-issues-from-an-idea) for the commands.
 - **Labels**: each issue may have a `LABELS: ui, bug` line, picked from the repo's labels.
 - `factory new` reads the labels from GitHub with each draft, so a label you just added is offered.
 - The factory's own status labels (`github.label_prefix` and `<prefix>:*`) are never offered.
-- A label the repo lacks gets the draft its retry.
+- If the draft uses a label the repo doesn't have, the agent gets one retry to fix it.
 - If the labels can't be read, the draft has none, and a line says why.
 - **Checks**: the draft is checked strictly.
 - A malformed draft gets one retry, then it is kept for you to fix or discard.
@@ -66,3 +66,5 @@ With `auto` or `always`, nobody reads the draft before it becomes an issue:
 - Check GitHub before approving again, as that issue may exist already.
 - A draft with files that git tracks is refused.
 - `factory new` only writes ignored files, so such a draft came from a commit, possibly someone else's branch.
+
+[All docs](README.md)

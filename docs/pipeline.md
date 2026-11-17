@@ -1,13 +1,101 @@
 # Pipeline
 
-What `factory run` does, stage by stage.
-Back to the [README](../README.md#pipeline) for the diagram, the gates and the loops.
+What `factory run` does with an issue, stage by stage.
+Start with the overview; each stage then has its own section.
 
 Related docs:
+- [Configuration](configuration.md): the gate modes, loop caps and hard rules you can set.
 - [Agent permissions](agent-permissions.md): what each role may read and write.
 - [Run artifacts](run-artifacts.md): the files each stage leaves in the run folder.
 - [Runs](runs.md): starting, naming, cleaning up and escalating runs.
-- [Media hosting](media.md): where screenshots and videos go.
+- [Capture](capture.md): screenshots and videos of UI changes, and where they go.
+
+## Overview
+
+```mermaid
+flowchart TD
+    idea(["Idea"]) -->|"factory new"| writer["Issue writer"]
+    writer --> triage["Triage"]
+    queued(["Queued issue"]) -->|"factory run"| triage
+    triage -->|"INCOMPLETE"| refine["Refine"]
+    triage -->|"READY"| critic["Spec critic"]
+    refine --> critic
+    critic -->|"REVISE"| refine
+    critic -->|"ACCEPT"| build["Build"]
+    build --> gate["Quality gate"]
+    gate -->|"failed checks"| build
+    gate -->|"pass"| reviews["Parallel reviews"]
+    reviews -->|"changes asked"| verifier["Verifier"]
+    verifier -->|"confirmed findings"| build
+    verifier -->|"all refuted"| capture["Capture"]
+    reviews -->|"clear"| capture
+    capture --> pr["PR"]
+    pr --> resync["Re-sync"]
+    resync -->|"conflict or failed re-check"| build
+    resync --> checks["Required checks"]
+    checks --> mergegate["Merge gate"]
+    mergegate --> merge["Merge"]
+    merge --> learn["Learn"]
+    learn --> done(["Done: merged"])
+
+    triage -->|"NEEDS_INFO"| ask{{"Asks the author"}}
+    critic -->|"questions"| ask
+    ask -->|"author answers"| triage
+
+    writer & triage & critic & gate & reviews & pr & checks & mergegate -.-> you{{"Waits for you"}}
+    you -->|"factory reject"| rejected(["Rejected"])
+    you -->|"factory cancel"| cancelled(["Cancelled"])
+    triage -->|"REJECT"| rejected
+    critic -->|"REJECT"| rejected
+
+    classDef human fill:#fde68a,stroke:#b45309,color:#000
+    classDef final fill:#e5e7eb,stroke:#374151,color:#000
+    class ask,you human
+    class done,rejected,cancelled final
+```
+
+Yellow hexagons are where the run stops for a person.
+Dotted lines show where it can wait for you: a gate set to `human`, a hard rule, a loop cap or a stall.
+
+Words this page uses:
+
+- **Gate**: a point where the run can stop for you.
+- **Stops for you** (or escalates): the run waits in `needs_human` with its reasons, until you approve, reject, resume or cancel it.
+- **Round**: one pass through the build, the quality gate and the reviews.
+- **Lens**: one aspect a reviewer checks, such as code, security or docs.
+
+In words:
+
+1. **Triage** reads the issue. **Refine** fills in what it leaves open, and a **spec critic** checks the spec against the code.
+2. A **builder** works in its own worktree, and the **quality gate** runs your checks on its commit.
+3. **Reviewers** look at the change through several lenses at once (code, security, docs, and UI ones for UI changes).
+   A **verifier** checks the findings they raise.
+   The acceptance lens checks the issue's acceptance criteria one by one.
+4. **Capture** shows a UI change in the PR with screenshots and a video.
+5. **Re-sync** merges the default branch into the PR, the PR's required checks must pass, and then the **merge gate** decides.
+   Unresolved review threads and failed optional checks stop the merge too, unless `merge.open_feedback` says otherwise.
+6. After the merge, a **learner** proposes lessons, and the met acceptance criteria are ticked on the issue.
+
+The issue writer runs only for `factory new`, and refine only for an issue triage found INCOMPLETE.
+
+### Gates, loops and stalls
+
+- **Gates** are where a run can stop for you: `issue_writer`, `triage`, `critic`, `review`, `pr` and `merge`.
+  Each is set to `always`, `auto` or `human`; by default only `issue_writer` and `merge` always stop.
+  See [Configuration: gates](configuration.md#gates).
+- **Loops** send a run back to an earlier stage, up to a cap, then stop for you:
+  - critic REVISE goes back to refine;
+  - failed checks and confirmed review findings go back to the build;
+  - a merge conflict or failed re-check during re-sync goes back to the build;
+  - with `merge.open_feedback: fix`, open review threads and failed optional checks go back to the build too.
+  The caps are in [Configuration: loops](configuration.md#loops).
+- **Stalls**: a loop that fails the same way twice in a row stops for you early, so a stuck builder doesn't use up the cap.
+- **Hard rules** (protected paths, new dependencies, secret and environment changes and more) always stop for you, whatever the gate.
+  Only a per-run `--unsafe` lifts them, and it can never be set in config. See [Hard rules](#hard-rules).
+- **Questions**: triage and the spec critic can ask the issue's author.
+  The run waits in `needs_info` until the author answers.
+- **Evidence**: a state change needs proof.
+  For example, reviews only start when the commit that passed the quality gate is the branch's current HEAD.
 
 ## Triage
 
@@ -21,6 +109,8 @@ Related docs:
 - Run `factory sync` first so it sees an edited issue.
 
 ### Triage again after a restart
+
+Intake is the step before triage: it fetches the issue and creates the run.
 
 - A run sent back to intake or triage (for example `factory resume --to intake`) triages the issue again.
 - When the triage gate would wait for you again, your earlier approval at that gate carries over if all of these hold:
@@ -53,7 +143,7 @@ Related docs:
 - It writes `spec-N/critic.md` with `VERDICT: ACCEPT | REVISE | REJECT`, a `## Summary`, and `## Problems`, `## Questions` and `## Notes`.
 - **ACCEPT** passes the `critic` gate on to build.
   - The builder gets the refined spec and the critic's notes.
-  - The reviewers, the verifier, the approver and the hard-rule deletion check judge the change against them too.
+  - The reviewers, the verifier, the approver and the [hard rule](#hard-rules) on deleted files judge the change against them too.
 - **Untrusted author**: the run always waits for you at the `critic` gate before build, whatever the gate mode.
   - The spec reaches the builder marked as untrusted data.
 - **REVISE** goes back to refine with the critic's problems, up to `loops.max_critic_rounds` (default 2) critic rounds.
@@ -65,7 +155,7 @@ Related docs:
   - The author's answers change the issue itself.
   - Once they have answered, `factory run` triages it again.
   - The spec then starts a new round, with a fresh `loops.max_critic_rounds` budget.
-- **Gate modes**: like the approver, the critic only runs in `auto` mode (the default).
+- **Gate modes**: the critic agent runs only when `gates.critic` is `auto` (the default).
   - `gates.critic: always` goes straight to build without a critic turn.
   - A READY issue then goes from triage to build.
   - `human` waits for you without spending one.
@@ -105,9 +195,10 @@ Related docs:
 
 ## Reviews
 
-- On a pass, reviewer agents look at the commit the gate passed, all at the same time, each through one lens.
+- On a pass, several reviewer agents look at the commit the gate passed, all at the same time.
+  Each checks one lens: code, security, docs, ux or ui.
 - `reviews.always` (default code, security, docs) run every time.
-- `reviews.ui` (default ux, ui) also run when triage listed `ui` in SURFACES.
+- `reviews.ui` (default ux, ui) also run when triage listed `ui` in SURFACES, its list of the areas the change touches.
 - Each lens has its own model and effort (`models.reviews`).
 - They read the change from `round-N/change.diff` and the code around it.
 - Each writes `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit.
@@ -197,148 +288,50 @@ Related docs:
 
 ## Capture and PR
 
-- Capture runs for a user-visible change (triage listed `ui` in SURFACES) of an app with `app.start` configured.
-- Then the engine shows the change in the PR.
-- Otherwise capture passes straight on, with an info line saying why.
-- The `pr` gate (default `always`) then takes the draft PR out of draft.
-
-### The plan
-
-- A capture agent (no shell, writes only `round-N/capture.md`) reads the issue, the triage scope and `round-N/change.diff`.
-- It writes a plan:
-  - the pages to shoot (at most 10), each marked `new` (the change adds it) or `existing` (it changes);
-  - an optional walkthrough drawn from the acceptance criteria.
-
-### The walkthrough
-
-- It is a fixed list of declarative steps: `goto` a path, `click` a selector or text, `fill` a selector, `wait`, `screenshot`.
-- The engine validates and runs it.
-- Nothing an agent writes is ever run as code.
-- Every path must be on the app's own origin, and the browser never leaves it.
-- Requests to other origins are blocked.
-- A redirect to another origin is stopped before it is followed.
-- A page or step that still ends up elsewhere is not shot.
-- If the walkthrough leaves the app, it stops there and its video is discarded, as it may show a page outside the app.
-
-### Clean worktree only
-
-- Capture only starts the app on a clean worktree.
-- If the worktree has uncommitted changes (for example your own edits in a run you resumed), the stage says so.
-- It then goes on without screenshots, leaving the changes alone.
-
-### Starting the app
-
-- The engine starts `app.start` in the run's worktree on a free port (from the run's port block), passed in `app.port_env`.
-- The app gets a minimal environment, not yours:
-  - only what a shell, Node and package managers need (`PATH`, `SystemRoot`, `HOME`/`USERPROFILE`, `TEMP`, `APPDATA`, `LANG`, `NODE_ENV` and the like);
-  - the port;
-  - `BROWSER=none`;
-  - the variables named in `app.env`.
-- Tokens (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN`) are refused even there.
-- Its pages are published, so nothing they render should come from your environment.
-- The engine waits up to `app.ready_timeout_sec` for `app.url` to answer.
-- The factory does not install dependencies for the app.
-- Put the install step in `app.start` if it needs one (e.g. `npm ci && npm run dev`), since the before worktree is a fresh checkout.
-
-### Shooting
-
-- Playwright shoots every page at 1440 and 390 px wide.
-- It records console errors, page errors, failed requests and 4xx/5xx responses.
-- Then it records the walkthrough as `walkthrough.webm` (WebM, since MP4 would need ffmpeg).
-
-### Before shots
-
-- For `existing` pages it does the same in a temporary worktree of the freshly fetched `origin/<default branch>`.
-- That worktree is removed again afterwards.
-- `new` pages get no before shots, and the report says so.
-- Errors only the change's version has are reported as new.
-
-### Cleaning up
-
-- Each server's whole process tree is killed when it is done with.
-- That also happens on errors, timeouts, cancels and when the factory exits.
-- Anything the app writes into the run's worktree that git does not ignore is undone, so the branch stays clean.
-
-### Narrated walkthrough
-
-- The capture agent can give walkthrough steps a `say`: one spoken sentence, at most 300 characters, one line.
-- With at least one `say`, the narrate plugin (0.24.0 or newer) installed and `ffmpeg` on PATH, the engine records the walkthrough again with a voice.
-- The narrated recording is `walkthrough-narrated.mp4`.
-- The engine calls the plugin's own CLI (`bin/narrate.mjs render`) as a plain command, never as a plugin inside an agent.
-- Agents run without plugins or MCP servers.
-- `app.narrate` picks the plugin:
-  - `auto` (default) takes the newest version in `~/.claude/plugins/cache/*/narrate/`;
-  - `off` turns narration off;
-  - anything else is a path to `narrate.mjs`;
-    - for example narrate's own stable launcher, `~/.narrate/bin/narrate.mjs`, written by `narrate setup`.
-- The engine builds narrate's scene from the validated steps only, as URLs on the app's origin.
-- It renders the scene with `--untrusted`. Narrate then:
-  - refuses `eval`, `uploadFile` and other sites;
-  - types `${NAME}` in a fill value as written;
-  - stops without a video if the app sends the browser to another origin.
-- It narrates only after the silent walkthrough went through every step.
-- So a walkthrough that fails is not spoken (and, with a cloud voice, paid for) first.
-- The CLI gets the app's minimal environment plus `PLAYWRIGHT_BROWSERS_PATH`, `NARRATE_HOME`, `NARRATE_GEMINI_API_KEY` and `NARRATE_ELEVENLABS_API_KEY`.
-- Voice and keys otherwise come from narrate's own settings (`~/.narrate/settings.json`, set up with `/narrate-setup`).
-- The default voice is the OS voice.
-- A key in a custom `apiKeyEnv` variable is not passed.
-- It runs in `round-N/capture/narrate/`: the scene, narrate's own `narrate.log`, and its progress output in `cli-output.log`.
-- The engine reads the video from narrate's `--json` result, which also refuses a video without a voice.
-- It is stopped with its whole process tree after 10 minutes, on a cancel or when the factory exits.
+- Capture shows a UI change in the PR: screenshots before and after, and a walkthrough video, optionally narrated.
+- It runs when triage marked the change as visible in the UI (`ui` in its SURFACES list) and `app.start` is set.
+  Otherwise it passes straight on, with an info line saying why.
 - It never fails the run.
-- The PR links the narrated video instead of the silent one, and only that one is uploaded.
-- Without the plugin the silent video is used and nothing is said about it.
-- A narration that was tried and failed is noted in the PR and the report.
+- The `pr` gate (default `always`) then takes the draft PR out of draft.
+- How it works and where the media goes: [Capture](capture.md).
 
-### Where the media goes
+## Merge stage
 
-- Screenshots and videos are attached to the run's PR, or go to a draft release when that fails.
-- The details are in [Media hosting](media.md).
-- They live in the run folder (`round-N/capture/`) and on GitHub.
-- The PR description gets a `## Screenshots` section with a before/after table, the video and the new errors.
+The merge stage brings the PR up to date, waits for its checks, asks the merge gate and merges.
+In order:
 
-### Nothing here fails the run
+1. **Re-sync**: merge the latest default branch into the run's branch.
+2. Run the quality gate on that merge commit, if it brought anything in, and push.
+3. Wait for the PR's **required checks**.
+4. Look at **open review threads and failed optional checks**.
+5. The **merge gate** decides.
+6. Look at the required checks and open feedback once more, then **merge**.
 
-- Capture carries on when the app does not start, Playwright or its browser is missing, a walkthrough step fails, the agent's plan is unusable or the upload fails.
-- `round-N/capture-report.md` and the PR description say why (for example "Screenshots could not be taken: …") and the run goes on.
-- The PR gets only the first line of a problem.
-- The app's log and the full error stay in the report (`factory show <run> capture`).
-- Local paths in the errors the PR shows are shortened first:
-  - a path in the repository becomes relative to it;
-  - the home folder (or any `C:\Users\<name>`, `/home/<name>`, `/Users/<name>`) becomes `~`.
-- The report keeps the paths as they were.
-- Only a usage limit or a cancel stops the run here.
-- After a usage limit, the next `factory run` captures again.
+### Re-sync
 
-## Re-sync and merge gate
+Re-sync merges the latest `origin/<default branch>` into the run's branch, so the PR is tested against what it will land on.
 
-The merge stage runs in this order: re-sync, quality gate on the merge commit, push, required checks, open feedback, merge gate, required checks and open feedback again, merge.
-
-- The engine merges the latest `origin/<default branch>` into the branch.
 - A conflict is undone and goes back to the builder with the conflicting files (`round-N/resync/conflicts.md`).
 - If the merge brought anything in, the quality gate runs again on the merge commit (`round-N/resync/checks.md`).
-- A failure goes back to the builder with the report.
-- A conflict or a failed re-check is a re-sync round, counted in `resync_rounds`, not in the review rounds or build iterations.
+  A failure goes back to the builder with the report.
+- A conflict or a failed re-check counts as a re-sync round, apart from the review rounds and build iterations.
   - Up to `loops.max_resyncs` (default 3), then the run waits for you.
   - The same conflict (the same files) or the same re-check failure twice in a row stalls the run early.
-  - `factory status`, `factory show` and the web show the count once there is one (e.g. `b1 r2, 2 re-syncs`).
+  - `factory status`, `factory show` and the web show the count once there is one, e.g. `b1 r2, 2 re-syncs` (build iteration 1, review round 2).
   - `factory resume --reset-loops` resets it with the other counters.
-- Then the engine waits for the PR's required checks on that commit (see [Merge](#merge)), before anyone is asked.
-  - A failed check never reaches the merge gate: the run waits for you with the check's name and link.
-  - So does a check still running after `merge.checks_timeout_min`.
-  - When they pass, the gate's reasons (or its proceed decision) name them: `required checks passed on <sha>: ...`.
-- Then the `merge` gate decides.
-- The default is `human`: it always waits for you.
-- `factory approve` approves the commit that was waiting.
-- The approval holds while only re-syncs of the default branch land on top of it.
-  - A clean re-sync that passes the quality gate on the new commit merges without asking you again.
-- Any new commit from the builder needs a fresh approval.
-  - When a re-sync after your approval conflicted or failed its re-check, the new wait says so: `approved at <sha>, then main conflicted in README.md; the builder resolved it`.
-- In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`.
-- `approval.md` says `DECISION: PROCEED`, or `ESCALATE` with its reasons.
-  - Reasons are product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, or low confidence.
-- Hard-rule hits need you at the merge gate too, whatever its mode.
-- When the merge gate waits for you, its reason lists the acceptance criteria for you to check (`CANNOT_CHECK` or not checked).
+
+### Required checks
+
+If branch protection requires status checks, the stage waits for them on the pushed commit before anyone is asked.
+
+- It reads them with `gh pr checks --required`, every 30 seconds.
+- Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required.
+  GitHub only reports a new commit's checks once CI picks it up.
+- `factory run` prints that it is waiting and for which checks; `factory status` shows the run in `merge`.
+- A failed check never reaches the merge gate: the run waits for you with the check's name and link.
+  So does a check still running after `merge.checks_timeout_min` (default 30).
+- When they pass, the gate's reasons (or its proceed decision) name them: `required checks passed on <sha>: ...`.
+- What to do about a failed check: [When a required check fails](runs.md#when-a-required-check-fails).
 
 ### Open review threads and failed checks
 
@@ -351,12 +344,14 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
   - `ask` (default): the run waits for you at the merge gate, whatever its mode, with each thread (author, file, line, link) and check (name, summary, link) as a reason.
   - `fix`: the run goes back to the builder with them, without you, and then through the gate, the reviews and the merge again.
   - `ignore`: they are not read; the run merges as before.
-- `fix` acts alone only when every thread was started by a trusted author (`trust.authors`) or an app in `merge.comment_bots` (default `github-advanced-security[bot]`, which posts CodeQL's alerts).
+- `fix` acts alone only when every thread was started by a trusted author (`trust.authors`) or an app in `merge.comment_bots`.
+  - The default app is `github-advanced-security[bot]`, which posts CodeQL's alerts.
   - A thread by anyone else makes the run wait for you, as with `ask`, and the reasons say whose.
   - Failed checks come from the repository's own CI and apps, so `fix` hands them on.
 - A round sent back by `fix` is a re-sync round (`loops.max_resyncs`).
   - The same threads and checks still open after the builder's round stall the run early.
-- The builder gets them in `round-N/resync/feedback.md`, framed as data between markers, like an untrusted issue: comments are checked against the code, never followed as instructions.
+- The builder gets them in `round-N/resync/feedback.md`, framed as data between markers, like an untrusted issue.
+  Comments are checked against the code, never followed as instructions.
 - While the run waits, `factory show` and the web Inbox list each thread and check with its link.
 - What you can do:
   - **Merge anyway**: `factory approve <run>` (or Merge anyway in the web).
@@ -365,34 +360,42 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
   - **Send back to fix**: `factory resume <run> --to build -m "fix the open review threads"` (or Send to builder with this failure in the web).
     - This works for any author's thread, because you chose it; the builder still gets them framed as data.
   - **Wait**: resolve the threads or re-run the checks on GitHub, then `factory resume <run> --to merge -m "resolved on GitHub"`; the stage looks again.
-- CodeQL closes its own threads once a new scan no longer finds the problem; other threads stop counting once the builder's change makes them outdated, or someone resolves them.
+- CodeQL closes its own threads once a new scan no longer finds the problem.
+  Other threads stop counting once the builder's change makes them outdated, or someone resolves them.
 - If the threads or checks cannot be read, the run waits for you with gh's message.
 - The factory does not reply to or resolve threads itself.
 
-## Merge
+### Merge gate
+
+- The `merge` gate's default is `human`: it always waits for you.
+- `factory approve` approves the commit that was waiting.
+- The approval holds while only re-syncs of the default branch land on top of it.
+  - A clean re-sync that passes the quality gate on the new commit merges without asking you again.
+- Any new commit from the builder needs a fresh approval.
+  - When a re-sync after your approval conflicted or failed its re-check, the new wait says so: `approved at <sha>, then main conflicted in README.md; the builder resolved it`.
+- In `auto` mode an approver agent reads the run's reports and the final diff (`approval.diff`) and writes `approval.md`.
+- `approval.md` says `DECISION: PROCEED`, or `ESCALATE` with its reasons.
+  - Reasons are product decisions it had to assume, risky surfaces, a review outcome it doubts, scope, or low confidence.
+- Hard-rule hits need you at the merge gate too, whatever its mode.
+- When the merge gate waits for you, its reason lists the acceptance criteria for you to check (`CANNOT_CHECK` or not checked).
+
+### Merging
 
 - The engine merges the PR with `merge.method`:
   - `merge` (default) makes a merge commit;
   - `squash` titles the commit after the PR;
   - `rebase` rebases.
+- It reads the required checks again right before the merge, on the same commit.
+  So a check re-run, or a commit pushed while the gate was decided, is still caught.
 - It always merges with `--match-head-commit <sha>`, so GitHub only merges the commit that passed the gate.
-- If branch protection requires status checks, the stage waits for them before the merge gate (`gh pr checks --required`), looking every 30 seconds.
-- It reads them again right before the merge, on the same commit, so a check re-run or a commit pushed while the gate was decided is still caught.
-- A failed check, or one still running after `merge.checks_timeout_min` (default 30), stops for you with the check's name and link.
-- What to do about a failed check: [When a required check fails](runs.md#when-a-required-check-fails).
-- Right after it pushed a re-synced commit, it looks for up to a minute before deciding no checks are required.
-- That is because GitHub reports a new commit's checks only once CI picks it up.
-- `factory run` prints that it is waiting and for which checks.
-- `factory status` shows the run in `merge`.
-- A commit pushed to the PR while it waits is never merged: `--match-head-commit` makes GitHub refuse.
+  A commit pushed to the PR while it waits is never merged.
 - If GitHub refuses anyway (other branch protection rules), the run waits for you with GitHub's message.
-- How this repo protects its own `main`: [docs/repo-settings.md](repo-settings.md).
 - The run's worktree and branches are removed once the run is done (see [Cleaning up finished runs](runs.md#cleaning-up-finished-runs)).
 
 ### Ticking the acceptance criteria
 
 - Only once the PR is merged, the engine ticks the `MET` criteria of the last review round on GitHub: `[ ]` becomes `[x]`.
-  - That is after the factory merges it, or when it finds the PR merged on GitHub (the merge stage or `reconcileWithGithub`).
+  - That is after the factory merges it, or when it finds the PR merged on GitHub (the merge stage, or `factory sync` and `factory status` finding it merged).
   - Nothing is ticked before the merge, or when the PR is closed without merging.
 - It changes only those checkboxes, on exactly the lines it read; no other text changes.
 - The issue's own criteria are ticked in the issue body, only when the factory's account wrote the issue.
@@ -430,3 +433,5 @@ The merge stage runs in this order: re-sync, quality gate on the merge commit, p
 - Its lessons are then skipped, and the reason (`lessons skipped: …`) is in the run's events.
 - A run that ends any other way does not go through the learner.
   - That is a run rejected, cancelled, or merged by hand on GitHub and picked up by `factory status`/`sync`.
+
+[All docs](README.md)

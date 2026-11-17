@@ -170,7 +170,7 @@ export function RunActions({ run, warn = false }: { run: RunRow; warn?: boolean 
               <span className="block text-xs text-muted-foreground">
                 {run.capReached
                   ? `It stopped because the ${run.capReached}: without fresh counters it stops again at once.`
-                  : "Gives the build, review and spec loops a fresh budget."}
+                  : "Gives the build, review, spec and re-sync loops a fresh budget."}
               </span>
             </span>
           </label>
