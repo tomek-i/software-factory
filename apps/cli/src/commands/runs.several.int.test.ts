@@ -1,12 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Store } from "@factory/core";
-import { GIT_TEST_TIMEOUT, type FakeStep } from "../../../../packages/core/test/helpers.js";
+import type { FakeStep } from "../../../../packages/core/test/helpers.js";
 import { fakeGh, setup, TRIAGE } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { runRun, stopActiveRuns } from "./runs.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("factory run with several issues", () => {
   const SLOW_TRIAGE: FakeStep = { output: TRIAGE, sleepMs: 800 };

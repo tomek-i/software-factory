@@ -1,16 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { RunState } from "@factory/shared";
-import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "../../test/helpers.js";
+import { git, repoWithRemote } from "../../test/helpers.js";
 import { createWorktree } from "../git/worktrees.js";
 import { Store, type Run } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { CLEANUP_MARKER, CLEANUP_PENDING, cleanupFinishedRuns, cleanupRun, describeCleanup, mergedHeadOf } from "./cleanup.js";
 import { runDirOf } from "./driver.js";
-
-// Each test drives real git repos; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const BRANCH = "factory/12-add-the-feature";
 

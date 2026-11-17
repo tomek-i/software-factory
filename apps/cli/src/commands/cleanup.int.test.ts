@@ -3,12 +3,9 @@ import { join } from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { RunMachine, Store } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
-import { GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
+import { reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, setup, TRIAGE } from "../../test/runs-setup.js";
 import { runCleanup } from "./cleanup.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("factory cleanup", () => {
   it("lists the leftovers of finished runs with --dry-run, then removes them", async () => {

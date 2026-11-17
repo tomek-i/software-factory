@@ -1,14 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { captureConfig, CODE_PASS, fakeCapture, infos, steps, UI_TRIAGE } from "../../test/capture-setup.js";
 import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT } from "../../test/helpers.js";
+import { git } from "../../test/helpers.js";
 import { MEDIA_MARKER } from "../github/media.js";
 import { runDirOf } from "./driver.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver > capture", () => {
   it("uploads and links the narrated walkthrough instead of the silent one", async () => {

@@ -1,17 +1,14 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { buildStep, READY, setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import type { FakeStep } from "../../test/helpers.js";
 import { approve, CODE_PASS, mergeConfig } from "../../test/merge-setup.js";
 import type { ReviewThread } from "../github/port.js";
 import { waitingOn } from "../service/waiting.js";
 import { runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const thread = (id: string, author: string, body: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({
   id,

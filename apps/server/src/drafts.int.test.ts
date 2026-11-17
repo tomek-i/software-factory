@@ -8,9 +8,6 @@ import { EventHub, type HubEvent } from "./hub.js";
 import { projectKey, ProjectSet } from "./projects.js";
 import { createServer, type ServerOptions } from "./server.js";
 
-// Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
-
 /** The fake GitHub's labels, with a status label the issue writer must never be offered. */
 const REPO_LABELS = [
   { name: "ui", description: "Visible changes" },

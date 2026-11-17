@@ -1,14 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { LESSON, setup } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { loadConfig } from "../config/load.js";
 import type { GithubPort } from "../github/port.js";
 import { ServiceError } from "./errors.js";
 import { approveLessons, listLessons, proposedLessons, rejectLessons } from "./lessons.js";
 import type { ServiceContext } from "./runs.js";
-
-// Each test drives a real git repo; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 /** A repo with one run for #12 and the learner's proposals from it. */
 function context(...rules: string[]) {

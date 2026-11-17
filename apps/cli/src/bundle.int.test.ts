@@ -2,13 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it, vi } from "vitest";
-import { GIT_TEST_TIMEOUT } from "../../../packages/core/test/helpers.js";
+import { afterAll, describe, expect, it } from "vitest";
 import { bundle } from "../scripts/bundle.mjs";
-
-// Bundling the whole CLI and starting node on it takes seconds alone and many times that while a full
-// `pnpm test` keeps the machine busy.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const cliDir = resolve(fileURLToPath(import.meta.url), "..", "..");
 // Inside this package, so the bundle's external npm dependencies resolve from its node_modules.

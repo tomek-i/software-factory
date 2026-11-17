@@ -1,14 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { bumpy, buildStep, CODE_PASS, lastMove, learnConfig as config, learned, LESSON, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import { git, type FakeStep } from "../../test/helpers.js";
 import { approveTarget, runDirOf, waitingCommit } from "./driver.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver learn stage", () => {
   it("skips the learner for a run that went through in one clean round", async () => {

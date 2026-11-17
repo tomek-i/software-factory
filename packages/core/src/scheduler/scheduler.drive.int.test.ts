@@ -1,11 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { loadConfig } from "../config/load.js";
 import { Scheduler, type SchedulerEvent } from "./scheduler.js";
-
-// A real git repo and fake claude processes: slow on a busy machine, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const HUMAN_TRIAGE = "version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: human\n";
 

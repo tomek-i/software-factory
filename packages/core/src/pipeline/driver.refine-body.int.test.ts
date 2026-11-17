@@ -1,10 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import type { FakeStep } from "../../test/helpers.js";
 import { REFINE_END_MARKER, REFINE_MARKER } from "./shared.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const config = `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  critic: auto\nloops:\n  max_critic_rounds: 2\n`;
 const INCOMPLETE = TRIAGE().replace("READINESS: READY", "READINESS: INCOMPLETE");

@@ -1,10 +1,7 @@
 import type { CodeScanningAlert, GithubPort, RequiredCheck } from "@factory/core";
-import { describe, expect, it, vi } from "vitest";
-import { GIT_TEST_TIMEOUT } from "../../../../packages/core/test/helpers.js";
+import { describe, expect, it } from "vitest";
 import { github, setup } from "../../test/runs-setup.js";
 import { runChecksList, runDismiss } from "./checks.js";
-
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const alert = (number: number, line: number): CodeScanningAlert => ({
   number,

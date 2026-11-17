@@ -1,11 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildStep, READY, setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import type { FakeStep } from "../../test/helpers.js";
 import { approve, CODE_PASS, landOnMain, mergeConfig } from "../../test/merge-setup.js";
 import { waitingCommit } from "./driver.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const check = (name: string, bucket: "pending" | "pass" | "fail" | "skipping", link?: string) => ({ name, bucket, ...(link ? { link } : {}) });
 

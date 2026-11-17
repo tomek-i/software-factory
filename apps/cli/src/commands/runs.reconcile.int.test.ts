@@ -1,11 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { GithubPort } from "@factory/core";
-import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
+import { git, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, prStates, setup, TRIAGE } from "../../test/runs-setup.js";
 import { runStatus } from "./runs.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("runs whose PR was merged or closed on GitHub", () => {
   it("finishes a run whose PR was merged on GitHub when you look at the status", async () => {

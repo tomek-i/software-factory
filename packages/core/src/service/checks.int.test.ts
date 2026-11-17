@@ -1,13 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setup } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { loadConfig } from "../config/load.js";
 import type { CodeScanningAlert } from "../github/port.js";
 import { dismissAlert, runChecks } from "./checks.js";
 import { ServiceError } from "./errors.js";
 import { resumeRun, type ServiceContext } from "./runs.js";
-
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const alert = (number: number, tool = "CodeQL"): CodeScanningAlert => ({
   number,

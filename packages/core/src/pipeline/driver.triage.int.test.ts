@@ -1,9 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver", () => {
   it("closes agent rows left running by a worker that died", async () => {

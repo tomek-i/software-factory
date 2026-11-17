@@ -1,12 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setup } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { loadConfig } from "../config/load.js";
 import type { GithubPort } from "../github/port.js";
 import { cleanUpNow, reconcileAndSweep, reconcileRuns, reportLines, sweepFinishedRuns } from "./reconcile.js";
-
-// Each test sets up a real git repo; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 function context() {
   const s = setup([]);

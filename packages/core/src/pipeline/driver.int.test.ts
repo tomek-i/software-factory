@@ -1,13 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { parseVerdict, type Finding, type ParsedVerdict } from "@factory/shared";
 import { buildStep, FAKE_AWS_KEY, READY, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT, reviewsPass, type FakeStep } from "../../test/helpers.js";
+import { git, reviewsPass, type FakeStep } from "../../test/helpers.js";
 import { blockingFindings, diffLines, prBody, refutedFindings, reviewNotes, runDirOf, verifyProblems, type BlockingFinding, type LensReview } from "./driver.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver", () => {
   it("approves, builds, fails the gate, fixes it, passes and parks at review", async () => {

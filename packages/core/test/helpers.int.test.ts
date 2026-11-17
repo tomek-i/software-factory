@@ -1,9 +1,7 @@
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { git, GIT_TEST_TIMEOUT, repoWithRemote } from "./helpers.js";
-
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
+import { describe, expect, it } from "vitest";
+import { git, repoWithRemote } from "./helpers.js";
 
 // realpath: Windows can name one folder by its short 8.3 name (RUNNER~1) or its long one.
 const real = (p: string) => realpathSync.native(resolve(p)).replace(/\\/g, "/").toLowerCase();

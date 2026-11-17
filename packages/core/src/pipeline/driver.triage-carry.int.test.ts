@@ -1,13 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { approve } from "../../test/merge-setup.js";
 import type { Store } from "../store/store.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 // Only for triage: the builder that runs once the run is past triage finds no step and stops the run.
 const triage = (risk: "LOW" | "MEDIUM" | "HIGH") => ({ role: "triage", output: TRIAGE().replace("RISK: LOW", `RISK: ${risk}`) });

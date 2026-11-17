@@ -1,11 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { buildStep, READY, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import { git, type FakeStep } from "../../test/helpers.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver", () => {
   it("stops the running agent promptly when the run is cancelled from elsewhere", async () => {

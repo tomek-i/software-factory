@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setup } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import type { FakeStep } from "../../test/helpers.js";
 import { loadConfig } from "../config/load.js";
 import { DRAFTS_DIR } from "../drafts/writer.js";
 import { FactoryEvents } from "../events.js";
@@ -11,9 +11,6 @@ import { runCommand, type CommandRunner } from "../util/exec.js";
 import { approveDraft, discardPendingDraft, draftIssue, ensureDraftsIgnored, pendingDrafts, saveDraft } from "./drafts.js";
 import { ServiceError } from "./errors.js";
 import type { ServiceContext } from "./runs.js";
-
-// Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 /** The fake GitHub's labels, with a status label the issue writer must never be offered. */
 const REPO_LABELS = [

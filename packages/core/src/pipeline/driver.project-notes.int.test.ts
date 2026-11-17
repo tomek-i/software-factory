@@ -1,13 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildStep, reviewConfig, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT, reviewsPass, type FakeStep } from "../../test/helpers.js";
+import { git, reviewsPass, type FakeStep } from "../../test/helpers.js";
 import { rolePrompt } from "../agents/prompts.js";
 import { runDirOf } from "./driver.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const config = reviewConfig("reviews:\n  always: [code]\n  ui: []\n");
 const MAIN_NOTES = "# Notes from main\n\n- The engine lives in packages/core.\n";

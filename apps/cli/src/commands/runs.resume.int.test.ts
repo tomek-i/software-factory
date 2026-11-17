@@ -1,10 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { git, GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
+import { describe, expect, it } from "vitest";
+import { git, reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, github, setup, TRIAGE } from "../../test/runs-setup.js";
 import { runApprove, runCancel, runResume, runStatus } from "./runs.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("approve / reject / cancel", () => {
   it("cancels a run and removes its worktree and local branch; the pushed branch stays for the PR", async () => {

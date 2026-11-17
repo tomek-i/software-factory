@@ -3,15 +3,10 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
 import { chromiumInstalled } from "../capture/browser.js";
 import { AttachmentError, attachmentProblem, githubProfileDir, launchProblem, newAttachmentLink, NotSignedInError, uploadAttachments } from "./attachments.js";
-
-// The upload tests start a real Chromium, up to twice per test, and wait out fixed delays (about 8s in
-// the not-signed-in test): 3-8s each alone, 4-11s in the full suite, and more while another
-// `pnpm test` loads the machine. Slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("githubProfileDir", () => {
   it("is in the user's local app data on Windows and their config dir elsewhere, never in a repo", () => {

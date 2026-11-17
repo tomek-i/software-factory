@@ -1,16 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { captureConfig, fakeCapture, PLAN, steps } from "../../test/capture-setup.js";
 import { setup } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import { git, type FakeStep } from "../../test/helpers.js";
 import { MEDIA_MARKER } from "../github/media.js";
 import { runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver > capture: skips, cleanup, cancels and limits", () => {
   it("goes on without screenshots when the capture agent skips, or its plan is invalid twice", async () => {

@@ -1,12 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { runCommand, type CommandRunner } from "@factory/core";
-import { GIT_TEST_TIMEOUT, reviewsPass } from "../../../../packages/core/test/helpers.js";
+import { reviewsPass } from "../../../../packages/core/test/helpers.js";
 import { BUILD, ESC, fakeGh, github, setup, strip, TRIAGE } from "../../test/runs-setup.js";
 import { createStyle, styleFor, type Style } from "../style.js";
 import { runLogs, runRun, runStatus } from "./runs.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("factory run", () => {
   it("refreshes a synced issue that is not queued yet, queues it, then runs it", async () => {

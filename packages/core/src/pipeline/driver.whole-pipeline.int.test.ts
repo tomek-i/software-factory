@@ -1,15 +1,12 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { buildStep, CODE_PASS, LESSON, learned, setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, type FakeStep } from "../../test/helpers.js";
+import type { FakeStep } from "../../test/helpers.js";
 import type { CapturePort } from "../capture/capture.js";
 import { approveTarget, REFINE_MARKER, runDirOf, waitingCommit } from "./driver.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 /**
  * One run through every stage with the default gates (only the merge waits for a human): the

@@ -1,14 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, REVIEW_PASS, tempDir, type FakeStep } from "../../test/helpers.js";
+import { REVIEW_PASS, tempDir, type FakeStep } from "../../test/helpers.js";
 import { approveTarget, latestSpecRound, nextAfterTriage, quietMentions, REFINE_MARKER, runDirOf } from "./driver.js";
 import { RunMachine } from "./transitions.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const config = (gates: string, extra = "") =>
   `version: 1\nchecks:\n  - name: feature\n    run: node check.js\ntrust:\n  authors: [alice]\ngates:\n  triage: auto\n  ${gates}\n${extra}`;

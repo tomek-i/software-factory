@@ -1,9 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import { setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, GIT_TEST_TIMEOUT } from "../../test/helpers.js";
+import { git } from "../../test/helpers.js";
 import { createAgentRunner } from "../agents/runner.js";
 import type { GithubPort } from "../github/port.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -11,9 +11,6 @@ import { loadTrustedConfig, trustedReader } from "../config/trusted.js";
 import { PipelineDriver } from "../pipeline/driver.js";
 import { RunMachine } from "../pipeline/transitions.js";
 import { appendLessons, lessonsBranch, lessonsPrBody, publishLessons, type ApprovedLesson } from "./publish.js";
-
-// Each test drives real git repos and fake claude processes; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const lesson = (id: number, rule: string): ApprovedLesson => ({
   id,

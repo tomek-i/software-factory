@@ -1,14 +1,11 @@
 import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isUnprintable } from "@factory/shared";
-import { describe, expect, it, vi } from "vitest";
-import { GIT_TEST_TIMEOUT, tempDir } from "../../../../packages/core/test/helpers.js";
+import { describe, expect, it } from "vitest";
+import { tempDir } from "../../../../packages/core/test/helpers.js";
 import { setup } from "../../test/runs-setup.js";
 import { CliError } from "../context.js";
 import { runExport, runImport } from "./snapshot.js";
-
-// Each test copies real git repos; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const NOW = new Date("2026-11-16T10:00:00.000Z");
 

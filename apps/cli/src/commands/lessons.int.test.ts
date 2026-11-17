@@ -1,12 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { GithubPort } from "@factory/core";
-import { git, GIT_TEST_TIMEOUT } from "../../../../packages/core/test/helpers.js";
+import { git } from "../../../../packages/core/test/helpers.js";
 import { github, prEdits, readyPrs, setup } from "../../test/runs-setup.js";
 import { runLessons, runLessonsApprove, runLessonsReject } from "./lessons.js";
 import { runStatus } from "./runs.js";
-
-// Each test drives real git repos; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 const lesson = (rule: string) => ({ observation: "The gate failed\non lint.", evidence: "round-1/checks.md", rule });
 

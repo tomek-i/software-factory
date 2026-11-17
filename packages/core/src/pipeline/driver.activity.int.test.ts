@@ -1,9 +1,6 @@
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
-import { GIT_TEST_TIMEOUT } from "../../test/helpers.js";
-
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 describe("PipelineDriver agent activity", () => {
   it("shows the paths agents touch relative to their folder, not as local absolute paths", async () => {

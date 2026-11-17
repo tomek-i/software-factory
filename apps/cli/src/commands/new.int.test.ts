@@ -1,12 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { findRepoRoot, runCommand, Store, type CommandRunner, type IssueWriterPort } from "@factory/core";
-import { fakeClaude, GIT_TEST_TIMEOUT, repoWithRemote, type FakeStep } from "../../../../packages/core/test/helpers.js";
+import { fakeClaude, repoWithRemote, type FakeStep } from "../../../../packages/core/test/helpers.js";
 import { runNew } from "./new.js";
-
-// Each test drives a real git repo and a fake claude process; a busy machine makes them slow, not failing.
-vi.setConfig({ testTimeout: GIT_TEST_TIMEOUT });
 
 /** The fake GitHub's labels, with a status label the issue writer must never be offered. */
 const REPO_LABELS = [
