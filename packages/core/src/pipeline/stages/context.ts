@@ -12,6 +12,7 @@ import { factoryComment, type GithubPort } from "../../github/port.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../../store/store.js";
 import { runCommand, type CommandRunner } from "../../util/exec.js";
 import { diffHardRuleHits } from "../hard-rules.js";
+import { acceptanceChecklist, readAcceptanceRecord } from "../acceptance.js";
 import { reviewNotes } from "../reviews.js";
 import { latestSpecRound, prBody, readReview, readValid, refined, runDirOf, specFile } from "../shared.js";
 import { RunMachine, TransitionError, type Evidence } from "../transitions.js";
@@ -196,12 +197,15 @@ export class StageContext {
     if (pushed.code !== 0) throw new Error(`git push failed: ${pushed.stderr || pushed.stdout}`);
   }
 
-  /** `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. */
+  /**
+   * `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. The acceptance
+   * lens always runs: it is how the run's acceptance criteria get checked one by one.
+   */
   reviewLenses(run: Run): ReviewLens[] {
     const { reviews } = this.deps.config;
     const path = join(this.runDir(run), "triage.md");
     const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
-    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : [])]);
+    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : []), "acceptance"]);
     return REVIEW_LENSES.filter((lens) => wanted.has(lens));
   }
 
@@ -222,6 +226,8 @@ export class StageContext {
         });
         notes = reviewNotes(reviews, readValid("verify", join(roundDir, "verify.md"), () => []));
       }
+      // The acceptance checklist first, then what the reviews leave to judge; rebuilt every time.
+      notes = [acceptanceChecklist(readAcceptanceRecord(roundDir)), notes].filter(Boolean).join("\n\n") || undefined;
       const screenshotsFile = join(roundDir, "capture", "screenshots.md");
       const screenshots = existsSync(screenshotsFile) ? readFileSync(screenshotsFile, "utf8") : undefined;
       this.deps.github.updatePullRequest(run.pr_number, prBody(build.body, run.issue_number!, run.unsafe, notes, screenshots));

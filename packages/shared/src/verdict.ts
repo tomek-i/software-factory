@@ -112,6 +112,8 @@ export const verdictHeaderSchemas = {
   build: z.object({ STATUS: z.enum(["READY", "BLOCKED"]), COMMIT: sha, TITLE: z.string().optional() }),
   checks: z.object({ GATE: z.enum(["PASS", "FAIL"]), COMMIT: sha }),
   review: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
+  // The acceptance lens: CHANGES when it marks a criterion NOT_MET. Its `## Criteria` block answers per id.
+  acceptance: z.object({ VERDICT: z.enum(["PASS", "CHANGES"]) }),
   verify: z.object({ VERDICT: z.enum(["CONFIRMED", "NONE_CONFIRMED"]) }),
   approver: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
   // PLAN comes with a ## Plan json block (parseCapturePlan); SKIP when nothing visible can be shown.
@@ -230,6 +232,53 @@ function parseLessonLines(lines: string[]): { lessons: Lesson[]; problems: strin
   return { lessons: result.data, problems: [] };
 }
 
+export const CRITERION_STATUSES = ["MET", "NOT_MET", "CANNOT_CHECK"] as const;
+export type CriterionStatus = (typeof CRITERION_STATUSES)[number];
+
+/**
+ * The acceptance lens's answer for one engine-numbered criterion (`AC-1`, ...). MET needs evidence (a
+ * test name or `file:line`), NOT_MET what is missing; CANNOT_CHECK says why it needs a person or a browser.
+ */
+export const criterionAnswerSchema = z
+  .object({
+    id: z.string().min(1),
+    status: z.preprocess((s) => (typeof s === "string" ? s.trim().toUpperCase() : s), z.enum(CRITERION_STATUSES)),
+    evidence: z.string().optional(),
+  })
+  .refine((a) => a.status === "CANNOT_CHECK" || (a.evidence ?? "").trim() !== "", {
+    message: "MET needs evidence (a test name or file:line) and NOT_MET what is missing",
+    path: ["evidence"],
+  });
+export type CriterionAnswer = z.infer<typeof criterionAnswerSchema>;
+
+/** The acceptance lens's `## Criteria` section: exactly one ```json array, strict like the findings block. */
+function parseCriteriaLines(lines: string[]): { criteria: CriterionAnswer[]; problems: string[] } {
+  const section = sectionLines(lines, "criteria");
+  if (!section) return { criteria: [], problems: ["## Criteria is missing"] };
+  const blocks = [...section.join("\n").matchAll(/```json\s*\n([\s\S]*?)\n```/g)];
+  if (blocks.length !== 1) return { criteria: [], problems: ["## Criteria must contain exactly one ```json array block"] };
+  let data: unknown;
+  try {
+    data = JSON.parse(blocks[0]![1]!);
+  } catch (err) {
+    return { criteria: [], problems: [`criteria JSON is invalid: ${(err as Error).message}`] };
+  }
+  const result = z.array(criterionAnswerSchema).safeParse(data);
+  if (!result.success) {
+    return { criteria: [], problems: result.error.issues.map((i) => `criteria.${i.path.join(".")}: ${i.message}`) };
+  }
+  const ids = result.data.map((c) => c.id);
+  const duplicates = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
+  return { criteria: result.data, problems: duplicates.length ? [`duplicate criterion ids: ${duplicates.join(", ")}`] : [] };
+}
+
+/** The answers of an acceptance output body (ParsedVerdict.body). Throws VerdictParseError when malformed. */
+export function parseCriteria(body: string): CriterionAnswer[] {
+  const { criteria, problems } = parseCriteriaLines(body.replace(/\r\n/g, "\n").split("\n"));
+  if (problems.length) throw new VerdictParseError("invalid criteria", problems);
+  return criteria;
+}
+
 /** The lessons of a learner's output body (ParsedVerdict.body). Throws VerdictParseError when malformed. */
 export function parseLessons(body: string): Lesson[] {
   const { lessons, problems } = parseLessonLines(body.replace(/\r\n/g, "\n").split("\n"));
@@ -277,6 +326,14 @@ export function parseVerdict<K extends VerdictKind>(kind: K, text: string): Pars
   problems.push(...findingProblems);
   if (header.success && findingProblems.length === 0) {
     problems.push(...consistencyProblems(kind, header.data as Record<string, unknown>, findings));
+  }
+  if (kind === "acceptance") {
+    const { criteria, problems: criteriaProblems } = parseCriteriaLines(bodyLines);
+    problems.push(...criteriaProblems);
+    const notMet = criteria.some((c) => c.status === "NOT_MET");
+    const verdict = header.success ? (header.data as { VERDICT: string }).VERDICT : undefined;
+    if (criteriaProblems.length === 0 && verdict === "PASS" && notMet) problems.push("VERDICT: PASS contradicts a NOT_MET criterion");
+    if (criteriaProblems.length === 0 && verdict === "CHANGES" && !notMet) problems.push("VERDICT: CHANGES needs at least one NOT_MET criterion");
   }
   if (kind === "learn") {
     const { lessons, problems: lessonProblems } = parseLessonLines(bodyLines);

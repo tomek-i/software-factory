@@ -46,6 +46,7 @@ A repo overrides it with `.factory/prompts/<role>.md` on its default branch.
 | Spec critic | no | the issue, the refined spec and the repo, read-only | only its own file in `spec-N/`, so it cannot rewrite the spec it judges | `.factory/prompts/critic.md` |
 | Builder | yes | its worktree | edits and Bash, but denied `git push`, `gh pr`, `gh api` and edits to `.factory/` | `.factory/prompts/builder.md` |
 | Reviewers | no | `round-N/change.diff` and the code around it | only their own review file, so one lens cannot change another's verdict | `.factory/prompts/reviewer.md` plus `review-<lens>.md` |
+| Reviewer, acceptance lens | no | `round-N/change.diff`, the code and the engine's numbered acceptance criteria | only `acceptance.md` | `.factory/prompts/reviewer.md` plus `review-acceptance.md` |
 | Verifier | no | `round-N/change.diff` and the code | only `verify.md` | `.factory/prompts/verifier.md` |
 | Approver | no | the run's reports and `approval.diff` | only `approval.md` | `.factory/prompts/approver.md` |
 | Capture | no | the issue, the triage scope and `round-N/change.diff` | only `capture.md` | `.factory/prompts/capture.md` |

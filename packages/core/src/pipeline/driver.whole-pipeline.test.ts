@@ -65,9 +65,15 @@ describe("PipelineDriver: the whole pipeline", () => {
     discard: () => undefined,
   };
 
+  // The spec's one criterion, checked by the acceptance lens.
+  const acceptance: FakeStep = {
+    role: "reviewer-acceptance",
+    output: 'VERDICT: PASS\n\n## Summary\n- met\n\n## Criteria\n```json\n[{ "id": "AC-1", "status": "MET", "evidence": "check.js:3" }]\n```\n',
+  };
+
   it("takes an incomplete UI issue from triage through refine, critic, build, gate, review, capture, PR and merge to learn", async () => {
     // The first build fails the quality gate, so the run has something to learn from.
-    const steps = [{ output: triage }, refine, critic, buildStep("broken"), buildStep("fixed"), CODE_PASS, plan, { role: "learner", output: learned([LESSON]) }];
+    const steps = [{ output: triage }, refine, critic, buildStep("broken"), buildStep("fixed"), CODE_PASS, acceptance, plan, { role: "learner", output: learned([LESSON]) }];
     const { driver, store, project, root, fake, comments, edits, pr, merges } = setup(steps, { config, capture });
     const run = driver.startRun(12);
 
@@ -98,10 +104,13 @@ describe("PipelineDriver: the whole pipeline", () => {
       "merge>learn",
       "learn>done",
     ]);
-    expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "critic", "builder", "builder", "reviewer-code", "capture", "learner"]);
+    expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "critic", "builder", "builder", "reviewer-code", "reviewer-acceptance", "capture", "learner"]);
 
     // Refine posted the spec on the issue; the PR shows the screenshots; exactly the approved commit merged.
     expect(comments.filter((c) => c.body.startsWith(REFINE_MARKER))).toHaveLength(1);
+    // After the merge, the met criterion is ticked in the refine comment.
+    expect(comments.find((c) => c.body.startsWith(REFINE_MARKER))!.body).toContain("- [x] feature.txt says fixed");
+    expect(edits.at(-1)!.body).toContain("## Acceptance criteria\n1/1 met.");
     expect(edits.at(-1)!.body).toContain("## Screenshots");
     expect(pr.draft).toBe(false);
     expect(merges).toEqual([{ number: 7, head }]);

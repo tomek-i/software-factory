@@ -518,6 +518,36 @@ describe("run details", () => {
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
   });
 
+  it("lists each acceptance criterion with its status and evidence, wrapping long paths", async () => {
+    const evidence = "packages/core/src/pipeline/driver.acceptance.test.ts:123";
+    server.runs = [runRow({ state: "build", waitingGate: null })];
+    const detail = server.detail;
+    server.detail = (run) => ({
+      ...detail(run),
+      sections: [
+        {
+          kind: "acceptance",
+          path: "round-1/acceptance.json",
+          count: "1/1 met, 1 for you to check",
+          criteria: [
+            { id: "AC-1", source: "issue", text: "ticks the met criteria", status: "MET", evidence },
+            { id: "AC-2", source: "spec", text: "fits a phone screen", status: "CANNOT_CHECK", evidence: "needs a browser" },
+          ],
+        },
+      ],
+    });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("link", { name: /Add the feature/ }));
+
+    expect(await screen.findByText("Acceptance criteria: 1/1 met, 1 for you to check")).toBeTruthy();
+    const items = within(screen.getByRole("list", { name: "Acceptance criteria" })).getAllByRole("listitem");
+    expect(items.map((li) => li.textContent)).toEqual([`AC-1metticks the met criteria${evidence}`, "AC-2for you to checkfits a phone screenneeds a browser"]);
+    // A long path is one token: without break-words it would overflow the card at phone width.
+    for (const li of items) expect(li.className.split(/\s+/)).toContain("break-words");
+  });
+
   it("shows a run's re-syncs with the default branch next to its rounds, only once it has any", async () => {
     server.runs = [runRow({ id: "run-1", title: "Synced", state: "build", waitingGate: null, review: 3, resyncs: 2 }), runRow({ id: "run-2", title: "Plain", state: "build", waitingGate: null })];
     renderAt("/runs");

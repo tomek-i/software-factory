@@ -69,6 +69,10 @@ export function setup(
     capture?: CapturePort;
     /** More files on the default branch, e.g. a `CLAUDE.md`. */
     files?: Record<string, string>;
+    /** The issue's body (synced and on the fake GitHub); "Please add feature.txt." by default. */
+    issueBody?: string;
+    /** Whether the factory's account wrote the issue, so it may edit its body. */
+    ownIssue?: boolean;
   } = {},
 ) {
   const config = passCritic(
@@ -88,7 +92,7 @@ export function setup(
   store.upsertIssue(project.id, {
     number: 12,
     title: "Add the feature",
-    body: "Please add feature.txt.",
+    body: options.issueBody ?? "Please add feature.txt.",
     state: "open",
     author: options.author ?? "alice",
     labels: [],
@@ -99,6 +103,8 @@ export function setup(
 
   // Every comment the factory posted, with its current body; `id` is what findComment/editComment use.
   const comments: { issue: number; body: string; id: number; edits: number }[] = [];
+  // The issue's body on the fake GitHub, and every edit the factory made to it.
+  const issueBody = { text: options.issueBody ?? "Please add feature.txt.", own: options.ownIssue ?? false, edits: 0 };
   const prs: { head: string; base: string; title: string; body: string }[] = [];
   const readyPrs: { head: string; base: string; title: string; body: string }[] = [];
   const closedReady = new Set<number>();
@@ -135,6 +141,17 @@ export function setup(
       if (!comment) throw new Error(`no comment ${id}`);
       comment.body = body;
       comment.edits++;
+    },
+    commentBody: (id) => {
+      const comment = comments.find((c) => c.id === id);
+      if (!comment) throw new Error(`no comment ${id}`);
+      return comment.body;
+    },
+    ownIssueBody: () => (issueBody.own ? issueBody.text : undefined),
+    editIssueBody: (_number, body) => {
+      if (!issueBody.own) throw new Error("the factory edited an issue it did not write");
+      issueBody.text = body;
+      issueBody.edits++;
     },
     findPullRequest: (branch) => (prs.some((p) => p.head === branch) ? 7 : undefined),
     createDraftPullRequest: (pr) => {
@@ -196,7 +213,7 @@ export function setup(
     checksGraceMs: 200,
     capture: options.capture,
   });
-  return { root, remote, store, project, driver, fake, github, comments, prs, readyPrs, closedReady, edits, seen, pr, merges, dismissals };
+  return { root, remote, store, project, driver, fake, github, comments, issueBody, prs, readyPrs, closedReady, edits, seen, pr, merges, dismissals };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */

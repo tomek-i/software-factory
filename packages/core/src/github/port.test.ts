@@ -272,6 +272,38 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).editComment(12, "x")).toThrow(/gh api -X failed: boom/);
   });
 
+  it("reads a comment's body through the API", () => {
+    const { calls, run } = fakeGh(JSON.stringify({ id: 12, body: "- [ ] one\r\n" }));
+    expect(ghPort(project, run).commentBody(12)).toBe("- [ ] one\r\n");
+    expect(calls[0]).toEqual(["api", "repos/o/r/issues/comments/12"]);
+    expect(() => ghPort(project, fakeGh("nope").run).commentBody(12)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh("{}").run).commentBody(12)).toThrow(/no body/);
+  });
+
+  it("reads an issue's body only when the factory's account wrote the issue", () => {
+    const issue = (viewerDidAuthor: boolean) => JSON.stringify({ data: { repository: { issue: { body: "text", viewerDidAuthor } } } });
+    const own = fakeGh(issue(true));
+    expect(ghPort(project, own.run).ownIssueBody(3)).toBe("text");
+    expect(own.calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*viewerDidAuthor/), "-f", "o=o", "-f", "r=r", "-F", "n=3"]);
+    expect(ghPort(project, fakeGh(issue(false)).run).ownIssueBody(3)).toBeUndefined();
+    expect(() => ghPort(project, fakeGh("nope").run).ownIssueBody(3)).toThrow(/unexpected output/);
+    expect(() => ghPort(project, fakeGh(JSON.stringify({ data: { repository: { issue: null } } })).run).ownIssueBody(3)).toThrow(/no body/);
+  });
+
+  it("edits an issue's body from a file it removes afterwards", () => {
+    let sent = "";
+    const calls: string[][] = [];
+    const run: CommandRunner = (_cmd, args) => {
+      calls.push(args);
+      sent = readFileSync(args.at(-1)!, "utf8");
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    ghPort(project, run).editIssueBody(3, "- [x] one\n");
+    expect(calls[0]!.slice(0, -1)).toEqual(["issue", "edit", "3", "-R", "o/r", "--body-file"]);
+    expect(sent).toBe("- [x] one\n");
+    expect(existsSync(calls[0]!.at(-1)!)).toBe(false);
+  });
+
   it("marks factory comments", () => {
     expect(factoryComment("run-1-a", "triage-reject", "  nope  ")).toBe("<!-- factory:run-1-a:triage-reject -->\nnope\n");
   });

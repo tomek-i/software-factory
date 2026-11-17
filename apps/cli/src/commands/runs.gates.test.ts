@@ -76,7 +76,12 @@ describe("approve / reject / cancel", () => {
   it("approves an incomplete issue at triage into refine, and the critic gate into build", async () => {
     const incomplete = TRIAGE.replace("READINESS: READY", "READINESS: INCOMPLETE");
     const refined = { role: "refine", output: "STATUS: REFINED\n\n## Summary\n- spec\n\n## Acceptance criteria\n- [ ] feature.txt exists\n" };
-    const { run, queue, dir, deps, printed, fake } = setup([{ output: incomplete }, refined, BUILD, ...reviewsPass()], "triage: human\n  critic: human");
+    // The spec's criterion goes to the acceptance lens.
+    const met = {
+      role: "reviewer-acceptance",
+      output: 'VERDICT: PASS\n\n## Summary\n- met\n\n## Criteria\n```json\n[{ "id": "AC-1", "status": "MET", "evidence": "feature.txt" }]\n```\n',
+    };
+    const { run, queue, dir, deps, printed, fake } = setup([{ output: incomplete }, refined, BUILD, ...reviewsPass(), met], "triage: human\n  critic: human");
     queue();
     await run();
 
