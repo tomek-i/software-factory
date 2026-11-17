@@ -9,6 +9,19 @@ To turn it on, tell the factory how to start your app ([Configuration: app](conf
 - Otherwise it passes straight on, with an info line saying why.
 - Nothing here fails the run (see [below](#nothing-here-fails-the-run)).
 
+## Playwright and Chromium
+
+- Installing the factory installs the `playwright` package (an optional dependency), but never downloads browsers.
+- Download Chromium once with the factory's own Playwright, so the browser build matches it:
+  - npm install (PowerShell or bash): `cd "$(npm root -g)/@tomek-i/software-factory"`, then `npx playwright install chromium`;
+  - source checkout: `pnpm exec playwright install chromium`.
+- A bare `npx playwright` elsewhere fetches the latest Playwright, whose browser the factory can't use.
+- If the factory's own `playwright` package is missing, the copy the [narrate](https://github.com/tomek-i/narrate-plugin) plugin ships with is used, as far as `app.narrate` allows:
+  - with `auto` (the default), the newest plugin in the cache;
+  - with a path to `narrate.mjs`, only the plugin that path belongs to;
+  - with `off`, not at all.
+- Without a browser, capture is skipped with a note and the run carries on.
+
 ## The plan
 
 - A capture agent (no shell, writes only `round-N/capture.md`) reads the issue, the triage scope and `round-N/change.diff`.

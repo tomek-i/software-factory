@@ -13,12 +13,12 @@ By default nothing merges until you say so.
 ```mermaid
 flowchart LR
   I[Issue or idea] --> T[Triage]
-  T --> S[Spec check]
+  T --> S[Spec critic]
   S --> B[Build]
   B --> G[Your checks]
   G -- fail --> B
-  G --> R[Reviews]
-  R -- findings --> B
+  G --> R[Reviews and verifier]
+  R -- confirmed findings --> B
   R --> P[Pull request<br/>with screenshots]
   P --> M{Merge?}
   M -- you approve --> D[Merged]
@@ -27,21 +27,23 @@ flowchart LR
 
 1. **Triage** reads the issue and the code, and asks the author when something is unclear.
 2. **A critic** checks the issue's claims against the real code before anything is built.
-3. **The builder** works in its own git worktree, until your tests, lint and type checks pass.
+3. **The builder** works in its own git worktree until the checks you configured (tests, lint, types) pass.
+   If it can't get there in a few rounds, the run stops for you.
 4. **Reviewers** look at the change for code, security, docs and, for UI changes, UX and visual design.
    A verifier checks each finding before the builder has to act on it.
-5. **The pull request** explains the change and, for a UI change, shows before and after screenshots and a narrated video.
-6. **You merge**, or let an agent decide. Afterwards a learner proposes lessons, which you approve.
+5. **The pull request** explains the change and, for a UI change, shows before and after screenshots and a walkthrough video, narrated when the narrate plugin is installed.
+6. **You merge**, or [let an agent decide](docs/configuration.md#gates). Afterwards a learner proposes lessons, which you approve.
 
 Every stage, gate and loop: [Pipeline](docs/pipeline.md).
 
 ## Why it's different
 
-- **Your rules, from your default branch.** Checks, gates and prompts are read from `main`, so a branch can't change the rules it is judged by.
-- **Human gates where you want them.** Each gate is `always`, `auto` (an agent decides) or `human`. Risky changes, such as new dependencies or edits to protected paths, always stop for you.
-- **Untrusted text stays data.** Issues from strangers are handled as untrusted input, and agents never get your GitHub login.
+- **Your rules, from your default branch.** Checks, gates and prompts are read from your default branch on GitHub, so a branch can't change the rules it is judged by.
+- **Human gates where you want them.** Each gate is `always` (pass through), `auto` (an agent decides) or `human` (stop for you).
+  Risky changes, such as new dependencies or edits to CI workflows, stop for you whatever the gate says ([hard rules](docs/pipeline.md#hard-rules)), and so do issues from untrusted authors.
+- **Untrusted text stays data.** Issues from strangers are handled as untrusted input, and agents run with `gh` logged out and git credentials off ([Agent permissions](docs/agent-permissions.md)).
 - **It shows its work.** Every run keeps its specs, reports, reviews and decisions in `.factory/runs/`.
-- **Runs on your subscription.** It drives headless Claude Code, not API billing.
+- **Runs on your subscription.** It drives headless Claude Code and removes `ANTHROPIC_API_KEY` from the agents, so there is no API billing.
 - **Terminal or browser.** Use the `factory` command, or `factory serve` for a local web app over all your repos.
 
 ## Quick start
@@ -51,11 +53,12 @@ npm i -g @tomek-i/software-factory
 
 cd your-repo
 factory init --sync    # writes .factory/config.yaml and pulls in the open issues
+git add .factory/config.yaml && git commit -m "chore: add factory config" && git push
 factory issues         # see what's there
 factory run 42         # take issue #42 all the way to a pull request
 ```
 
-Commit `.factory/config.yaml` to your default branch: runs read it from there.
+Runs read the config from your default branch on GitHub, so push it before the first run.
 
 Rather click than type? `factory serve` opens the web app, where you queue issues, watch runs and approve them.
 
@@ -72,7 +75,7 @@ Everything else: [Using the factory](docs/usage.md).
   - Source checkout: `pnpm exec playwright install chromium`.
 
   Without it, runs carry on without screenshots.
-  More, including narrated videos: [Capture](docs/capture.md).
+  More, including narrated videos: [Capture](docs/capture.md#playwright-and-chromium).
 
 ## Docs
 

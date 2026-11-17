@@ -84,6 +84,7 @@ Among them: protected paths, new dependencies, lockfile changes, secret and envi
   They add to the factory's own protected paths; they can never remove one.
 - `triggers` can't switch a rule off either: every trigger always applies.
 - The full list of rules: [Hard rules](pipeline.md#hard-rules).
+
 Only a per-run `factory run --unsafe` lifts them; it can never be set in this file.
 
 ## merge
