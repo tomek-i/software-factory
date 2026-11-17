@@ -66,6 +66,7 @@ Back to the [README](../README.md#moving-between-machines) for the commands.
 - Importing it queues issues and claims issues as opened by the factory, which [trusted authors](trust.md#trusted-authors) rely on once GitHub confirms them.
 - Keep it outside the repo, in your home or a cloud-sync folder.
 - `factory export` warns when the file is inside the working tree.
+- `factory export` makes the file readable by you only (mode 600, where the system has it), also when it overwrites one.
 - Never commit it to a shared repo.
 - Only import a file you exported yourself, never one someone gave you.
 - `factory import` reads only the file you name.

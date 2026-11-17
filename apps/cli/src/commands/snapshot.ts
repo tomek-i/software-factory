@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { exportSnapshot, importChangeCount, importSnapshot, ServiceError, type CommandRunner, type ImportReport } from "@factory/core";
@@ -40,6 +40,8 @@ export function runExport(cwd: string, file: string | undefined, deps: SnapshotD
       }
       try {
         writeFileSync(target, json, { mode: 0o600 });
+        // `mode` only applies to a file this creates: one overwritten keeps its old, maybe world-readable, permissions.
+        chmodSync(target, 0o600);
       } catch (err) {
         throw new CliError(`Could not write ${file}: ${(err as Error).message}`);
       }

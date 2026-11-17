@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isUnprintable } from "@factory/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -52,6 +52,16 @@ describe("factory export", () => {
     expect(out).toBe(`Exported 1 finished run, 2 issues and 1 lesson to ${file}.\nOn the other machine: \`factory import <file>\`, then \`factory sync\`.`);
     expect(warnings.filter((w) => w.startsWith("warning:"))).toEqual([]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toHaveProperty("header.github_repo", "o/r");
+  });
+
+  // Windows has no owner-only mode bits for chmod to set.
+  it.skipIf(process.platform === "win32")("leaves the file readable by its owner only, also when it overwrites a world-readable one", () => {
+    const a = laptop();
+    const file = join(tempDir("factory-snapshot-"), "laptop.json");
+    writeFileSync(file, "old");
+    chmodSync(file, 0o644);
+    exportTo(a.dir, file);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("warns when the file is inside the repository's working tree", () => {
