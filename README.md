@@ -182,8 +182,23 @@ factory init
 - adds the repo to your project list (see below).
 - creates GitHub status labels only if you enabled `github.status_labels` (off by default; see [Status labels](docs/trust.md#status-labels)).
 
+Options:
+
+- `--name <name>` sets `project.name` instead of the detected name, in a new config or the existing one.
+  It is trimmed; a blank one is refused.
+- `--labels` sets `github.status_labels: true` and creates the labels.
+- `--sync` pulls issues from GitHub afterwards, as `factory sync` does.
+  A failed sync is a warning: the repo is still set up, and `factory sync` tries again.
+  Without a GitHub `origin` remote it is skipped with a warning.
+- `--dry-run` lists what would be written or created and changes nothing.
+  It still reads your GitHub login, as a real run does, to fill in the trusted authors of a new config.
+
+`--name` and `--labels` change only that value in an existing config; comments and formatting stay.
+If the setting isn't in the file, init stops before writing anything and asks you to add it by hand.
+
 It is safe to re-run.
-An existing config is never overwritten; `factory config reset` brings settings back to the defaults (see [Configuration](#configuration)).
+An existing config is never replaced: only `--name` and `--labels` change it, one value each.
+`factory config reset` brings settings back to the defaults (see [Configuration](#configuration)).
 
 The project list holds every repo you ran `factory init` in, so `factory work` and `factory serve` can find them.
 

@@ -114,7 +114,7 @@ trust:
 
 # Issues are synced from GitHub into the local database and you choose which ones to queue.
 # Labels are optional and only mirror run status onto the issue; they never feed work in.
-# After enabling status_labels, run \`factory init\` again to create them.
+# \`factory init --labels\` turns status_labels on and creates the labels.
 github:
   status_labels: false
   label_prefix: "factory"
