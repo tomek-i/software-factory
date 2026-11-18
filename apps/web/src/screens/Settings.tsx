@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RotateCcw, Save, Trash2, TriangleAlert } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Input, Select, Textarea } from "../components/ui/input";
-import { api, ApiError, type ProjectSettings, type SavedSettings, type SettingChange, type SettingView } from "../lib/api";
+import { api, ApiError, type ProjectSettings, type SavedSettings, type SettingChange, type SettingKind, type SettingView } from "../lib/api";
 import { useProject } from "../lib/project";
 import { cn } from "../lib/utils";
 
@@ -13,25 +13,54 @@ type Edit = { value: unknown } | { reset: true };
 type Check = { name: string; run: string; timeout_sec?: number; retries?: number };
 type ModelEntry = { model?: string; effort?: string };
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+// Claude Code's --effort levels (EFFORT_LEVELS in the shared package, which the page doesn't bundle).
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
-/** A list as typed may end in an empty line; it is not an entry. */
-const cleaned = (value: unknown) => (Array.isArray(value) && value.every((v) => typeof v === "string") ? value.filter((v) => v !== "") : value);
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const words = (key: string) => key.replaceAll("_", " ");
+
+/** Whether a value from the file has the shape the setting's input edits; an invalid file may hold anything. */
+function fits(kind: SettingKind, value: unknown): boolean {
+  switch (kind.type) {
+    case "boolean":
+      return typeof value === "boolean";
+    case "integer":
+    case "number":
+      return typeof value === "number";
+    case "enum":
+      return typeof value === "string" && kind.options.includes(value);
+    case "string":
+      return typeof value === "string";
+    case "list":
+      return Array.isArray(value) && value.every((v) => typeof v === "string");
+    case "checks":
+      return Array.isArray(value) && value.every(isObject);
+    case "models":
+      return isObject(value) && Object.values(value).every((v) => typeof v === "string" || isObject(v));
+  }
+}
 
 /** A value as a short line of text, for hints and the list of changes. */
 function show(value: unknown): string {
   if (value === undefined || value === null || value === "") return "not set";
   if (Array.isArray(value)) {
     if (value.length === 0) return "none";
-    return value.map((v) => (typeof v === "object" && v !== null && "name" in v ? String((v as Check).name) : String(v))).join(", ");
+    return value.map((v) => (isObject(v) && "name" in v ? `${String(v.name)} (${String(v.run ?? "")})` : String(v))).join(", ");
   }
   if (typeof value === "boolean") return value ? "on" : "off";
-  if (typeof value === "object") {
-    const entries = Object.entries(value as Record<string, ModelEntry | string>);
+  if (isObject(value)) {
+    const entries = Object.entries(value);
     if (entries.length === 0) return "none";
-    return entries.map(([k, v]) => `${k}: ${typeof v === "string" ? v : [v.model, v.effort].filter(Boolean).join(" ")}`).join(", ");
+    return entries.map(([k, v]) => `${k}: ${isObject(v) ? [v.model, v.effort].filter(Boolean).join(" ") : String(v)}`).join(", ");
   }
   return String(value);
+}
+
+/** Two values that mean the same: option lists in any order. */
+function equivalent(kind: SettingKind, a: unknown, b: unknown): boolean {
+  if (kind.type === "list" && kind.options && Array.isArray(a) && Array.isArray(b)) return same([...a].sort(), [...b].sort());
+  return same(a, b);
 }
 
 /**
@@ -44,7 +73,9 @@ export function Settings() {
   const usable = projects.data?.filter((p) => p.status === "ok") ?? [];
   const [picked, setPicked] = useState("");
   const target = picked || (usable.some((p) => p.key === project) ? project! : (usable[0]?.key ?? ""));
-  const settings = useQuery({ queryKey: ["settings", target], queryFn: () => api.settings(target), enabled: !!target });
+  // Reading fetches the default branch, and a refetch would replace the form being edited: only on
+  // opening, after a save, or when asked (the event stream leaves these alone too).
+  const settings = useQuery({ queryKey: ["settings", target], queryFn: () => api.settings(target), enabled: !!target, staleTime: Infinity, refetchOnWindowFocus: false });
   const [saved, setSaved] = useState<SavedSettings & { project: string }>();
 
   return (
@@ -90,35 +121,55 @@ function Editor({ project, data, onSaved, onEdit }: { project: string; data: Pro
   const queryClient = useQueryClient();
   const [edits, setEdits] = useState<Record<string, Edit>>({});
   const [confirming, setConfirming] = useState(false);
+  const confirmRef = useRef<HTMLDivElement>(null);
+  const reviewRef = useRef<HTMLButtonElement>(null);
+  const wasConfirming = useRef(false);
   const byPath = new Map(data.settings.map((s) => [s.path, s]));
 
-  const change = (setting: SettingView, edit: Edit | undefined) => {
-    onEdit();
-    setConfirming(false);
-    setEdits((current) => {
-      const next = { ...current };
-      // Back to what the file has: no change at all.
-      const unchanged = !edit || ("reset" in edit ? setting.value === undefined : same(edit.value, setting.value));
-      if (unchanged) delete next[setting.path];
-      else next[setting.path] = edit;
-      return next;
-    });
-  };
-  const changes: SettingChange[] = Object.entries(edits).map(([path, edit]) => ("reset" in edit ? { path, reset: true } : { path, value: cleaned(edit.value) }));
+  // The bar swaps its buttons: keep keyboard focus with it, so the confirmation is read out.
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus();
+    else if (wasConfirming.current) reviewRef.current?.focus();
+    wasConfirming.current = confirming;
+  }, [confirming]);
+
   const save = useMutation({
-    mutationFn: () => api.saveSettings(project, data.head, changes),
+    mutationFn: (changes: SettingChange[]) => api.saveSettings(project, data.head, changes),
     onSuccess: (result) => {
       onSaved(result);
       return queryClient.invalidateQueries({ queryKey: ["settings", project] });
     },
   });
+  const reload = () => void queryClient.invalidateQueries({ queryKey: ["settings", project] });
+
+  const change = (setting: SettingView, edit: Edit | undefined) => {
+    onEdit();
+    save.reset();
+    setConfirming(false);
+    setEdits((current) => {
+      const next = { ...current };
+      // Back to what the file has, or the default the file already leaves it at: no change at all.
+      const unchanged =
+        !edit ||
+        ("reset" in edit
+          ? setting.value === undefined
+          : equivalent(setting.kind, edit.value, setting.value) || (setting.value === undefined && equivalent(setting.kind, edit.value, setting.default)));
+      if (unchanged) delete next[setting.path];
+      else next[setting.path] = edit;
+      return next;
+    });
+  };
+  const changes: SettingChange[] = Object.entries(edits).map(([path, edit]) => ("reset" in edit ? { path, reset: true } : { path, value: edit.value }));
   const stale = save.error instanceof ApiError && save.error.status === 409;
 
   return (
     <div className="space-y-6 pb-24">
       {data.problems.length > 0 && (
         <div className="space-y-1 text-sm text-destructive" role="alert">
-          <p>The config on {data.branch} is not valid, so runs can't start; below are the defaults. Fix the file, or save settings here to write a valid one.</p>
+          <p>
+            The config on {data.branch} is not valid, so runs can't start. Below are the values the file has. Saving works once the invalid ones are changed here;
+            a file that isn't YAML, or is missing, has to be fixed by hand.
+          </p>
           <ul className="list-disc pl-5">
             {data.problems.map((p) => (
               <li key={p} className="break-words">
@@ -151,11 +202,11 @@ function Editor({ project, data, onSaved, onEdit }: { project: string; data: Pro
       {changes.length > 0 && (
         <div className="sticky bottom-0 -mx-4 border-t bg-background px-4 py-3 shadow-sm">
           {confirming ? (
-            <div className="space-y-3" role="group" aria-label="Confirm the changes">
+            <div ref={confirmRef} tabIndex={-1} className="space-y-3 outline-none" role="group" aria-label="Confirm the changes">
               <p className="text-sm font-medium">
                 Commit and push {changes.length === 1 ? "this change" : `these ${changes.length} changes`} to {data.branch}?
               </p>
-              <ul className="space-y-1 text-sm">
+              <ul className="max-h-[50vh] space-y-1 overflow-y-auto text-sm">
                 {changes.map((c) => {
                   const setting = byPath.get(c.path)!;
                   const after = "reset" in c ? `the default (${show(setting.default)})` : show(c.value);
@@ -179,11 +230,11 @@ function Editor({ project, data, onSaved, onEdit }: { project: string; data: Pro
               )}
               <div className="flex flex-wrap gap-2">
                 {stale ? (
-                  <Button onClick={() => void queryClient.invalidateQueries({ queryKey: ["settings", project] })}>
+                  <Button onClick={reload}>
                     <RotateCcw aria-hidden /> Reload the settings
                   </Button>
                 ) : (
-                  <Button disabled={save.isPending} onClick={() => save.mutate()}>
+                  <Button disabled={save.isPending} onClick={() => save.mutate(changes)}>
                     <Save aria-hidden /> {save.isPending ? "Saving..." : `Save to ${data.branch}`}
                   </Button>
                 )}
@@ -196,10 +247,16 @@ function Editor({ project, data, onSaved, onEdit }: { project: string; data: Pro
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm">{changes.length === 1 ? "1 change" : `${changes.length} changes`}</span>
               <span className="ml-auto flex gap-2">
-                <Button variant="ghost" onClick={() => setEdits({})}>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    save.reset();
+                    setEdits({});
+                  }}
+                >
                   Discard
                 </Button>
-                <Button onClick={() => setConfirming(true)}>
+                <Button ref={reviewRef} onClick={() => setConfirming(true)}>
                   <Save aria-hidden /> Review and save
                 </Button>
               </span>
@@ -216,22 +273,54 @@ function Field({ setting, edit, builtinPaths, onChange }: { setting: SettingView
   const id = `setting-${setting.path.replace(/\./g, "-")}`;
   // What the input shows: the edit, else what the file sets; nothing means the default applies.
   const current = edit ? ("reset" in edit ? undefined : edit.value) : setting.value;
-  const isSet = current !== undefined;
   const set = (value: unknown) => onChange(value === undefined ? (setting.value === undefined ? undefined : { reset: true }) : { value });
+  // Lists, checks and models are groups of inputs: their heading labels the group rather than one input.
+  const grouped = setting.kind.type === "checks" || setting.kind.type === "models" || (setting.kind.type === "list" && !!setting.kind.options);
 
   let state = "Default";
   if (edit) state = "Changed";
   else if (setting.value !== undefined) state = "Set in the file";
 
+  let input: ReactNode;
+  if (setting.readOnly) {
+    input = (
+      <p className="text-sm">
+        <span className="break-words">{show(setting.effective)}</span>
+        <span className="block text-xs text-muted-foreground">{setting.readOnly}</span>
+      </p>
+    );
+  } else if (current !== undefined && !fits(setting.kind, current)) {
+    // Only an invalid file holds this: show it as it is rather than an input that would misread it.
+    input = (
+      <p className="text-sm text-destructive">
+        The file has <code className="break-all font-mono">{JSON.stringify(current)}</code>, which isn't valid here. Use the default, or fix the file by hand.
+      </p>
+    );
+  } else {
+    input = <SettingInput id={id} labelId={`${id}-label`} setting={setting} value={current} builtinPaths={builtinPaths} set={set} />;
+  }
+
   return (
     <div className="space-y-1.5 py-3">
       <div className="flex flex-wrap items-baseline gap-x-2">
-        <label htmlFor={id} className="text-sm font-medium">
-          {setting.label}
-        </label>
+        {grouped || setting.readOnly ? (
+          <span id={`${id}-label`} className="text-sm font-medium">
+            {setting.label}
+          </span>
+        ) : (
+          <label id={`${id}-label`} htmlFor={id} className="text-sm font-medium">
+            {setting.label}
+          </label>
+        )}
         <span className={cn("text-xs", edit ? "font-medium text-foreground" : "text-muted-foreground")}>{state}</span>
-        {isSet && !setting.readOnly && (
-          <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={() => onChange(setting.value === undefined ? undefined : { reset: true })}>
+        {current !== undefined && !setting.readOnly && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7"
+            aria-label={`Use the default for ${setting.label}`}
+            onClick={() => onChange(setting.value === undefined ? undefined : { reset: true })}
+          >
             <RotateCcw aria-hidden /> Use default
           </Button>
         )}
@@ -240,19 +329,12 @@ function Field({ setting, edit, builtinPaths, onChange }: { setting: SettingView
         {setting.help}
         {setting.kind.type !== "checks" && setting.kind.type !== "models" && setting.path !== "hard_rules.paths" && <> Default: {show(setting.default)}.</>}
       </p>
-      {setting.readOnly ? (
-        <p className="text-sm">
-          <span className="break-words">{show(setting.effective)}</span>
-          <span className="block text-xs text-muted-foreground">{setting.readOnly}</span>
-        </p>
-      ) : (
-        <SettingInput id={id} setting={setting} value={current} builtinPaths={builtinPaths} set={set} />
-      )}
+      {input}
     </div>
   );
 }
 
-function SettingInput({ id, setting, value, builtinPaths, set }: { id: string; setting: SettingView; value: unknown; builtinPaths: string[]; set: (v: unknown) => void }): ReactNode {
+function SettingInput({ id, labelId, setting, value, builtinPaths, set }: { id: string; labelId: string; setting: SettingView; value: unknown; builtinPaths: string[]; set: (v: unknown) => void }): ReactNode {
   const kind = setting.kind;
   switch (kind.type) {
     case "boolean":
@@ -282,6 +364,7 @@ function SettingInput({ id, setting, value, builtinPaths, set }: { id: string; s
           type="number"
           className="w-40"
           min={kind.type === "integer" ? kind.min : undefined}
+          max={kind.type === "integer" ? kind.max : undefined}
           step={kind.type === "integer" ? 1 : "any"}
           placeholder={show(setting.default)}
           value={value === undefined ? "" : String(value)}
@@ -294,7 +377,7 @@ function SettingInput({ id, setting, value, builtinPaths, set }: { id: string; s
       if (kind.options) {
         const chosen = (value ?? setting.default ?? []) as string[];
         return (
-          <fieldset id={id} className="flex flex-wrap gap-x-4 gap-y-1" aria-label={setting.label}>
+          <div id={id} role="group" aria-labelledby={labelId} className="flex flex-wrap gap-x-4 gap-y-1">
             {kind.options.map((o) => (
               <label key={o} className="flex items-center gap-1.5 text-sm">
                 <input
@@ -305,39 +388,56 @@ function SettingInput({ id, setting, value, builtinPaths, set }: { id: string; s
                 {o}
               </label>
             ))}
-          </fieldset>
+          </div>
         );
       }
       return (
         <>
-          {setting.path === "hard_rules.paths" && (
-            <p className="break-words text-xs text-muted-foreground">Always protected: {builtinPaths.join(", ")}.</p>
-          )}
-          <Textarea
-            id={id}
-            rows={3}
-            placeholder="One per line"
-            value={value === undefined ? "" : (value as string[]).join("\n")}
-            onChange={(e) => {
-              const lines = e.target.value.split("\n");
-              // Kept as typed while editing; empty lines are dropped once there is nothing else.
-              set(lines.every((l) => l.trim() === "") ? undefined : lines.map((l) => l.trim()).filter((l, i, all) => l !== "" || i === all.length - 1));
-            }}
-          />
+          {setting.path === "hard_rules.paths" && <p className="break-words text-xs text-muted-foreground">Always protected: {builtinPaths.join(", ")}.</p>}
+          <ListInput id={id} value={value as string[] | undefined} set={set} />
         </>
       );
     case "checks":
-      return <Checks id={id} checks={(value ?? []) as Check[]} set={(checks) => set(checks.length ? checks : undefined)} />;
+      return <Checks id={id} labelId={labelId} checks={(value ?? []) as Check[]} set={(checks) => set(checks.length ? checks : undefined)} />;
     case "models":
-      return <Models id={id} keys={kind.keys} entries={(value ?? {}) as Record<string, ModelEntry | string>} set={(m) => set(Object.keys(m).length ? m : undefined)} />;
+      return <Models id={id} labelId={labelId} keys={kind.keys} entries={(value ?? {}) as Record<string, ModelEntry | string>} set={(m) => set(Object.keys(m).length ? m : undefined)} />;
   }
 }
 
-function Checks({ id, checks, set }: { id: string; checks: Check[]; set: (checks: Check[]) => void }) {
+const entriesOf = (text: string) =>
+  text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+
+/**
+ * One entry per line. The text is kept as typed (blank lines, spaces, the caret), and only its
+ * entries become the value. Emptied, it is an empty list; "Use default" goes back to the default.
+ */
+function ListInput({ id, value, set }: { id: string; value: string[] | undefined; set: (v: unknown) => void }) {
+  const [text, setText] = useState((value ?? []).join("\n"));
+  // Changed from outside (Use default, Discard): show that instead of what was typed.
+  const typed = entriesOf(text);
+  if (!same(typed, value ?? []) && !(value === undefined && typed.length === 0)) setText((value ?? []).join("\n"));
+  return (
+    <Textarea
+      id={id}
+      rows={3}
+      placeholder="One per line"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        set(entriesOf(e.target.value));
+      }}
+    />
+  );
+}
+
+function Checks({ id, labelId, checks, set }: { id: string; labelId: string; checks: Check[]; set: (checks: Check[]) => void }) {
   // An empty name or command stays, so saving says which check lacks one.
   const update = (i: number, patch: Partial<Check>) => set(checks.map((c, k) => (k === i ? dropUnset({ ...c, ...patch }) : c)));
   return (
-    <div id={id} className="space-y-2">
+    <div id={id} role="group" aria-labelledby={labelId} className="space-y-2">
       {checks.length === 0 && <p className="text-sm text-muted-foreground">No checks: the quality gate only scans for secrets.</p>}
       {checks.map((check, i) => (
         <div key={i} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_1fr_6rem_5rem_auto] sm:items-end">
@@ -369,29 +469,33 @@ function Checks({ id, checks, set }: { id: string; checks: Check[]; set: (checks
   );
 }
 
-// Claude Code's --effort levels (EFFORT_LEVELS in the shared package, which the page doesn't bundle).
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
-
-function Models({ id, keys, entries, set }: { id: string; keys: string[]; entries: Record<string, ModelEntry | string>; set: (m: Record<string, ModelEntry>) => void }) {
+function Models({ id, labelId, keys, entries, set }: { id: string; labelId: string; keys: string[]; entries: Record<string, ModelEntry | string>; set: (m: Record<string, ModelEntry | string>) => void }) {
   const entry = (key: string): ModelEntry => {
     const e = entries[key];
     return typeof e === "string" ? { model: e } : (e ?? {});
   };
   const update = (key: string, patch: ModelEntry) => {
-    const next: Record<string, ModelEntry> = {};
+    const next: Record<string, ModelEntry | string> = {};
     for (const k of keys) {
-      const e = dropEmpty(k === key ? { ...entry(k), ...patch } : entry(k));
-      if (Object.keys(e).length) next[k] = e;
+      if (k !== key) {
+        // Untouched entries stay exactly as the file has them (`builder: opus` included).
+        if (entries[k] !== undefined) next[k] = entries[k];
+        continue;
+      }
+      const e = dropEmpty({ ...entry(k), ...patch });
+      if (!Object.keys(e).length) continue;
+      // A model on its own keeps the short form the file used.
+      next[k] = typeof entries[k] === "string" && e.model && !e.effort ? e.model : e;
     }
     set(next);
   };
   return (
-    <div id={id} className="grid gap-x-3 gap-y-1.5 sm:grid-cols-[8rem_1fr_8rem]">
+    <div id={id} role="group" aria-labelledby={labelId} className="grid gap-x-3 gap-y-1.5 sm:grid-cols-[8rem_1fr_8rem]">
       {keys.map((key) => (
         <div key={key} className="contents">
-          <span className="pt-2 text-sm">{key.replace("_", " ")}</span>
-          <Input aria-label={`${key} model`} placeholder="recommended" value={entry(key).model ?? ""} onChange={(e) => update(key, { model: e.target.value || undefined })} />
-          <Select aria-label={`${key} effort`} value={entry(key).effort ?? ""} onChange={(e) => update(key, { effort: e.target.value || undefined })}>
+          <span className="pt-2 text-sm">{words(key)}</span>
+          <Input aria-label={`${words(key)} model`} placeholder="recommended" value={entry(key).model ?? ""} onChange={(e) => update(key, { model: e.target.value.trim() || undefined })} />
+          <Select aria-label={`${words(key)} effort`} value={entry(key).effort ?? ""} onChange={(e) => update(key, { effort: e.target.value || undefined })}>
             <option value="">effort: recommended</option>
             {EFFORTS.map((o) => (
               <option key={o} value={o}>

@@ -1361,13 +1361,55 @@ describe("settings", () => {
     await user.type(authors, "{Backspace}{Backspace}{Backspace}{Backspace}");
     expect(screen.queryByText("1 change")).toBeNull();
 
-    await user.click(screen.getAllByRole("button", { name: /Use default/ })[1]!);
+    await user.click(screen.getByRole("button", { name: "Use the default for Trusted authors" }));
     await user.click(screen.getByRole("button", { name: /Review and save/ }));
     expect(screen.getByRole("group", { name: "Confirm the changes" }).textContent).toContain("trust.authors: alice to the default (none)");
     await user.click(screen.getByRole("button", { name: "Keep editing" }));
     await user.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.queryByText("1 change")).toBeNull();
     expect((screen.getByLabelText("Trusted authors") as HTMLTextAreaElement).value).toBe("alice");
+  });
+
+  it("keeps edits in progress while runs move on, and keeps focus with the confirmation", async () => {
+    server.settings = settingsPage();
+    renderAt("/settings");
+    const user = userEvent.setup();
+
+    await user.selectOptions(await screen.findByLabelText("merge"), "auto");
+    server.send({ type: "run", project: "shop", issue: 12, event: { type: "run:state", runId: "run-1", from: "build", to: "review" } });
+    await waitFor(() => expect(server.gets.filter((p) => p === "/api/runs").length).toBeGreaterThan(0));
+    expect(server.gets.filter((p) => p === "/api/projects/p1/settings")).toHaveLength(1);
+    expect((screen.getByLabelText("merge") as HTMLSelectElement).value).toBe("auto");
+
+    await user.click(screen.getByRole("button", { name: /Review and save/ }));
+    expect(document.activeElement).toBe(screen.getByRole("group", { name: "Confirm the changes" }));
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Review and save/ }));
+  });
+
+  it("shows a value of the wrong shape as it is rather than breaking, and lets a list be emptied", async () => {
+    server.settings = settingsPage({
+      settings: [
+        { path: "trust.authors", section: "trust", label: "Trusted authors", help: "Logins.", kind: { type: "list" }, value: "alice", effective: [], default: [] },
+        {
+          path: "merge.comment_bots",
+          section: "trust",
+          label: "Comment bots",
+          help: "Apps.",
+          kind: { type: "list" },
+          value: ["github-advanced-security[bot]"],
+          effective: ["github-advanced-security[bot]"],
+          default: ["github-advanced-security[bot]"],
+        },
+      ],
+    });
+    renderAt("/settings");
+    const user = userEvent.setup();
+
+    expect(await screen.findByText(/which isn't valid here/)).toBeTruthy();
+    await user.clear(screen.getByLabelText("Comment bots"));
+    await user.click(screen.getByRole("button", { name: /Review and save/ }));
+    expect(screen.getByRole("group", { name: "Confirm the changes" }).textContent).toContain("merge.comment_bots: github-advanced-security[bot] to none");
   });
 
   it("offers to reload when the settings changed on the branch meanwhile, and shows why a file on the branch is invalid", async () => {
