@@ -151,6 +151,7 @@ export class DraftJobs {
       github: this.deps.issueWriter?.(ctx.project),
       events,
       signal: controller.signal,
+      queue,
       onStart: (draftId) => {
         id = draftId;
         this.busy.set(key, draftId);

@@ -68,7 +68,7 @@ async function draftIdea(ctx: ProjectContext, idea: string, queue: boolean, deps
   process.once("SIGINT", onSigint);
   let outcome: DraftOutcome;
   try {
-    outcome = await draftIssue(ctx, idea, { run: deps.run, env: deps.env, github: deps.github, events, signal: controller.signal });
+    outcome = await draftIssue(ctx, idea, { run: deps.run, env: deps.env, github: deps.github, events, signal: controller.signal, queue });
   } finally {
     process.off("SIGINT", onSigint);
   }
@@ -100,11 +100,12 @@ function describePublished(published: PublishedDraft, style: Style): string {
     subIssues.length ? `Created #${issue.number} ${issue.title}, with sub-issues:` : `Created #${issue.number} ${issue.title}.`,
     ...subIssues.map((s) => `  #${s.number} ${s.title}`),
   ];
-  const it = buildable.length > 1 ? "them" : "it";
+  const pronoun = buildable.length > 1 ? "them" : "it";
   const numbers = buildable.join(" ");
+  // Queued or not is the state to notice, so it is plain either way; only the next command is a hint.
   const lines = queued.length
-    ? [...created, `Queued ${queued.map((n) => `#${n}`).join(", ")}.`, style.hint(`Run ${it} with \`factory run ${numbers}\`.`)]
-    : [...created, style.hint(`Not queued. Queue ${it} with \`factory queue ${numbers}\`, or run ${it} now with \`factory run ${numbers}\`.`)];
+    ? [...created, `Queued ${queued.map((n) => `#${n}`).join(", ")}.`, style.hint(`Run ${pronoun} with \`factory run ${numbers}\`.`)]
+    : [...created, "Not queued.", style.hint(`Queue ${pronoun} with \`factory queue ${numbers}\`, or run ${pronoun} now with \`factory run ${numbers}\`.`)];
   return lines.join("\n");
 }
 
