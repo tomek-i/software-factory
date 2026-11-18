@@ -1,6 +1,7 @@
 export * from "./config/load.js";
 export * from "./config/reset.js";
 export * from "./config/set.js";
+export * from "./config/edit.js";
 export * from "./store/store.js";
 export * from "./store/snapshot.js";
 export * from "./pipeline/gates.js";
@@ -38,6 +39,7 @@ export * from "./service/runs.js";
 export * from "./service/waiting.js";
 export * from "./service/checks.js";
 export * from "./service/reconcile.js";
+export * from "./service/settings.js";
 export * from "./service/show.js";
 export * from "./service/lessons.js";
 export * from "./service/drafts.js";

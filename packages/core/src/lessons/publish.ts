@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { commitToRemote } from "../git/commit-remote.js";
 import type { GithubPort } from "../github/port.js";
 import type { StoredLesson } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
@@ -95,45 +95,23 @@ export function publishLessons(options: PublishLessonsOptions): PublishedLessons
   const run = options.run ?? runCommand;
   const { root, defaultBranch, lessons, github } = options;
   if (lessons.length === 0) throw new Error("no lessons to publish");
-  const git = (args: string[], cwd = root) => {
-    const result = run("git", args, { cwd, timeoutMs: GIT_TIMEOUT_MS });
-    if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr || result.stdout || "unknown error"}`);
-    return result.stdout;
-  };
-
   const open = github.findOpenPullRequests(LESSONS_BRANCH_PREFIX)[0];
   const branch = open?.head ?? lessonsBranch(options.now ?? new Date());
-  const base = open ? branch : defaultBranch;
-  git(["fetch", "--quiet", "--", "origin", base]);
-  const dir = mkdtempSync(join(tmpdir(), "factory-lessons-"));
-  const worktree = join(dir, "worktree");
-  let added = false;
-  try {
-    // Detached: no local branch is left behind; the commit only goes to the remote branch.
-    git(["worktree", "add", "--quiet", "--detach", worktree, `origin/${base}`]);
-    added = true;
-    const file = join(worktree, LESSONS_FILE);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, appendLessons(existsSync(file) ? readFileSync(file, "utf8") : undefined, lessons.map((l) => l.rule)));
-    git(["add", LESSONS_FILE], worktree);
-    try {
-      git(["commit", "--quiet", "-m", `chore(factory): add ${lessons.length === 1 ? "an approved lesson" : `${lessons.length} approved lessons`}`], worktree);
-    } catch (err) {
-      throw new Error(
-        `a commit hook or commit signing in this repository refused the lessons commit (they are never skipped), so nothing was pushed: ${(err as Error).message}`,
-      );
-    }
-    git(["push", "--quiet", "origin", `HEAD:refs/heads/${branch}`], worktree);
-  } finally {
-    // Best effort: cleaning up must neither hide the error that got us here nor stop a pushed commit's PR.
-    if (added) run("git", ["worktree", "remove", "--force", worktree], { cwd: root, timeoutMs: GIT_TIMEOUT_MS });
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // A leftover temp folder is harmless; the OS cleans its temp directory.
-    }
-    run("git", ["worktree", "prune"], { cwd: root, timeoutMs: GIT_TIMEOUT_MS });
-  }
+  commitToRemote({
+    root,
+    run,
+    base: open ? branch : defaultBranch,
+    branch,
+    write: (worktree) => {
+      const file = join(worktree, LESSONS_FILE);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, appendLessons(existsSync(file) ? readFileSync(file, "utf8") : undefined, lessons.map((l) => l.rule)));
+      return [LESSONS_FILE];
+    },
+    message: `chore(factory): add ${lessons.length === 1 ? "an approved lesson" : `${lessons.length} approved lessons`}`,
+    what: "the lessons commit",
+    tempPrefix: "factory-lessons-",
+  });
 
   if (open) {
     const all = [...(options.inPullRequest?.(open.number) ?? []), ...lessons];
