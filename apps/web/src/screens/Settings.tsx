@@ -490,7 +490,7 @@ function Models({ id, labelId, keys, entries, set }: { id: string; labelId: stri
     set(next);
   };
   return (
-    <div id={id} role="group" aria-labelledby={labelId} className="grid gap-x-3 gap-y-1.5 sm:grid-cols-[8rem_1fr_8rem]">
+    <div id={id} role="group" aria-labelledby={labelId} className="grid gap-x-3 gap-y-1.5 sm:grid-cols-[8rem_1fr_14rem]">
       {keys.map((key) => (
         <div key={key} className="contents">
           <span className="pt-2 text-sm">{words(key)}</span>
