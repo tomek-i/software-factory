@@ -119,6 +119,30 @@ Differences from the CLI:
 - One issue writer runs per project at a time; starting another is refused until it ends or is stopped.
 - A draft that doesn't parse can only be discarded, or fixed by hand.
 
+### Settings
+
+A project's `.factory/config.yaml` as a form, read from its default branch on GitHub, where runs read it (see [Configuration](configuration.md)).
+
+- Each setting shows its help and whether the file sets it; simple ones show their default too.
+- "Use default" takes a setting out of the file, so the default applies again.
+  An emptied list is saved as an empty list, which for comment bots is not the default.
+- A few can't be changed here, with why: the default branch, and the hard-rule triggers, which always apply.
+- "Review and save" lists every change.
+  Those that let runs do more without you get a warning: gates, trust, protected paths, open feedback, comment bots and the app's environment variables.
+- Saving commits the change to the default branch and pushes it.
+  - The file's other settings and their comments stay; comments inside a list or map you change, and on a setting you take out, go.
+  - Runs and the worker use it from then on; a local checkout sees it after a pull.
+  - The commit runs the repository's hooks and signing, which are never skipped.
+- The page reads the settings when you open it, after a save, and when you reload; runs moving on don't reset a form you are editing.
+- A save is refused, and nothing changes, when:
+  - the settings changed on the branch since the page read them: reload and make the change again;
+  - the branch refuses the push, as branch protection does: change the file through a PR instead;
+  - a value isn't valid, with the reason;
+  - nothing would change.
+- When the file on the branch isn't a valid config, the page says why and shows the values the file has.
+  - A value of the wrong shape is shown as it is: use the default instead, or fix the file by hand.
+  - A file that isn't YAML, or is missing, has to be fixed by hand.
+
 ## Security
 
 The server can start agents and merge pull requests, so it answers only your own browser:

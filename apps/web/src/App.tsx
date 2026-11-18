@@ -11,6 +11,7 @@ import { Inbox } from "./screens/Inbox";
 import { NewIssue } from "./screens/NewIssue";
 import { RunDetail } from "./screens/RunDetail";
 import { Runs } from "./screens/Runs";
+import { Settings } from "./screens/Settings";
 
 export function newQueryClient(): QueryClient {
   return new QueryClient({
@@ -37,6 +38,7 @@ export function App({ client }: { client?: QueryClient }) {
               <Route path="backlog" element={<Backlog />} />
               <Route path="new" element={<NewIssue />} />
               <Route path="new/:project/:id" element={<Draft />} />
+              <Route path="settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/inbox" replace />} />
             </Route>
           </Routes>

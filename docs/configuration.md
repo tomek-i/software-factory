@@ -2,6 +2,7 @@
 
 What you can set in `.factory/config.yaml`, and how to go back to the defaults.
 `factory init` writes the file with comments; this page is the overview.
+The web app's [Settings screen](web-mode.md#settings) shows every setting and saves a change to the default branch for you.
 
 - Runs read the config from your **default branch on GitHub**, not from your working copy.
   Commit and merge a change before it takes effect, so a branch can never change the rules it is judged by.

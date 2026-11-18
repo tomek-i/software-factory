@@ -267,6 +267,51 @@ export type ServerEvent =
   | { type: "stopping"; now: boolean; interrupted: number };
 
 /** An error the server explained, or no session. */
+export type SettingKind =
+  | { type: "boolean" }
+  | { type: "integer"; min: number; max?: number }
+  | { type: "number" }
+  | { type: "enum"; options: string[] }
+  | { type: "string" }
+  | { type: "list"; options?: string[] }
+  | { type: "checks" }
+  | { type: "models"; keys: string[] };
+
+/** One setting of `.factory/config.yaml`, as the default branch has it. */
+export interface SettingView {
+  path: string;
+  section: string;
+  label: string;
+  help: string;
+  kind: SettingKind;
+  /** What a change to it can let through without you. */
+  sensitive?: string;
+  /** Why it can't be changed here. */
+  readOnly?: string;
+  /** What the file sets; absent when it leaves the setting to the default. */
+  value?: unknown;
+  effective?: unknown;
+  default?: unknown;
+}
+
+export interface ProjectSettings {
+  branch: string;
+  /** The commit they were read at; a save names it, so it can't overwrite a newer change. */
+  head: string;
+  sections: { key: string; title: string; about: string }[];
+  settings: SettingView[];
+  builtinPaths: string[];
+  problems: string[];
+}
+
+export type SettingChange = { path: string; value: unknown } | { path: string; reset: true };
+
+export interface SavedSettings {
+  commit: string;
+  branch: string;
+  changed: string[];
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -276,13 +321,14 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: "GET" | "POST", path: string, body?: object): Promise<T> {
+async function request<T>(method: "GET" | "POST" | "PUT", path: string, body?: object): Promise<T> {
   const headers: Record<string, string> = { [TOKEN_HEADER]: sessionToken() ?? "" };
-  if (method === "POST") headers["Content-Type"] = "application/json";
+  const sends = method !== "GET";
+  if (sends) headers["Content-Type"] = "application/json";
   const res = await fetch(path, {
     method,
     headers,
-    body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
+    body: sends ? JSON.stringify(body ?? {}) : undefined,
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new ApiError(data.error ?? `${res.status} ${res.statusText}`, res.status);
@@ -326,4 +372,6 @@ export const api = {
   publishDraft: (project: string, id: string, queue: boolean) => request<PublishedDraft>("POST", draftPath(project, id, "publish"), { queue }),
   discardDraft: (project: string, id: string) => request<{ id: string; created: number[] }>("POST", draftPath(project, id, "discard")),
   stopDraft: (project: string, id: string) => request<object>("POST", draftPath(project, id, "stop")),
+  settings: (project: string) => request<ProjectSettings>("GET", `${projectPath(project)}/settings`),
+  saveSettings: (project: string, head: string, changes: SettingChange[]) => request<SavedSettings>("PUT", `${projectPath(project)}/settings`, { head, changes }),
 };

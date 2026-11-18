@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from "class-variance-authority";
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, Ref } from "react";
 import { cn } from "../../lib/utils";
 
 // shadcn/ui's Button, without Radix's Slot.
@@ -23,6 +23,7 @@ const buttonVariants = cva(
   },
 );
 
-export function Button({ className, variant, size, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants>) {
+// React 19 passes `ref` as a prop, so it reaches the button through the spread.
+export function Button({ className, variant, size, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants> & { ref?: Ref<HTMLButtonElement> }) {
   return <button type={type} className={cn(buttonVariants({ variant, size }), className)} {...props} />;
 }

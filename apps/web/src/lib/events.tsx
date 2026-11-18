@@ -92,6 +92,9 @@ export const useLive = () => useContext(LiveContext);
 export function EventsProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [live, setLive] = useState<Live>({ activity: {}, connected: false });
+  // Not the settings: reading them fetches the default branch, and refetching would replace a form
+  // being edited. The Settings screen refetches them itself, after a save or when asked.
+  const refetch = () => queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] !== "settings" });
 
   useEffect(
     () =>
@@ -99,14 +102,14 @@ export function EventsProvider({ children }: { children: ReactNode }) {
         onOpen: () => {
           setLive((l) => ({ ...l, connected: true }));
           // Events may have been missed while it was away.
-          void queryClient.invalidateQueries();
+          void refetch();
         },
         onClose: () => setLive((l) => ({ ...l, connected: false })),
         onEvent: (event) => {
           if (event.type === "run") {
             const line = activityLine(event.event);
             if (line) setLive((l) => ({ ...l, activity: { ...l.activity, [event.event.runId]: line } }));
-            if (event.event.type === "run:state") void queryClient.invalidateQueries();
+            if (event.event.type === "run:state") void refetch();
             return;
           }
           // An issue writer's progress goes onto its draft's page as it comes, without refetching anything.
@@ -116,7 +119,7 @@ export function EventsProvider({ children }: { children: ReactNode }) {
             );
             return;
           }
-          void queryClient.invalidateQueries();
+          void refetch();
         },
       }),
     [queryClient],

@@ -70,7 +70,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
 
 `apps/web/src`: the web app (React, Vite, Tailwind), built by Vite into its `dist` folder and served by the server
-- `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, RunDetail, Backlog, NewIssue and Draft (a draft's progress and editor); `components/ui/`: shadcn-style parts
+- `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, RunDetail, Backlog, NewIssue, Draft (a draft's progress and editor) and Settings; `components/ui/`: shadcn-style parts
 
 ## Core invariants
 
