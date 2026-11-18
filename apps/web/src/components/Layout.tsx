@@ -59,7 +59,7 @@ export function Layout() {
       <header className="border-b">
         <div className={cn(column, "flex flex-wrap items-center gap-x-6 gap-y-2 py-3")}>
           <span className="font-semibold">Software factory</span>
-          <nav className="flex items-center gap-1" aria-label="Main">
+          <nav className="flex flex-wrap items-center gap-1" aria-label="Main">
             <NavLink to="/inbox" className={tab}>
               <Inbox aria-hidden />
               Inbox
