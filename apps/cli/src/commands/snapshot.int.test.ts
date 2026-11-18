@@ -41,7 +41,24 @@ describe("factory export", () => {
     expect(snapshot.header).toMatchObject({ format_version: 1, exported_at: NOW.toISOString(), host: "laptop", github_repo: "o/r" });
     expect(snapshot.runs.map((r) => r.id)).toEqual([a.doneId]);
     expect(out).not.toContain(a.root.replace(/\\/g, "\\\\"));
-    expect(warnings).toEqual([`1 active run not exported: finish or cancel them on this machine first (${a.activeId}).`]);
+    expect(warnings).toEqual([`1 active run not exported: finish or cancel it on this machine first (${a.activeId}).`]);
+  });
+
+  it("exports an issue a run here is still working on as not queued, and counts active runs in the plural", () => {
+    const a = laptop();
+    const store = a.db();
+    const again = store.createRun({ project_id: a.projectId, title: "Add the feature", issue_number: 12 });
+    store.writeState(again.id, "review");
+    store.close();
+
+    const { out, warnings } = exportTo(a.dir);
+
+    expect(warnings).toEqual([
+      expect.stringMatching(/^2 active runs not exported: finish or cancel them on this machine first \(/),
+      "Exported as not queued, as a run here is still working on it: #12. If the other machine already has one queued, unqueue it there; export again once the run here has finished.",
+    ]);
+    const snapshot = JSON.parse(out) as { issues: { number: number; queued_at: string | null }[] };
+    expect(snapshot.issues.find((i) => i.number === 12)?.queued_at).toBeNull();
   });
 
   it("writes to a file outside the repo without a warning", () => {
@@ -71,6 +88,8 @@ describe("factory export", () => {
     // Gitignored folders are still the working tree.
     const nested = exportTo(a.dir, join(a.root, ".factory", "snapshot.json"));
     expect(nested.warnings).toContainEqual(expect.stringMatching(/is inside the repository/));
+    // A name that starts with two dots is still a file in the repo, not its parent.
+    expect(exportTo(a.dir, join(a.root, "..snapshot.json")).warnings).toContainEqual(expect.stringMatching(/is inside the repository/));
   });
 
   it("colours the warnings with the stderr style and the next step with the stdout style", () => {
@@ -139,7 +158,7 @@ describe("factory import", () => {
     store.close();
 
     expect(runImport(b.dir, file)).toBe(
-      `Nothing to import: this database already has everything in the snapshot from laptop, exported ${NOW.toISOString()}.\n1 run already here, left as they are.`,
+      `Nothing to import: this database already has everything in the snapshot from laptop, exported ${NOW.toISOString()}.\n1 run already here, left as it is.`,
     );
   });
 
