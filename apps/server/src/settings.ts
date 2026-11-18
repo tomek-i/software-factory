@@ -1,4 +1,4 @@
-import { readSettings, saveSettings, type CommandRunner, type ConfigChange, type ProjectContext } from "@factory/core";
+import { readSettings, saveSettings, ServiceError, type CommandRunner, type ConfigChange, type ProjectContext } from "@factory/core";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { BadRequest } from "./errors.js";
 import type { ProjectSet } from "./projects.js";
@@ -50,9 +50,18 @@ export function settingsRoutes(app: FastifyInstance, options: SettingsRouteOptio
 
   app.put<{ Params: { key: string }; Body: unknown }>("/api/projects/:key/settings", limited, async (req) => {
     const ctx = projects.byKey(req.params.key);
-    const saved = saveSettings(ctx, saveRequest(req.body), run);
-    // The routes read the context's config (trust, for one): give them the settings just saved.
-    ctx.config = saved.config;
+    const redact = options.redact(ctx);
+    let saved;
+    try {
+      saved = saveSettings(ctx, saveRequest(req.body), run);
+    } catch (err) {
+      // Hook and git output can name the temporary worktree or the repo.
+      if (err instanceof ServiceError) err.message = redact(err.message);
+      throw err;
+    }
+    // The routes read the context's config (trust, for one): give them the settings just saved, but
+    // keep the branch the working copy named, which every trusted read and save goes to.
+    ctx.config = { ...saved.config, project: { ...saved.config.project, default_branch: ctx.config.project.default_branch } };
     options.forgetConfig?.(ctx.root);
     changed(req.params.key);
     return { commit: saved.commit, branch: saved.branch, changed: saved.changed };

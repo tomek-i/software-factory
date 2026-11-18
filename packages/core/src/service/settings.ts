@@ -12,6 +12,16 @@ import type { ProjectContext } from "./project.js";
 
 const CONFIG_PATH = `${FACTORY_DIR}/${CONFIG_FILE}`;
 
+/** A check as the schema knows it: keys it doesn't (it ignores them) are not written into the file. */
+function picked(change: ConfigChange): ConfigChange {
+  if (change.path !== "checks" || !("value" in change) || !Array.isArray(change.value)) return change;
+  const keys = ["name", "run", "timeout_sec", "retries"];
+  return {
+    path: change.path,
+    value: change.value.map((c: unknown) => (c && typeof c === "object" ? Object.fromEntries(Object.entries(c).filter(([k]) => keys.includes(k))) : c)),
+  };
+}
+
 /** The settings changed on the default branch after they were read: saving would overwrite that. */
 export class SettingsChanged extends ServiceError {}
 
@@ -49,10 +59,14 @@ function views(raw: unknown, effective: FactoryConfig): SettingView[] {
 /** The project's settings as runs use them: `.factory/config.yaml` on the remote default branch. */
 export function readSettings(ctx: ProjectContext, run: CommandRunner = runCommand): ProjectSettings {
   const branch = ctx.config.project.default_branch;
-  const read = trustedReader(ctx.root, branch, run);
+  // Fetches the branch, as every trusted read does.
+  trustedReader(ctx.root, branch, run);
   const head = run("git", ["rev-parse", `origin/${branch}`], { cwd: ctx.root });
   if (head.code !== 0) throw new ServiceError(`Could not read origin/${branch}: ${head.stderr}`);
-  const text = read(CONFIG_PATH);
+  // Read at that commit, not the ref: a fetch meanwhile would pair newer text with the older head.
+  const shown = run("git", ["show", `${head.stdout.trim()}:${CONFIG_PATH}`], { cwd: ctx.root });
+  // runCommand trims output; the file ends in a newline.
+  const text = shown.code === 0 ? `${shown.stdout}\n` : undefined;
   const source = `origin/${branch}:${CONFIG_PATH}`;
   let raw: unknown;
   let effective = defaultConfig();
@@ -109,7 +123,10 @@ export function saveSettings(
       write: (worktree) => {
         const file = join(worktree, CONFIG_PATH);
         if (!existsSync(file)) throw new ServiceError(`${branch} has no ${CONFIG_PATH}; commit and push it first.`);
-        const text = editConfigText(readFileSync(file, "utf8"), request.changes, `origin/${branch}:${CONFIG_PATH}`);
+        const before = readFileSync(file, "utf8");
+        const text = editConfigText(before, request.changes.map(picked), `origin/${branch}:${CONFIG_PATH}`);
+        // Compared as data: rewriting the file may re-space it without changing a setting.
+        if (JSON.stringify(parse(text)) === JSON.stringify(parse(before))) throw new ServiceError(`The settings on ${branch} are already as asked, so nothing was committed.`);
         config = parseConfig(text);
         writeFileSync(file, text);
         return [CONFIG_PATH];

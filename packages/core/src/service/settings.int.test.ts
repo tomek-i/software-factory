@@ -5,6 +5,8 @@ import { git, repoWithRemote } from "../../test/helpers.js";
 import { parseConfig } from "../config/load.js";
 import { ServiceError } from "./errors.js";
 import type { ProjectContext } from "./project.js";
+import { commitToRemote } from "../git/commit-remote.js";
+import { runCommand } from "../util/exec.js";
 import { readSettings, saveSettings, SettingsChanged } from "./settings.js";
 
 const CONFIG = `version: 1
@@ -102,6 +104,52 @@ describe("saveSettings", () => {
     git(root, "config", "core.hooksPath", hooks);
 
     expect(() => saveSettings(ctx, { head, changes: [{ path: "gates.merge", value: "auto" }] })).toThrow(/refused the settings commit \(they are never skipped\), so nothing was pushed/);
+  });
+
+  it("refuses a save that changes nothing, and writes only the fields a check has", () => {
+    const { root, ctx } = project();
+    let head = readSettings(ctx).head;
+    expect(() => saveSettings(ctx, { head, changes: [{ path: "gates.merge", value: "human" }] })).toThrow(new ServiceError("The settings on main are already as asked, so nothing was committed."));
+    expect(() => saveSettings(ctx, { head, changes: [{ path: "loops.max_review_rounds", reset: true }] })).toThrow(/already as asked/);
+
+    saveSettings(ctx, { head, changes: [{ path: "checks", value: [{ name: "test", run: "pnpm test", extra: { x: 1 } }] }] });
+    git(root, "fetch", "-q", "origin");
+    head = git(root, "rev-parse", "origin/main");
+    expect(git(root, "show", "origin/main:.factory/config.yaml")).not.toContain("extra");
+  });
+
+  it("builds on the commit it checked, so a fetch meanwhile can't slip a change under it", () => {
+    const { root, remote } = project();
+    const other = join(root, "..", "other");
+    git(join(root, ".."), "clone", "-q", remote, other);
+    let checked = "";
+
+    expect(() =>
+      commitToRemote({
+        root,
+        run: runCommand,
+        base: "main",
+        branch: "main",
+        // Right after the check, someone else's commit lands and a fetch (a worker's) moves origin/main.
+        check: (commit) => {
+          checked = commit;
+          git(other, "-c", "user.name=o", "-c", "user.email=o@x", "commit", "-q", "--allow-empty", "-m", "other");
+          git(other, "push", "-q", "origin", "HEAD:main");
+          git(root, "fetch", "-q", "origin");
+        },
+        write: (worktree) => {
+          // Built on what was checked, not on the moved ref; the push then refuses.
+          expect(git(worktree, "rev-parse", "HEAD")).toBe(checked);
+          expect(git(root, "rev-parse", "origin/main")).not.toBe(checked);
+          writeFileSync(join(worktree, "x.txt"), "x\n");
+          return ["x.txt"];
+        },
+        message: "chore: x",
+        what: "the test commit",
+        tempPrefix: "factory-test-",
+      }),
+    ).toThrow(/git push failed/);
+
   });
 
   it("refuses an unknown or read-only setting, or a value the config rejects, before committing anything", () => {
