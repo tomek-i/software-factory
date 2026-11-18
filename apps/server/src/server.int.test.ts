@@ -6,7 +6,7 @@ import { driveIssue, loadConfig, runDirOf, Store, type CommandRunner, type Githu
 import { factoryConfigSchema } from "@factory/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setup, TRIAGE } from "../../../packages/core/test/driver-setup.js";
-import { GIT_TEST_TIMEOUT, tempDir } from "../../../packages/core/test/helpers.js";
+import { git, GIT_TEST_TIMEOUT, tempDir } from "../../../packages/core/test/helpers.js";
 import { EventHub, type Published } from "./hub.js";
 import { GITHUB_TTL_MS } from "./merge-gate.js";
 import { projectKey, ProjectSet } from "./projects.js";
@@ -57,12 +57,13 @@ function server(contexts: ProjectContext[], options: Partial<ServerOptions> = {}
 }
 
 /** A request from the app's own tab: the right Host, the session token and, for changes, its Origin. */
-function call(app: ReturnType<typeof createServer>, method: "GET" | "POST", url: string, payload?: object) {
+function call(app: ReturnType<typeof createServer>, method: "GET" | "POST" | "PUT", url: string, payload?: object) {
+  const changes = method !== "GET";
   return app.inject({
     method,
     url,
-    headers: { host: HOST, ...AUTH, ...(method === "POST" ? { origin: ORIGIN } : {}) },
-    ...(method === "POST" ? { payload: payload ?? {} } : {}),
+    headers: { host: HOST, ...AUTH, ...(changes ? { origin: ORIGIN } : {}) },
+    ...(changes ? { payload: payload ?? {} } : {}),
   });
 }
 
@@ -800,6 +801,76 @@ describe("runs", () => {
     const { app } = server([memoryProject()], { scheduler: { status: () => status } });
     expect((await call(app, "GET", "/api/scheduler")).json()).toEqual(status);
   });
+});
+
+describe("settings", () => {
+  function settingsServer(options: Partial<ServerOptions> = {}) {
+    const s = setup([]);
+    const ctx: ProjectContext = { root: s.root, store: s.store, project: s.project, config: loadConfig(s.root) };
+    const forgotten: string[] = [];
+    const { app, hub } = server([ctx], { scheduler: { status: () => ({}) as never, forgetConfig: (p) => void forgotten.push(p) }, ...options });
+    return { s, ctx, app, hub, forgotten, url: `/api/projects/${projectKey(s.root)}/settings` };
+  }
+
+  it(
+    "shows every setting as it is on the default branch, and saves a change there",
+    async () => {
+      const { s, ctx, app, hub, forgotten, url } = settingsServer();
+      const seen: Published[] = [];
+      hub.subscribe((p) => seen.push(p));
+
+      const read = (await call(app, "GET", url)).json();
+      expect(read).toMatchObject({ branch: "main", head: git(s.root, "rev-parse", "origin/main"), problems: [] });
+      expect(read.settings.find((x: { path: string }) => x.path === "gates.merge")).toMatchObject({ effective: "human", default: "human", kind: { type: "enum" } });
+      expect(read.sections[0]).toMatchObject({ key: "project" });
+
+      const res = await call(app, "PUT", url, { head: read.head, changes: [{ path: "gates.merge", value: "auto" }, { path: "trust.authors", value: ["alice", "bob"] }] });
+      expect(res.statusCode).toBe(200);
+      git(s.root, "fetch", "-q", "origin");
+      expect(res.json()).toEqual({ commit: git(s.root, "rev-parse", "origin/main"), branch: "main", changed: ["gates.merge", "trust.authors"] });
+      // The routes, and the scheduler's next tick, use the new settings at once.
+      expect(ctx.config.trust.authors).toEqual(["alice", "bob"]);
+      expect(forgotten).toEqual([s.root]);
+      expect(seen.map((p) => p.event)).toContainEqual({ type: "changed", project: projectKey(s.root) });
+      expect((await call(app, "GET", url)).json().settings.find((x: { path: string }) => x.path === "gates.merge").value).toBe("auto");
+    },
+    GIT_TEST_TIMEOUT,
+  );
+
+  it(
+    "refuses a save made on settings that changed since, a bad request, and a value the config rejects",
+    async () => {
+      const { app, url } = settingsServer();
+      const { head } = (await call(app, "GET", url)).json();
+      expect((await call(app, "PUT", url, { head, changes: [{ path: "gates.merge", value: "auto" }] })).statusCode).toBe(200);
+
+      const stale = await call(app, "PUT", url, { head, changes: [{ path: "gates.pr", value: "human" }] });
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json().error).toMatch(/changed since you opened them/);
+
+      const now = (await call(app, "GET", url)).json().head;
+      expect((await call(app, "PUT", url, { changes: [{ path: "gates.pr", value: "human" }] })).json()).toEqual({ error: "Say which commit the settings were read at (head)." });
+      expect((await call(app, "PUT", url, { head: now, changes: [] })).json()).toEqual({ error: "Give the settings to change (changes)." });
+      expect((await call(app, "PUT", url, { head: now, changes: [{ path: "gates.pr", value: "human", reset: true }] })).json()).toEqual({ error: "gates.pr: give either a value or reset: true." });
+      const rejected = await call(app, "PUT", url, { head: now, changes: [{ path: "loops.max_review_rounds", value: 0 }] });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().error).toMatch(/loops\.max_review_rounds: Too small/);
+    },
+    GIT_TEST_TIMEOUT,
+  );
+
+  it(
+    "takes saves only from the app's own page, and not too often",
+    async () => {
+      const { app, url } = settingsServer({ settingsLimit: { max: 1, windowMs: 60_000 } });
+      const payload = { head: "a".repeat(40), changes: [{ path: "gates.pr", value: "human" }] };
+      expect((await app.inject({ method: "PUT", url, headers: { host: HOST, ...AUTH, origin: "http://evil.example" }, payload })).statusCode).toBe(403);
+      expect((await app.inject({ method: "PUT", url, headers: { host: HOST, origin: ORIGIN }, payload })).statusCode).toBe(401);
+      expect((await call(app, "PUT", url, payload)).statusCode).toBe(409);
+      expect((await call(app, "PUT", url, payload)).statusCode).toBe(429);
+    },
+    GIT_TEST_TIMEOUT,
+  );
 });
 
 describe("events", () => {

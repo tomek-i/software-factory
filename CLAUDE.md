@@ -15,6 +15,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `capture.ts`: the capture agent's plan (`capturePlanSchema`), data only, same-origin paths
 - `registry.ts`: the per-user project list's file format (`registryFileSchema`)
 - `snapshot.ts`: the `factory export` file (`snapshotSchema`), checked before an import writes anything
+- `settings.ts`: `SETTINGS`, every config setting with its label, help and kind, for the web app's Settings screen; a test fails when the schema gains a setting it lacks
 
 `packages/core/src`: the engine, exported through `index.ts`
 - `pipeline/transitions.ts`: `RunMachine`, the forward edges and the guards on them
@@ -36,13 +37,14 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `github/port.ts`: `GithubPort` and its real `gh` implementation, `ghPort`
 - `github/issues.ts`: issue sync; `github/media.ts`, `github/attachments.ts`: videos and images on PRs; `github/labels.ts`: status labels
 - `capture/`: starts the app (`server.ts`), drives Chromium (`browser.ts`), renders narrated video (`narrate.ts`), writes the report (`report.ts`)
-- `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`; `config/reset.ts`: `resetConfigText`, behind `factory config reset`
+- `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`; `config/reset.ts`: `resetConfigText`, behind `factory config reset`; `config/edit.ts`: `editConfigText`, which sets, adds or resets settings keeping comments
 - `gate/gate.ts`: the quality gate (`runQualityGate`); `gate/secrets.ts`: secret scan of the diff
-- `git/worktrees.ts`: creates and removes run worktrees in the repo's `.worktrees` folder
+- `git/worktrees.ts`: creates and removes run worktrees in the repo's `.worktrees` folder; `git/commit-remote.ts`: `commitToRemote`, a commit pushed from a temporary worktree (lessons, settings)
 - `lessons/publish.ts`: the lessons PR (`publishLessons`)
 - `drafts/`: issue writer drafts for `factory new`
 - `init/`: `factory init`, project detection and the config template
 - `service/`: the run actions every front end shares (`driveIssue`, `approveRun`, `rejectRun`, `cancelRun`, `runOverview`, `reconcileAndSweep`, lessons and drafts). They return data and throw `ServiceError`
+- `service/settings.ts`: `readSettings` and `saveSettings`, the settings as they are on the default branch, saved by a commit pushed there
 - `service/waiting.ts`: `waitingOn`, what a run waiting for a human is stuck on (a loop cap, failed checks, a failed gate, confirmed findings); `service/checks.ts`: `runChecks` and `dismissAlert`, the human-only dismissal of a code scanning alert
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
@@ -63,7 +65,8 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `server.ts`: `createServer`, the Fastify routes over `packages/core/src/service/`, the Host, token and Origin checks, the event stream; `security.ts`: the token and those checks
 - `merge-gate.ts`: `MergeGateReader`, what the Inbox's merge-gate card shows (PR, diff size, checks, reviews), with GitHub's answers cached per head
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
-- `drafts.ts`: the New issue screen's routes (`draftRoutes`) over the core draft service, and `DraftJobs`, the issue writers the server started (one per project at a time), with their progress; `rate-limit.ts`: `RateLimiter`, the per-route limit on the draft routes
+- `drafts.ts`: the New issue screen's routes (`draftRoutes`) over the core draft service, and `DraftJobs`, the issue writers the server started (one per project at a time), with their progress; `rate-limit.ts`: `RateLimiter`, the per-route limit on the draft and settings routes
+- `settings.ts`: the Settings screen's routes (`settingsRoutes`) over `readSettings` and `saveSettings`
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
 
 `apps/web/src`: the web app (React, Vite, Tailwind), built by Vite into its `dist` folder and served by the server
