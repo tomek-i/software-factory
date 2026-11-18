@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Inbox, ListTodo, SquarePen } from "lucide-react";
+import { Activity, Inbox, ListTodo, Settings, SquarePen } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router";
 import { api, ApiError } from "../lib/api";
@@ -80,6 +80,10 @@ export function Layout() {
             <NavLink to="/new" className={tab}>
               <SquarePen aria-hidden />
               New issue
+            </NavLink>
+            <NavLink to="/settings" className={tab}>
+              <Settings aria-hidden />
+              Settings
             </NavLink>
           </nav>
           <div className="ml-auto flex items-center gap-4">

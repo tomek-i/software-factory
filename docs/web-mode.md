@@ -119,6 +119,23 @@ Differences from the CLI:
 - One issue writer runs per project at a time; starting another is refused until it ends or is stopped.
 - A draft that doesn't parse can only be discarded, or fixed by hand.
 
+### Settings
+
+A project's `.factory/config.yaml` as a form, read from its default branch on GitHub, where runs read it (see [Configuration](configuration.md)).
+
+- Each setting shows its help, its default, and whether the file sets it.
+- "Use default" takes a setting out of the file, so the default applies again.
+- A few can't be changed here, with why: the default branch, and the hard-rule triggers, which always apply.
+- "Review and save" lists every change, with a warning on those that let runs do more without you (gates, trust, protected paths, open feedback).
+- Saving commits the change to the default branch and pushes it, keeping the file's comments.
+  - Runs and the worker use it from then on; a local checkout sees it after a pull.
+  - The commit runs the repository's hooks and signing, which are never skipped.
+- A save is refused, and nothing changes, when:
+  - the settings changed on the branch since the page read them: reload and make the change again;
+  - the branch refuses the push, as branch protection does: change the file through a PR instead;
+  - a value isn't valid, with the reason.
+- When the file on the branch isn't a valid config, the page says why and shows the defaults.
+
 ## Security
 
 The server can start agents and merge pull requests, so it answers only your own browser:

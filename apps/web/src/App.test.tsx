@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, RunChecks, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -77,6 +77,8 @@ class FakeServer {
       { kind: "unparsed", path: "build.md", problem: "STATUS is missing" },
     ],
   });
+  /** The settings page of project p1. */
+  settings?: ProjectSettings;
   /** The token each request carried. */
   tokens = new Set<string | null>();
   private stream?: ReadableStreamDefaultController<string>;
@@ -96,9 +98,10 @@ data: ${JSON.stringify(event)}
       const body = new ReadableStream<string>({ start: (controller) => void (this.stream = controller) }).pipeThrough(new TextEncoderStream());
       return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
     }
-    if (init?.method !== "POST") this.gets.push(url.pathname);
+    const changes = init?.method === "POST" || init?.method === "PUT";
+    if (!changes) this.gets.push(url.pathname);
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-    if (init?.method === "POST") {
+    if (changes) {
       this.posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
       for (const [suffix, failure] of this.failures) if (url.pathname.endsWith(suffix)) return json(failure.status, { error: failure.error });
       if (url.pathname.endsWith("/sync")) return json(200, { open: 3, closed: 1, queued: 2, lines: [] });
@@ -112,6 +115,7 @@ data: ${JSON.stringify(event)}
       return json(200, this.runs.filter((r) => view !== "waiting" || r.state === "needs_human" || r.state === "needs_info"));
     }
     if (url.pathname === "/api/projects/p1/issues") return json(200, this.backlog);
+    if (url.pathname === "/api/projects/p1/settings") return this.settings ? json(200, this.settings) : json(404, { error: "Not found." });
     if (url.pathname === "/api/drafts") return json(200, this.drafts);
     const draft = /^\/api\/projects\/p1\/drafts\/([^/]+)$/.exec(url.pathname);
     if (draft) {
@@ -1278,5 +1282,109 @@ describe("new issue", () => {
     expect(await screen.findByText(`This draft can't be created: ${refusal}.`)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Create on GitHub|^Save$/ })).toBeNull();
     expect(screen.getByLabelText("Draft text").textContent).toBe("DECISION: PROCEED\n");
+  });
+});
+
+describe("settings", () => {
+  const HEAD = "b".repeat(40);
+  function settingsPage(patch: Partial<ProjectSettings> = {}): ProjectSettings {
+    return {
+      branch: "main",
+      head: HEAD,
+      sections: [
+        { key: "gates", title: "Gates", about: "Where a run stops for you." },
+        { key: "loops", title: "Loops", about: "How often a run may go back." },
+        { key: "trust", title: "Trust", about: "Whose issues count as the spec." },
+        { key: "project", title: "Project", about: "The project." },
+      ],
+      settings: [
+        {
+          path: "gates.merge",
+          section: "gates",
+          label: "merge",
+          help: "Before the PR is merged.",
+          kind: { type: "enum", options: ["always", "auto", "human"] },
+          sensitive: "A gate that no longer stops for you lets runs go past that point on their own.",
+          value: "human",
+          effective: "human",
+          default: "human",
+        },
+        { path: "loops.max_review_rounds", section: "loops", label: "Review rounds", help: "Confirmed findings sending the build back.", kind: { type: "integer", min: 1 }, effective: 3, default: 3 },
+        { path: "trust.authors", section: "trust", label: "Trusted authors", help: "Logins.", kind: { type: "list" }, sensitive: "Trusted issues can lead to a build.", value: ["alice"], effective: ["alice"], default: [] },
+        { path: "project.default_branch", section: "project", label: "Default branch", help: "The branch.", kind: { type: "string" }, readOnly: "Change it in the file itself.", effective: "main", default: "main" },
+      ],
+      builtinPaths: [".factory/**"],
+      problems: [],
+      ...patch,
+    };
+  }
+
+  it("shows each setting with its default, and saves the changes to the default branch after listing them", async () => {
+    server.settings = settingsPage();
+    server.answers.set("/settings", { commit: "c".repeat(40), branch: "main", changed: ["gates.merge", "loops.max_review_rounds"] });
+    renderAt("/settings");
+    const user = userEvent.setup();
+
+    expect(await screen.findByRole("heading", { name: "Gates" })).toBeTruthy();
+    expect(screen.getByText("Change it in the file itself.")).toBeTruthy();
+    expect((screen.getByLabelText("Review rounds") as HTMLInputElement).placeholder).toBe("3");
+    expect(screen.queryByRole("button", { name: /Review and save/ })).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText("merge"), "auto");
+    await user.type(screen.getByLabelText("Review rounds"), "5");
+    expect(screen.getByText("2 changes")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Review and save/ }));
+
+    const confirm = screen.getByRole("group", { name: "Confirm the changes" });
+    expect(within(confirm).getByText(/Commit and push these 2 changes to main\?/)).toBeTruthy();
+    expect(confirm.textContent).toContain("gates.merge: human to auto");
+    expect(confirm.textContent).toContain("loops.max_review_rounds: 3 to 5");
+    expect(within(confirm).getByText(/lets runs go past that point on their own/)).toBeTruthy();
+    await user.click(within(confirm).getByRole("button", { name: "Save to main" }));
+
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        { path: "/api/projects/p1/settings", body: { head: HEAD, changes: [{ path: "gates.merge", value: "auto" }, { path: "loops.max_review_rounds", value: 5 }] } },
+      ]),
+    );
+    expect((await screen.findByRole("status")).textContent).toMatch(/^Saved as commit ccccccc on main\. Runs use it from now on/);
+  });
+
+  it("takes a setting back to its default, drops an edit undone by hand, and discards", async () => {
+    server.settings = settingsPage();
+    renderAt("/settings");
+    const user = userEvent.setup();
+
+    const authors = await screen.findByLabelText("Trusted authors");
+    await user.type(authors, "\nbob");
+    expect(screen.getByText("1 change")).toBeTruthy();
+    await user.type(authors, "{Backspace}{Backspace}{Backspace}{Backspace}");
+    expect(screen.queryByText("1 change")).toBeNull();
+
+    await user.click(screen.getAllByRole("button", { name: /Use default/ })[1]!);
+    await user.click(screen.getByRole("button", { name: /Review and save/ }));
+    expect(screen.getByRole("group", { name: "Confirm the changes" }).textContent).toContain("trust.authors: alice to the default (none)");
+    await user.click(screen.getByRole("button", { name: "Keep editing" }));
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.queryByText("1 change")).toBeNull();
+    expect((screen.getByLabelText("Trusted authors") as HTMLTextAreaElement).value).toBe("alice");
+  });
+
+  it("offers to reload when the settings changed on the branch meanwhile, and shows why a file on the branch is invalid", async () => {
+    server.settings = settingsPage({ problems: ["origin/main:.factory/config.yaml: loops.max_review_rounds: Too small"] });
+    server.failures.set("/settings", { status: 409, error: "The settings on main changed since you opened them." });
+    renderAt("/settings");
+    const user = userEvent.setup();
+
+    expect((await screen.findByRole("alert")).textContent).toContain("loops.max_review_rounds: Too small");
+    await user.selectOptions(screen.getByLabelText("merge"), "always");
+    await user.click(screen.getByRole("button", { name: /Review and save/ }));
+    await user.click(screen.getByRole("button", { name: "Save to main" }));
+
+    expect(await screen.findByText("The settings on main changed since you opened them.")).toBeTruthy();
+    server.settings = settingsPage({ head: "d".repeat(40) });
+    await user.click(screen.getByRole("button", { name: /Reload the settings/ }));
+    await waitFor(() => expect(screen.queryByText(/changed since you opened them/)).toBeNull());
+    expect((screen.getByLabelText("merge") as HTMLSelectElement).value).toBe("human");
   });
 });
