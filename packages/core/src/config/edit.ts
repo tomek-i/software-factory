@@ -37,7 +37,8 @@ export function editConfigText(text: string, changes: ConfigChange[], path: stri
     }
     // No line width: a long command must stay on one line, as it was written. Lists keep the file's
     // own indentation (`- ` under its key, or indented), so untouched ones don't change.
-    out = doc.toString({ lineWidth: 0, indentSeq: !UNINDENTED_LIST.test(out) });
+    // Flow lists stay unpadded (`[alice]`), as people write them.
+    out = doc.toString({ lineWidth: 0, indentSeq: !UNINDENTED_LIST.test(out), flowCollectionPadding: false });
     if (text.includes("\r\n")) out = out.replace(/\r?\n/g, "\r\n");
   }
   // A broken result is never returned: this throws a ConfigError naming the problem.

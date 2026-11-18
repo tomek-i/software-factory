@@ -52,9 +52,11 @@ describe("editConfigText", () => {
     expect(parseConfig(out).gates.pr).toBe("auto");
   });
 
-  it("keeps a file's unindented lists as they are, and refuses to set through an alias", () => {
+  it("keeps a file's unindented and inline lists as they are, and refuses to set through an alias", () => {
     const flat = "version: 1\nchecks:\n- name: test\n  run: pnpm test\nreviews:\n  always:\n  - code\n";
     expect(editConfigText(flat, [{ path: "gates.merge", value: "auto" }])).toBe(`${flat}gates:\n  merge: auto\n`);
+    const inline = "version: 1\ntrust:\n  authors: [alice]\n";
+    expect(editConfigText(inline, [{ path: "gates.merge", value: "auto" }])).toBe(`${inline}gates:\n  merge: auto\n`);
     const aliased = "version: 1\nshared: &g\n  merge: human\ngates: *g\n";
     expect(() => editConfigText(aliased, [{ path: "gates.pr", value: "auto" }])).toThrow(/gates\.pr: written in a form this can't change safely/);
   });
