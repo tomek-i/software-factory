@@ -8,6 +8,8 @@ import {
   cancelRun,
   cleanupRunNow,
   cleanupRuns,
+  ConfigError,
+  SettingsChanged,
   continuation,
   dismissAlert,
   ensureQueued,
@@ -43,6 +45,7 @@ import {
 import { isTerminal, isTrustedIssue } from "@factory/shared";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { DraftJobs, draftRoutes } from "./drafts.js";
+import { settingsRoutes } from "./settings.js";
 import { BadRequest, Conflict } from "./errors.js";
 import type { EventHub } from "./hub.js";
 import { MergeGateReader, type MergeGateDetails } from "./merge-gate.js";
@@ -57,7 +60,7 @@ export interface ServerOptions {
   token: string;
   /** The port the browser uses, for the Host and Origin checks. Once listening, the real one is used. */
   port: number;
-  scheduler?: { status(): SchedulerStatus };
+  scheduler?: { status(): SchedulerStatus; forgetConfig?(repoPath: string): void };
   run?: CommandRunner;
   github?: (project: Project) => GithubPort | undefined;
   /** Creates the New issue screen's issues; without it, `gh` as `factory new` uses. */
@@ -71,6 +74,8 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** Per draft route; tests lower it. */
   draftLimit?: RateLimit;
+  /** For tests: the settings save route's rate limit. */
+  settingsLimit?: RateLimit;
   /** Milliseconds now, for the GitHub caches; tests move it on. */
   clock?: () => number;
 }
@@ -310,9 +315,11 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.setErrorHandler((err: Error & { statusCode?: number }, _req, reply) => {
     if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
-    if (err instanceof Conflict) return reply.code(409).send({ error: err.message });
+    if (err instanceof Conflict || err instanceof SettingsChanged) return reply.code(409).send({ error: err.message });
     if (err instanceof TooManyRequests) return reply.code(429).header("Retry-After", String(err.retryAfter)).send({ error: err.message });
     if (err instanceof ServiceError || err instanceof BadRequest) return reply.code(400).send({ error: err.message });
+    // Reading the settings fetches the default branch; offline, that fails with git's own message.
+    if (err instanceof ConfigError) return reply.code(502).send({ error: err.message });
     if (err instanceof GithubError) return reply.code(502).send({ error: `GitHub: ${err.message}` });
     // Fastify's own (a malformed JSON body, say) carry a 4xx status and a message meant for the client.
     if (err.statusCode && err.statusCode >= 400 && err.statusCode < 500) return reply.code(err.statusCode).send({ error: err.message });
@@ -514,6 +521,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });
+  settingsRoutes(app, { projects, run: options.run, changed, redact: projectRedactor, forgetConfig: (path) => options.scheduler?.forgetConfig?.(path), limit: options.settingsLimit });
 
   app.get("/api/scheduler", async () => options.scheduler?.status() ?? null);
 

@@ -309,6 +309,16 @@ export class Scheduler {
     return ours.length + others.length;
   }
 
+  /**
+   * Read a project's config again on the next tick rather than after the cache runs out: its
+   * settings were just changed on the default branch.
+   */
+  forgetConfig(repoPath: string): void {
+    const project = this.opened.get(repoPath);
+    if (project) project.config = undefined;
+    this.wake?.();
+  }
+
   private config(project: Opened, now: number): FactoryConfig | undefined {
     const cached = project.config;
     if (!cached || now - cached.at >= CONFIG_TTL_MS) {

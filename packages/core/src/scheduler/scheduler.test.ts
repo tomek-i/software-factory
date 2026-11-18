@@ -161,6 +161,21 @@ describe("Scheduler: starting queued issues", () => {
     expect(t.drives.map((d) => `${d.project}#${d.issue}`)).toEqual(["shop#1", "shop#2"]);
   });
 
+  it("reads the config again once told it changed, rather than waiting for the cache to run out", () => {
+    const shop = project("shop", { version: 1, github: { max_starts_per_day: 0 } });
+    shop.queue(1);
+    const t = scheduler([shop]);
+
+    t.s.tick();
+    expect(t.drives).toHaveLength(0);
+    shop.trusted = factoryConfigSchema.parse({ version: 1 });
+    t.s.tick();
+    expect(t.drives).toHaveLength(0);
+    t.s.forgetConfig(shop.entry.path);
+    t.s.tick();
+    expect(t.issues()).toEqual([1]);
+  });
+
   it("doesn't start an issue unqueued before its turn, or closed on GitHub", () => {
     const shop = project("shop");
     shop.queue(1, 2, 3);
