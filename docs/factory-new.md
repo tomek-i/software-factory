@@ -60,7 +60,7 @@ With `auto` or `always`, nobody reads the draft before it becomes an issue:
 ## If something goes wrong
 
 - What has been created is recorded in `.factory/factory.db`.
-- If GitHub fails halfway, `factory new --approve` again only does what is left.
+- If GitHub fails halfway, `factory new --approve` again only does what is left; add `--queue` again if you asked for it, or the issues are not queued.
 - An issue whose draft entry you edited after it was created is refused, rather than matched up by position.
 - If `gh issue create` succeeds but its output can't be read, the error names the title.
 - Check GitHub before approving again, as that issue may exist already.

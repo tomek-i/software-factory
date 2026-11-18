@@ -83,7 +83,7 @@ describe("factory new", () => {
     // What becomes a trusted issue is shown in full before it is created.
     expect(printed).toEqual([`${SINGLE.trim()}
 `]);
-    expect(approved).toBe("Created #20 Add CSV export.\nNot queued. Queue it with `factory queue 20`, or run it now with `factory run 20`.");
+    expect(approved).toBe("Created #20 Add CSV export.\nNot queued.\nQueue it with `factory queue 20`, or run it now with `factory run 20`.");
     expect(issues()).toMatchObject([{ number: 20, author: "factory-operator", created_by_factory: true, queued_at: null }]);
     expect(await runNew(dir, [], { list: true }, deps)).toMatch(/^No pending drafts/);
   });
@@ -109,7 +109,11 @@ describe("factory new", () => {
       if (created.length === 2) throw new Error("GitHub is down");
       return createIssue(issue);
     };
-    await expect(runNew(dir, [], { approve: id, queue: true }, deps)).rejects.toThrow(/GitHub is down\nApprove it again to finish/);
+    // Without --queue the retry hint says nothing about queuing.
+    await expect(runNew(dir, [], { approve: id }, deps)).rejects.toThrow("GitHub is down\nApprove it again to finish; issues recorded as created are not created again.");
+    await expect(runNew(dir, [], { approve: id, queue: true }, deps)).rejects.toThrow(
+      "GitHub is down\nApprove it again to finish, and ask to queue again (`--queue`); issues recorded as created are not created again.",
+    );
     expect(issues()).toEqual([]);
 
     deps.github.createIssue = createIssue;
@@ -166,7 +170,7 @@ describe("factory new", () => {
     const output = await runNew(dir, ["exports in every format"], {}, deps);
 
     expect(output).toBe(
-      "Created #20 Exports, with sub-issues:\n  #21 CSV export\n  #22 Excel export\nNot queued. Queue them with `factory queue 21 22`, or run them now with `factory run 21 22`.",
+      "Created #20 Exports, with sub-issues:\n  #21 CSV export\n  #22 Excel export\nNot queued.\nQueue them with `factory queue 21 22`, or run them now with `factory run 21 22`.",
     );
     expect(issues().map((i) => [i.number, i.created_by_factory, i.queued_at])).toEqual([
       [22, true, null],
@@ -184,6 +188,11 @@ describe("factory new", () => {
     expect(output).toMatch(/is waiting for you: which columns\?/);
     expect(escalate.created).toEqual([]);
     expect(await runNew(escalate.dir, [], { list: true }, escalate.deps)).toMatch(/Add CSV export \(escalated\)$/);
+  });
+
+  it("keeps --queue in the hint to approve a draft that is still malformed after the retry", async () => {
+    const { dir, deps } = setup([{ output: "DECISION: PROCEED\n" }, { output: "DECISION: PROCEED\n" }], "always");
+    await expect(runNew(dir, ["an idea"], { queue: true }, deps)).rejects.toThrow(/create it with `factory new --approve draft-[0-9a-f]{8} --queue`, or drop it/);
   });
 
   it("reports a draft that is still malformed after the retry and keeps it for a fix or a discard", async () => {
