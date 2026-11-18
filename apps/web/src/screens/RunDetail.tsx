@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
+import { Leftover } from "../components/Cleanup";
 import { OpenFeedback } from "../components/OpenFeedback";
 import { RunActions } from "../components/RunActions";
 import { StateBadge } from "../components/StateBadge";
@@ -194,11 +195,13 @@ function RunPage({ project, id }: { project: string; id: string }) {
               <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} onDone={(text) => setDone({ text, at: `${run.state}/${run.waitingGate ?? ""}` })} />
               {/* Outside RunActions, which goes away once the run is no longer waiting for you. */}
               {/* Shown until the run waits for you again somewhere else, where it would describe an old decision. */}
-              <p role="status" className="text-sm">
+              <p role="status" aria-label="Decision result" className="text-sm">
                 {done && !(run.state === "needs_human" && done.at !== `${run.state}/${run.waitingGate ?? ""}`) ? done.text : undefined}
               </p>
             </CardContent>
           </Card>
+
+          <Leftover key={`${run.project}/${run.id}`} run={run} leftover={data.leftover} />
 
           <Card>
             <CardHeader>

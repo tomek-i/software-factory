@@ -109,6 +109,22 @@ describe("cleanupRun", () => {
     expect(remoteHas()).toBe(true);
   });
 
+  it("stops saying it kept a merged run's remote branch once that branch is deleted by hand", () => {
+    const { root, remote, store, project, run, runDir } = finishedRun("done", { commit: true, push: true });
+    const elsewhere = join(root, "..", "elsewhere");
+    git(join(root, ".."), "clone", "--quiet", "--branch", BRANCH, remote, elsewhere);
+    commit(elsewhere, "late.txt", "late\n");
+    git(elsewhere, "push", "--quiet", "origin", BRANCH);
+    const sweep = () => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: () => runDir, graceMs: 0, recheckKept: true });
+
+    sweep();
+    expect(store.listEvents(run.id).at(-1)?.reason).toBe(`cleanup: kept: the remote branch ${BRANCH} is not what was merged, so it is kept`);
+    git(elsewhere, "push", "--quiet", "origin", "--delete", BRANCH);
+
+    expect(sweep()).toEqual([]);
+    expect(store.listEvents(run.id).at(-1)?.reason).toBe("cleanup: nothing left to remove");
+  });
+
   for (const state of ["cancelled", "rejected", "failed"] as const) {
     it(`removes a ${state} run's worktree and local branch when its work is pushed, and keeps the remote branch`, () => {
       const { run, worktree, options, remoteHas, localHas } = finishedRun(state, { commit: true, push: true });
@@ -332,24 +348,35 @@ describe("cleanupFinishedRuns", () => {
 
   it("cleans up runs that finished a while ago, once, with the merged head from the run's events", () => {
     const { root, store, project, run, worktree, remoteHas } = finishedRun("done", { commit: true, push: true });
-    const sweep = (now: Date) => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now });
+    const skipped: [string, string][] = [];
+    const sweep = (now: Date) =>
+      cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now, onSkipped: (id, why) => skipped.push([id, why]) });
     // Just finished: its worker may still be stopping.
     expect(sweep(later(run, 60_000))).toEqual([]);
     expect(existsSync(worktree.path)).toBe(true);
+    expect(skipped).toEqual([[run.id, "finished 60s ago; cleaned up 2 minutes after it finished"]]);
     expect(sweep(later(run, 3 * 60_000))).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}, remote branch ${BRANCH}`]);
     expect(remoteHas()).toBe(false);
     expect(sweep(later(run, 4 * 60_000))).toEqual([]);
+    // Cleaned up: not reported as left alone either.
+    expect(skipped).toHaveLength(1);
   });
 
   it("leaves a run alone while a worker still holds its lease", () => {
     const { root, store, project, run, worktree } = finishedRun("cancelled", { commit: true, push: true });
     const at = later(run, 3 * 60_000);
     expect(store.acquireLease(run.id, "worker", 10 * 60_000)).toBe(true);
-    const sweep = () => cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now: at, graceMs: 0 });
+    const skipped: string[] = [];
+    // graceMs 0, as `factory cleanup --now`: a held lease still wins.
+    const sweep = () =>
+      cleanupFinishedRuns(store, project, { defaultBranch: "main", runDirOf: (id) => runDirOf(root, id), now: at, graceMs: 0, onSkipped: (_id, why) => skipped.push(why) });
     expect(sweep()).toEqual([]);
     expect(existsSync(worktree.path)).toBe(true);
+    expect(skipped).toEqual(["a worker still holds it; cleaned up once the worker stops, or its lease runs out"]);
     store.releaseLease(run.id, "worker");
     expect(sweep()).toEqual([`${run.id}: removed worktree, local branch ${BRANCH}`]);
+    // Cleaned up the first time: the run keeps its own reason.
+    expect(store.listEvents(run.id).some((e) => e.reason.startsWith("cleanup:"))).toBe(false);
   });
 
   it("records why it kept a run once, lists without removing in a dry run, and looks again when asked", () => {
@@ -372,5 +399,7 @@ describe("cleanupFinishedRuns", () => {
     // Pushed since: `factory cleanup` now removes it.
     git(kept.worktree.path, "push", "--quiet", "origin", `HEAD:refs/heads/${BRANCH}`);
     expect(cleanupFinishedRuns(kept.store, kept.project, { ...options, recheckKept: true })).toEqual([`${kept.run.id}: removed worktree, local branch ${BRANCH}`]);
+    // The run's reason no longer says it was kept.
+    expect(kept.store.listEvents(kept.run.id).at(-1)?.reason).toBe(`cleanup: removed worktree, local branch ${BRANCH}`);
   });
 });

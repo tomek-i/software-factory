@@ -142,6 +142,15 @@ export interface RunDetail {
   /** The files the page can't show, and why: no text (screenshots, videos), or too big. */
   unshown: Record<string, "binary" | "too_big">;
   sections: OverviewSection[];
+  /** A finished run's worktree (relative to the repo) and branch cleanup has not removed, and why it kept them. */
+  leftover?: { worktree: string; branch: string; kept?: string };
+}
+
+/** What a cleanup removed and kept (`lines`), and the runs it left alone with why. */
+export interface CleanupResult {
+  lines: string[];
+  /** `recent`: left alone only because it just finished; cleaning up with `now` removes it. */
+  skipped: { runId: string; why: string; recent: boolean }[];
 }
 
 /** One lens's review of the latest round; `problem` when its file does not parse. */
@@ -308,6 +317,8 @@ export const api = {
   dismiss: (run: RunRow, alert: number, reason: DismissReason, comment: string) =>
     request<Dismissed>("POST", runPath(run, "dismiss"), { ...shown(run), alert, reason, comment }),
   cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
+  cleanupRun: (run: RunRow) => request<{ lines: string[] }>("POST", runPath(run, "cleanup"), shown(run)),
+  cleanup: (project: string, now: boolean) => request<CleanupResult>("POST", `/api/projects/${project}/cleanup`, { now }),
   drafts: (project?: string) => request<DraftView[]>("GET", `/api/drafts${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   draft: (project: string, id: string) => request<DraftDetail>("GET", draftPath(project, id)),
   startDraft: (project: string, idea: string, queue: boolean) => request<{ id: string; ignored: string[] }>("POST", `${projectPath(project)}/drafts`, { idea, queue }),

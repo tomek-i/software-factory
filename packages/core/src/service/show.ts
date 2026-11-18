@@ -1,7 +1,8 @@
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
-import { isBlocking, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
+import { isBlocking, isTerminal, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
 import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
+import { CLEANUP_MARKER } from "../pipeline/cleanup.js";
 import { refutedFindings, runDirOf } from "../pipeline/driver.js";
 import type { Project, Run, Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
@@ -124,6 +125,32 @@ export interface RunOverview {
   openFeedback?: FailureItem[];
   /** Its issue was closed on GitHub while its PR is open; cancelling closes the PR too (see waitingOn). */
   issueClosed?: { pr: number };
+  /** A finished run whose worktree and branch were not cleaned up yet (see leftoverOf). */
+  leftover?: Leftover;
+}
+
+/** What a finished run still has, and, when cleanup kept it on purpose, why. */
+export interface Leftover {
+  worktree: string;
+  branch: string;
+  kept?: string;
+}
+
+/**
+ * A finished run's worktree and branch, unless cleanup dealt with them. Read from the run's cleanup
+ * marker, without asking git, so a page can show it cheaply. A cleanup that removed them but kept
+ * the remote branch (pushed to after the merge) leaves nothing here to clean up.
+ */
+export function leftoverOf(run: Run, runDir: string): Leftover | undefined {
+  if (!isTerminal(run.state) || !run.worktree_path || !run.branch) return undefined;
+  let marker: { kept?: unknown; removed?: unknown } | undefined;
+  try {
+    marker = JSON.parse(readFileSync(join(runDir, CLEANUP_MARKER), "utf8")) as { kept?: unknown; removed?: unknown };
+  } catch {
+    marker = undefined;
+  }
+  if (marker && (typeof marker.kept !== "string" || (Array.isArray(marker.removed) && marker.removed.length > 0))) return undefined;
+  return { worktree: run.worktree_path, branch: run.branch, ...(marker ? { kept: marker.kept as string } : {}) };
 }
 
 function sectionsOf(runDir: string, files: string[]): OverviewSection[] {
@@ -198,6 +225,7 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
   const issueTitle = run.issue_number ? store.getIssue(project.id, run.issue_number)?.title : undefined;
   const hasRunDir = existsSync(runDir);
   const { failure, issueClosed } = waitingOn(store, project, run);
+  const leftover = leftoverOf(run, runDir);
   return {
     run,
     issueTitle,
@@ -207,6 +235,7 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
     sections: hasRunDir ? sectionsOf(runDir, files) : [],
     ...(failure?.kind === "feedback" ? { openFeedback: failure.items } : {}),
     ...(issueClosed ? { issueClosed } : {}),
+    ...(leftover ? { leftover } : {}),
   };
 }
 

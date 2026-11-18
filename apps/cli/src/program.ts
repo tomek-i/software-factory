@@ -39,7 +39,7 @@ export function buildProgram(): Command {
   const program = new Command()
     .name("factory")
     .description("AI software factory: turns GitHub issues into reviewed, tested pull requests")
-    .version("0.6.0"); // x-release-please-version (release-please bumps it on each release)
+    .version("0.7.0"); // x-release-please-version (release-please bumps it on each release)
 
   // Set before any subcommand is added: commander copies these settings to each subcommand it creates.
   program
@@ -328,7 +328,8 @@ export function buildProgram(): Command {
     .command("cleanup")
     .description("remove the worktrees and branches of finished runs that still have them")
     .option("--dry-run", "list what would be removed and kept, change nothing")
-    .action((options: { dryRun?: boolean }) => {
+    .option("--now", "also clean up runs that finished in the last 2 minutes, unless a worker still holds them")
+    .action((options: { dryRun?: boolean; now?: boolean }) => {
       console.log(runCleanup(process.cwd(), options, undefined, styleFor(process.stdout)));
     });
 

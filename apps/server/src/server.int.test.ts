@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { driveIssue, loadConfig, runDirOf, Store, type CommandRunner, type GithubPort, type ProjectContext, type PullRequestCheck } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -589,6 +589,55 @@ describe("runs", () => {
       const res = await call(app, "GET", `/api/projects/${projectKey(ctx.root)}/runs/${run.id}`);
 
       expect(res.json()).toMatchObject({ run: { id: run.id, state: "intake", issue: null }, issue: null, hasRunDir: false, files: [], sections: [] });
+    });
+  });
+
+  describe("cleanup", () => {
+    /** A run that just finished, its worktree and branch not cleaned up yet. No git runs on these paths. */
+    function finished() {
+      const ctx = memoryProject();
+      const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Done run", issue_number: 12 });
+      ctx.store.updateRunFields(run.id, { worktree_path: join(ctx.root, ".worktrees", run.id), branch: "factory/12-done" });
+      ctx.store.writeState(run.id, "cancelled");
+      const { app } = server([ctx]);
+      return { ctx, run, app, key: projectKey(ctx.root), base: `/api/projects/${projectKey(ctx.root)}/runs/${run.id}` };
+    }
+
+    it("shows a finished run's leftover worktree, relative to the repo, and its branch", async () => {
+      const { run, app, base } = finished();
+      expect((await call(app, "GET", base)).json().leftover).toEqual({ worktree: `.worktrees/${run.id}`, branch: "factory/12-done" });
+    });
+
+    it("cleans up one run only once it has finished and no worker holds it", async () => {
+      const { ctx, run, app, base } = finished();
+      ctx.store.acquireLease(run.id, "worker", 60_000);
+      const held = await call(app, "POST", `${base}/cleanup`, { state: "cancelled" });
+      expect(held.statusCode).toBe(400);
+      expect(held.json()).toEqual({ error: `A worker still holds run ${run.id}; it is cleaned up once the worker stops, or its lease runs out.` });
+      // Shown in another state than it is in now: refused before anything runs.
+      expect((await call(app, "POST", `${base}/cleanup`, { state: "review" })).statusCode).toBe(409);
+    });
+
+    it("cleans up the project's finished runs and lists the ones it left alone", async () => {
+      const { run, app, key } = finished();
+      const res = await call(app, "POST", `/api/projects/${key}/cleanup`, {});
+      expect(res.json()).toEqual({ lines: [], skipped: [{ runId: run.id, why: expect.stringMatching(/^finished \d+s ago; cleaned up 2 minutes after it finished$/), recent: true }] });
+      expect((await call(app, "POST", `/api/projects/${key}/cleanup`, { now: "yes" })).statusCode).toBe(400);
+    });
+
+    it("keeps local paths out of why it kept a run and of what a cleanup says", async () => {
+      const { ctx, run, app, base } = finished();
+      const dir = runDirOf(ctx.root, run.id);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "cleanup.json"), JSON.stringify({ removed: [], kept: `${join(ctx.root, ".worktrees", run.id)} has changes` }));
+      expect((await call(app, "GET", base)).json().leftover.kept).toBe(`.worktrees${sep}${run.id} has changes`);
+
+      // Not a git repository here, so the cleanup fails with a warning naming the worktree.
+      const res = await call(app, "POST", `${base}/cleanup`, { state: "cancelled" });
+      expect(res.statusCode).toBe(200);
+      const lines = (res.json() as { lines: string[] }).lines;
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.join("\n")).not.toContain(ctx.root);
     });
   });
 
