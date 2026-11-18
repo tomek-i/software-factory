@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.7.0](https://github.com/tomek-i/software-factory/compare/v0.6.0...v0.7.0) (2026-11-17)
+
+
+### Features
+
+* **cli:** add --sync, --name, --labels and --dry-run to factory init ([#234](https://github.com/tomek-i/software-factory/issues/234)) ([0f5c788](https://github.com/tomek-i/software-factory/commit/0f5c788eff9bacc3e0b5e10aacebe1a69970470b))
+* **cli:** colour errors, help and the plain commands ([#228](https://github.com/tomek-i/software-factory/issues/228)) ([f67e062](https://github.com/tomek-i/software-factory/commit/f67e06209c4a81614119129c3f75ca987fd54c85))
+* **reconcile:** finish or flag runs whose issue was closed on github ([#233](https://github.com/tomek-i/software-factory/issues/233)) ([4bbeaa8](https://github.com/tomek-i/software-factory/commit/4bbeaa80772df9a2589d9447cf5647fd284d8b74))
+* **web:** show the PR, its checks and the reviews on a merge-gate card ([#197](https://github.com/tomek-i/software-factory/issues/197)) ([ca2d8c2](https://github.com/tomek-i/software-factory/commit/ca2d8c2329f91f5584cde2d9e9503d47bff4ee47)), closes [#180](https://github.com/tomek-i/software-factory/issues/180)
+
+
+### Bug Fixes
+
+* **core:** refuse the real data folder when tests run without the setup file ([#232](https://github.com/tomek-i/software-factory/issues/232)) ([d091895](https://github.com/tomek-i/software-factory/commit/d09189575a8dd8b0f9293f5d350465ce203fd6a4))
+
+
+### Performance
+
+* **core:** make fewer git calls per pipeline step ([#236](https://github.com/tomek-i/software-factory/issues/236)) ([0cbc7ba](https://github.com/tomek-i/software-factory/commit/0cbc7ba03c3f7650598208d7ca0f5fe77b6885d8)), closes [#159](https://github.com/tomek-i/software-factory/issues/159)
+
+
+### Documentation
+
+* turn the readme into a short landing page ([#235](https://github.com/tomek-i/software-factory/issues/235)) ([81a355a](https://github.com/tomek-i/software-factory/commit/81a355a3840e140780dc24f7a232340d976a3825))
+
 ## [0.6.0](https://github.com/tomek-i/software-factory/compare/v0.5.0...v0.6.0) (2026-11-17)
 
 
