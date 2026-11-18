@@ -160,7 +160,7 @@ function Waiting({ run }: { run: RunRow }) {
     <Card>
       <CardHeader>
         <Badge className="bg-amber-500/15 font-mono text-amber-700 dark:text-amber-300">{run.waitingGate ? `${run.waitingGate} gate` : "escalation"}</Badge>
-        <Link to={runPath(run)} className="font-medium hover:underline">
+        <Link to={runPath(run)} className="font-medium underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-current">
           {run.issue !== null && <span className="mr-1.5 font-mono text-muted-foreground">#{run.issue}</span>}
           {run.title}
         </Link>
@@ -242,7 +242,7 @@ export function Inbox() {
           <ul className="space-y-1 text-sm">
             {author.map((run) => (
               <li key={`${run.project}/${run.id}`}>
-                <Link to={runPath(run)} className="hover:underline">
+                <Link to={runPath(run)} className="underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-current">
                   {run.issue !== null && <span className="mr-1.5 font-mono text-muted-foreground">#{run.issue}</span>}
                   {run.title}
                 </Link>{" "}

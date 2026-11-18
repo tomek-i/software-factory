@@ -38,7 +38,7 @@ export function Leftover({ run, leftover }: { run: RunRow; leftover?: RunDetail[
             {clean.error.message}
           </p>
         )}
-        <div role="status" className="text-sm">
+        <div role="status" aria-label="Cleanup result" className="text-sm">
           {clean.data && <Outcome result={{ lines: clean.data.lines, skipped: [] }} />}
         </div>
       </CardContent>

@@ -18,14 +18,22 @@ const DISMISS_COMMENT_MAX = 280;
 
 const checksKey = (run: RunRow) => ["checks", run.project, run.id];
 
+/** What each decision did, said once it went through. */
+const DONE: Record<Exclude<Mode, "checks">, (to: RunState | "") => string> = {
+  approve: () => "Approved.",
+  reject: () => "Rejected.",
+  resume: (to) => `Sent to ${to}.`,
+  cancel: () => "Cancelled.",
+};
+
 /**
  * The decisions on a run waiting for a human: approve or reject at a gate, send it back to a stage
  * (with the failure it waits on, if any), dismiss a false-positive code scanning alert, cancel.
  * Shared by the Inbox card and the run's detail view, so both follow one set of rules.
  * With `warn` (e.g. a failed check on the PR), Approve says "Approve anyway": it still posts the
- * same approval; the warning is the caller's to explain.
+ * same approval; the warning is the caller's to explain. `onDone` is told what was done, to confirm it.
  */
-export function RunActions({ run, warn = false }: { run: RunRow; warn?: boolean }) {
+export function RunActions({ run, warn = false, onDone }: { run: RunRow; warn?: boolean; onDone?: (what: string) => void }) {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<Mode>();
   const [message, setMessage] = useState("");
@@ -35,15 +43,16 @@ export function RunActions({ run, warn = false }: { run: RunRow; warn?: boolean 
   const [resetLoops, setResetLoops] = useState(!!run.capReached);
   const helpId = useId();
   const act = useMutation({
-    mutationFn: (m: Mode) => {
+    mutationFn: (m: Exclude<Mode, "checks">) => {
       if (m === "approve") return api.approve(run, message.trim() || undefined);
       if (m === "reject") return api.reject(run, message);
       if (m === "resume") return api.resume(run, to as RunState, message, resetLoops);
       return api.cancel(run, message.trim() || undefined);
     },
-    onSuccess: () => {
+    onSuccess: (_data, m) => {
       setMode(undefined);
       setMessage("");
+      onDone?.(DONE[m](to));
       return queryClient.invalidateQueries();
     },
   });
@@ -87,7 +96,7 @@ export function RunActions({ run, warn = false }: { run: RunRow; warn?: boolean 
   };
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (mode) act.mutate(mode);
+    if (mode && mode !== "checks") act.mutate(mode);
   };
 
   const closedNote = run.issueClosed && (

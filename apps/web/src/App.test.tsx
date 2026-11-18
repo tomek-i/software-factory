@@ -2,7 +2,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
 import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, RunChecks, RunDetail, RunRow } from "./lib/api";
@@ -61,6 +61,7 @@ class FakeServer {
     issue: run.issue === null ? null : { number: run.issue, title: `Issue ${run.issue}`, url: `https://github.com/acme/shop/issues/${run.issue}` },
     hasRunDir: true,
     files: Object.keys(this.files),
+    unshown: {},
     sections: [
       { kind: "verdict", path: "triage.md", key: "DECISION", value: "APPROVE", summary: ["risk is HIGH: it touches auth"], blocking: [], refuted: 0 },
       { kind: "verdict", path: "spec-1/critic.md", key: "VERDICT", value: "ACCEPT", summary: ["the spec holds"], blocking: [], refuted: 0 },
@@ -153,14 +154,23 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** Hands the router's navigate to a test, to change the URL while a screen stays mounted. */
+function Navigator({ onReady }: { onReady: (navigate: NavigateFunction) => void }) {
+  onReady(useNavigate());
+  return null;
+}
+
 function renderAt(path: string) {
   const client = newQueryClient();
   client.setDefaultOptions({ queries: { retry: false } });
+  let go: NavigateFunction | undefined;
   render(
     <MemoryRouter initialEntries={[path]}>
+      <Navigator onReady={(n) => (go = n)} />
       <App client={client} />
     </MemoryRouter>,
   );
+  return { navigate: (to: string) => act(() => void go!(to)) };
 }
 
 describe("layout", () => {
@@ -692,6 +702,70 @@ describe("run details", () => {
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
   });
 
+  it("closes the open file and forgets a confirmation when the page moves to another run", async () => {
+    server.runs = [runRow(), runRow({ id: "run-2", issue: 13 })];
+    server.files = { "triage.md": "DECISION: APPROVE" };
+    const { navigate } = renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(within(await screen.findByRole("list", { name: "Run files" })).getByRole("button", { name: "triage.md" }));
+    expect(await screen.findByLabelText("Contents of triage.md")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Approve/ }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Approved.")).toBeTruthy();
+
+    await navigate("/runs/p1/run-2");
+
+    expect(await screen.findByRole("heading", { name: /#13/ })).toBeTruthy();
+    expect(screen.queryByLabelText("Contents of triage.md")).toBeNull();
+    expect(screen.queryByText("Approved.")).toBeNull();
+  });
+
+  it("confirms a decision while the run goes on, and drops it once the run waits for you elsewhere", async () => {
+    server.runs = [runRow({ waitingGate: null, reason: "the build agent failed", resumeTargets: ["build", "triage"] })];
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /Resume/ }));
+    await user.type(screen.getByLabelText("Reason"), "try again");
+    // The server moves it on as the decision goes through.
+    server.runs = [runRow({ state: "build", waitingGate: null, reason: "resumed" })];
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Decision result" }).textContent).toBe("Sent to build."));
+
+    // Later it parks at the merge gate: the old confirmation would describe the wrong decision.
+    server.runs = [runRow({ waitingGate: "merge", reason: "waiting at merge gate" })];
+    server.send({ type: "run", project: "shop", issue: 12, event: { type: "run:state", runId: "run-1", from: "build", to: "needs_human" } });
+    expect(await screen.findByText("waiting at merge gate")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Decision result" }).textContent).toBe("");
+  });
+
+  it("says it is loading, encodes the project in the URL, and does not offer to open a binary file", async () => {
+    server.runs = [runRow({ project: "p 1" })];
+    server.files = { "triage.md": "x", "shot.png": "" };
+    const detail = server.detail;
+    server.detail = (run) => ({ ...detail(run), unshown: { "shot.png": "binary" } });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      // The fake knows project "p1" only: answer for "p 1", but only if it arrived encoded.
+      const url = String(input);
+      if (url.includes("/api/projects/p%201/runs/run-1")) {
+        await held;
+        return server.fetch(url.replace("p%201", "p1"), init);
+      }
+      return server.fetch(input, init);
+    });
+    renderAt("/runs/p%201/run-1");
+
+    expect(await screen.findByText("Loading the run...")).toBeTruthy();
+    release();
+    const files = await screen.findByRole("list", { name: "Run files" });
+    expect(within(files).getByRole("button", { name: "triage.md" })).toBeTruthy();
+    expect(within(files).queryByRole("button", { name: /shot\.png/ })).toBeNull();
+    expect(within(files).getByText("(not text, open it from the run folder)")).toBeTruthy();
+  });
+
   it("shows a finished run's leftover worktree and branch, and cleans them up", async () => {
     server.runs = [runRow({ state: "cancelled", waitingGate: null, reason: "not needed" })];
     const detail = server.detail;
@@ -706,7 +780,7 @@ describe("run details", () => {
     await user.click(screen.getByRole("button", { name: /Clean up/ }));
 
     await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cleanup", body: { state: "cancelled" } }]));
-    expect(within(await screen.findByRole("status")).getByText("run-1: kept: the branch has commits that are not on the remote")).toBeTruthy();
+    expect(within(await screen.findByRole("status", { name: "Cleanup result" })).getByText("run-1: kept: the branch has commits that are not on the remote")).toBeTruthy();
   });
 
   it("keeps saying what it removed once the run's worktree and branch are gone", async () => {
@@ -723,9 +797,9 @@ describe("run details", () => {
     left = false;
     await user.click(clean);
 
-    expect(within(await screen.findByRole("status")).getByText("run-1: removed worktree, local branch factory/12-add")).toBeTruthy();
+    expect(within(await screen.findByRole("status", { name: "Cleanup result" })).getByText("run-1: removed worktree, local branch factory/12-add")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(".worktrees/run-1")).toBeNull());
-    expect(screen.getByRole("status").textContent).toBe("run-1: removed worktree, local branch factory/12-add");
+    expect(screen.getByRole("status", { name: "Cleanup result" }).textContent).toBe("run-1: removed worktree, local branch factory/12-add");
     expect(screen.queryByRole("button", { name: /Clean up/ })).toBeNull();
   });
 

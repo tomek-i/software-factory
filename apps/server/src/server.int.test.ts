@@ -532,7 +532,7 @@ describe("runs", () => {
     });
 
     it("serves one run file as redacted text, and only from inside the run folder", async () => {
-      const { ctx, app, base } = detailed();
+      const { ctx, run, app, base } = detailed();
 
       const notes = await call(app, "GET", `${base}/files/notes.md`);
       expect(notes.statusCode).toBe(200);
@@ -554,6 +554,17 @@ describe("runs", () => {
       expect(missing.statusCode).toBe(400);
       expect(missing.body).not.toContain(ctx.root.replace(/\\/g, "\\\\"));
       expect((await call(app, "GET", `${base}/files/shot.png`)).json()).toEqual({ error: '"shot.png" is not a text file.' });
+      // Plain text but for one byte in another code page: still shown, with a replacement character.
+      writeFileSync(join(runDirOf(ctx.root, run.id), "app.log"), Buffer.concat([Buffer.from("listening on 3000, caf"), Buffer.from([0xe9, 0x0a])]));
+      expect((await call(app, "GET", `${base}/files/app.log`)).json()).toEqual({ path: "app.log", text: "listening on 3000, caf�\n" });
+      writeFileSync(join(runDirOf(ctx.root, run.id), "big.log"), "x".repeat(1024 * 1024 + 1));
+      expect((await call(app, "GET", base)).json().unshown).toEqual({ "big.log": "too_big", "shot.png": "binary" });
+      const big = await call(app, "GET", `${base}/files/big.log`);
+      expect(big.statusCode).toBe(400);
+      expect(big.json()).toEqual({ error: '"big.log" is too big to show here (over 1 MB). Open it from the run folder.' });
+      const empty = await call(app, "GET", `${base}/files/`);
+      expect(empty.statusCode).toBe(400);
+      expect(empty.json()).toEqual({ error: "Name a file of the run folder." });
     });
 
     it("answers 404 for an unknown run or one of another project, and goes through the token and Host checks", async () => {

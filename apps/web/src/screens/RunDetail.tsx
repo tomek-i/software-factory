@@ -21,6 +21,9 @@ export const githubUrl = (url: string | null) => (url && url.startsWith("https:/
 // Everything below comes from agents that read untrusted issue text: it is rendered as React text
 // (escaped), never as HTML or markdown.
 
+/** Why a file is listed but can't be opened here. */
+const UNSHOWN: Record<"binary" | "too_big", string> = { binary: "not text", too_big: "too big to show here" };
+
 const CRITERION_STATUS: Record<AcceptanceCriterion["status"], { label: string; className: string }> = {
   MET: { label: "met", className: "text-emerald-700 dark:text-emerald-300" },
   NOT_MET: { label: "not met", className: "text-destructive" },
@@ -66,11 +69,11 @@ function Section({ section }: { section: OverviewSection }) {
         )}
         {section.kind === "unparsed" && <span className="text-destructive">does not parse</span>}
       </div>
-      {section.kind === "unparsed" && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{section.problem}</p>}
+      {section.kind === "unparsed" && <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{section.problem}</p>}
       {section.kind !== "unparsed" && section.summary.length > 0 && (
         <ul className="list-disc space-y-0.5 pl-5 text-sm">
           {section.summary.map((line, i) => (
-            <li key={i} className="whitespace-pre-wrap">
+            <li key={i} className="whitespace-pre-wrap break-words">
               {line}
             </li>
           ))}
@@ -81,7 +84,7 @@ function Section({ section }: { section: OverviewSection }) {
           <p className="font-medium">Blocking findings</p>
           <ul className="space-y-1 pl-1">
             {section.blocking.map((f) => (
-              <li key={f.id} className="whitespace-pre-wrap">
+              <li key={f.id} className="whitespace-pre-wrap break-words">
                 <span className="mr-1.5 font-mono text-xs text-destructive">{f.severity}</span>
                 {f.file && (
                   <code className="mr-1.5 font-mono text-xs text-muted-foreground">
@@ -105,12 +108,19 @@ function FileView({ project, id, path }: { project: string; id: string; path: st
   return (
     <Card>
       <CardHeader>
-        <code className="font-mono text-sm">{path}</code>
+        <code className="break-all font-mono text-sm">{path}</code>
       </CardHeader>
       <CardContent>
+        {file.isPending && <p className="text-sm text-muted-foreground">Loading {path}...</p>}
         {file.error && <p className="text-sm text-destructive">{file.error.message}</p>}
         {file.data && (
-          <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs" aria-label={`Contents of ${path}`}>
+          // Focusable so the keyboard can scroll it; a region, so its label is announced.
+          <pre
+            tabIndex={0}
+            role="region"
+            className="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs"
+            aria-label={`Contents of ${path}`}
+          >
             {file.data.text}
           </pre>
         )}
@@ -119,25 +129,35 @@ function FileView({ project, id, path }: { project: string; id: string; path: st
   );
 }
 
-/** One run in full: its issue, why it waits, the verdicts of its run folder, its files and the decisions on it. */
+/**
+ * One run in full: its issue, why it waits, the verdicts of its run folder, its files and the
+ * decisions on it. Keyed by the run, so an open file or a confirmation never carries over to another.
+ */
 export function RunDetail() {
   const { project = "", id = "" } = useParams();
+  return <RunPage key={`${project}/${id}`} project={project} id={id} />;
+}
+
+function RunPage({ project, id }: { project: string; id: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const detail = useQuery({ queryKey: ["run", project, id], queryFn: () => api.run(project, id) });
   const [file, setFile] = useState<string>();
+  const [done, setDone] = useState<{ text: string; at: string }>();
   // Opened from a link of the app, back goes where it came from; opened directly, to the Inbox.
   const back = () => (location.key === "default" ? navigate("/inbox") : navigate(-1));
 
   const data = detail.data;
   const run = data?.run;
   const url = githubUrl(data?.issue?.url ?? null);
+  const unshown = data?.unshown ?? {};
 
   return (
     <section className="space-y-4">
       <Button size="sm" variant="ghost" onClick={back}>
         <ArrowLeft aria-hidden /> Back
       </Button>
+      {detail.isPending && <p className="text-sm text-muted-foreground">Loading the run...</p>}
       {detail.error && <p className="text-sm text-destructive">{detail.error.message}</p>}
       {data && run && (
         <>
@@ -166,13 +186,18 @@ export function RunDetail() {
               {run.state === "needs_human" ? (
                 <Badge className="bg-amber-500/15 font-mono text-amber-700 dark:text-amber-300">{run.waitingGate ? `${run.waitingGate} gate` : "escalation"}</Badge>
               ) : (
-                <span className="text-sm font-medium">Where it is</span>
+                <h2 className="text-sm font-medium">Where it is</h2>
               )}
             </CardHeader>
             <CardContent className="space-y-3">
-              {run.reason ? <p className="whitespace-pre-wrap text-sm">{run.reason}</p> : <p className="text-sm text-muted-foreground">No reason recorded.</p>}
+              {run.reason ? <p className="whitespace-pre-wrap break-words text-sm">{run.reason}</p> : <p className="text-sm text-muted-foreground">No reason recorded.</p>}
               <OpenFeedback run={run} />
-              <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} />
+              <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} onDone={(text) => setDone({ text, at: `${run.state}/${run.waitingGate ?? ""}` })} />
+              {/* Outside RunActions, which goes away once the run is no longer waiting for you. */}
+              {/* Shown until the run waits for you again somewhere else, where it would describe an old decision. */}
+              <p role="status" aria-label="Decision result" className="text-sm">
+                {done && !(run.state === "needs_human" && done.at !== `${run.state}/${run.waitingGate ?? ""}`) ? done.text : undefined}
+              </p>
             </CardContent>
           </Card>
 
@@ -197,13 +222,25 @@ export function RunDetail() {
               </CardHeader>
               <CardContent>
                 <ul className="flex flex-wrap gap-1" aria-label="Run files">
-                  {data.files.map((f) => (
-                    <li key={f}>
-                      <Button size="sm" variant={file === f ? "secondary" : "ghost"} aria-pressed={file === f} className="font-mono" onClick={() => setFile(file === f ? undefined : f)}>
-                        {f}
-                      </Button>
-                    </li>
-                  ))}
+                  {data.files.map((f) =>
+                    unshown[f] ? (
+                      <li key={f} className="min-w-0 max-w-full px-3 py-2 text-xs">
+                        <span className="break-all font-mono text-muted-foreground">{f}</span> <span className="text-muted-foreground">({UNSHOWN[unshown[f]]}, open it from the run folder)</span>
+                      </li>
+                    ) : (
+                      <li key={f} className="min-w-0 max-w-full">
+                        <Button
+                          size="sm"
+                          variant={file === f ? "secondary" : "ghost"}
+                          aria-pressed={file === f}
+                          className="h-auto min-h-8 max-w-full whitespace-normal break-all text-left font-mono"
+                          onClick={() => setFile(file === f ? undefined : f)}
+                        >
+                          {f}
+                        </Button>
+                      </li>
+                    ),
+                  )}
                 </ul>
               </CardContent>
             </Card>

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { isBlocking, isTerminal, parseVerdict, VerdictParseError, type Finding, type VerdictKind } from "@factory/shared";
 import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
@@ -270,8 +270,59 @@ export function latestReviews(store: Store, project: Project, ref: string): Revi
   });
 }
 
-/** One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk. */
-export function runFile(store: Store, project: Project, ref: string, file: string): { run: Run; path: string; text: string } {
+/** How much of a file `unshownFile` looks at: enough for any image or video header. */
+const SNIFF_BYTES = 8192;
+
+/**
+ * Whether bytes have no text to show: a NUL byte (images, videos, UTF-16), or so many bytes that
+ * are not UTF-8 that the text would be mostly replacement characters. A log that is plain text but
+ * for a few stray bytes, such as an app's localised message in another code page, is still text:
+ * it is the log to read when capture fails.
+ */
+export function isBinary(bytes: Uint8Array): boolean {
+  if (bytes.includes(0)) return true;
+  const text = new TextDecoder("utf-8").decode(bytes);
+  let broken = 0;
+  for (const ch of text) if (ch === "\uFFFD") broken++;
+  return broken * 10 > [...text].length;
+}
+
+/** Why a file of the run folder can't be shown in the page, judged from its size and first kilobytes. */
+export type Unshown = "binary" | "too_big";
+
+/**
+ * Whether a file can't be shown, and why, for a listing: its size, then its first few kilobytes.
+ * Undefined for a file that can't be read now (removed meanwhile, locked): opening it says why.
+ */
+export function unshownFile(path: string, maxBytes: number): Unshown | undefined {
+  try {
+    const fd = openSync(path, "r");
+    try {
+      if (fstatSync(fd).size > maxBytes) return "too_big";
+      const head = Buffer.alloc(SNIFF_BYTES);
+      return isBinary(head.subarray(0, readSync(fd, head, 0, SNIFF_BYTES, 0))) ? "binary" : undefined;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** A size limit in words: whole megabytes or kilobytes. */
+const sizeLimit = (bytes: number) => (bytes >= 1024 * 1024 ? `${Math.round(bytes / 1024 / 1024)} MB` : `${Math.round(bytes / 1024)} KB`);
+
+/**
+ * One file of a run folder, by path or short name (see resolveInRunDir), exactly as it is on disk.
+ * `maxBytes` refuses a bigger file rather than read it; `binary` says it has no text to show.
+ */
+export function runFile(
+  store: Store,
+  project: Project,
+  ref: string,
+  file: string,
+  options: { maxBytes?: number } = {},
+): { run: Run; path: string; text: string; binary: boolean } {
   const run = findRun(store, project, ref);
   const runDir = runDirOf(project.repo_path, run.id);
   const files = listRunFiles(runDir);
@@ -284,5 +335,10 @@ export function runFile(store: Store, project: Project, ref: string, file: strin
   if (!existsSync(full) || !statSync(full).isFile()) {
     throw new ServiceError(`No file "${path}" in the run folder of ${run.id}. Files there:\n${plainFileList(files)}`);
   }
-  return { run, path, text: readFileSync(full, "utf8") };
+  const size = statSync(full).size;
+  if (options.maxBytes !== undefined && size > options.maxBytes) {
+    throw new ServiceError(`"${path}" is too big to show here (over ${sizeLimit(options.maxBytes)}). Open it from the run folder.`);
+  }
+  const bytes = readFileSync(full);
+  return { run, path, text: bytes.toString("utf8"), binary: isBinary(bytes) };
 }

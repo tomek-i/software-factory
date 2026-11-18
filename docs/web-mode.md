@@ -75,7 +75,7 @@ The runs going on across projects, live.
   - a project that fails shows its error, and the others still report what they did;
   - and the runs it left alone: one a worker still holds, or one that finished in the last 2 minutes;
   - "Also clean up the runs that just finished" does what `factory cleanup --now` does.
-- Click a run to open its details.
+- Click a run's title to open its details.
 
 ### Run details
 
@@ -86,8 +86,10 @@ What `factory show <run>` prints, in the browser.
 - The verdicts of its run folder: triage, spec, build, checks, reviews with their blocking findings, approval, learn.
 - Its files, each opened as plain text.
   They hold agent output that read untrusted issue text, so the page never renders it as HTML.
+  - Screenshots, videos and other files with no text are listed but not opened; open them from the run folder.
+  - A file over 1 MB is not shown either; `factory show <run> <file>` prints it.
 - Local paths in it are shortened: relative to the repo or worktree, and the home folder as `~`.
-- A run waiting for you has the same actions as in the Inbox.
+- A run waiting for you has the same actions as in the Inbox, and says what was done once it went through.
 - A finished run whose worktree and branch are still there shows them, with why cleanup kept them, if it did.
   "Clean up" removes them now, with the same protections as the automatic cleanup.
 
