@@ -5,7 +5,7 @@ import { tempDir } from "../../test/helpers.js";
 import { runDirOf } from "../pipeline/driver.js";
 import { Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
-import { latestChecks, latestReviews, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
+import { latestChecks, latestReviews, leftoverOf, latestRoundFile, listRunFiles, resolveInRunDir, runFile, runOverview } from "./show.js";
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n";
@@ -86,6 +86,24 @@ describe("runOverview", () => {
   it("has no files or sections before the run folder exists", () => {
     const { store, project, run } = setup();
     expect(runOverview(store, project, run.id)).toMatchObject({ hasRunDir: false, files: [], sections: [] });
+  });
+
+  it("shows what a finished run still has until cleanup dealt with it, and why it kept it", () => {
+    const { store, project, run, runDir } = setup({ "build.md": "x" });
+    const marker = (kept: string | null) => writeFileSync(join(runDir, "cleanup.json"), JSON.stringify({ removed: [], kept }));
+    store.updateRunFields(run.id, { worktree_path: "/repo/.worktrees/r", branch: "factory/16-show" });
+    expect(runOverview(store, project, run.id).leftover).toBeUndefined(); // still running
+
+    store.writeState(run.id, "done");
+    const done = store.getRun(run.id)!;
+    expect(runOverview(store, project, run.id).leftover).toEqual({ worktree: "/repo/.worktrees/r", branch: "factory/16-show" });
+    marker("the branch has commits that are not on the remote");
+    expect(leftoverOf(done, runDir)).toEqual({ worktree: "/repo/.worktrees/r", branch: "factory/16-show", kept: "the branch has commits that are not on the remote" });
+    marker(null);
+    expect(leftoverOf(done, runDir)).toBeUndefined();
+    // Worktree and local branch removed, only the remote branch kept: nothing left here.
+    writeFileSync(join(runDir, "cleanup.json"), JSON.stringify({ removed: ["worktree", "local branch factory/16-show"], kept: "the remote branch factory/16-show is not what was merged, so it is kept" }));
+    expect(leftoverOf(done, runDir)).toBeUndefined();
   });
 });
 

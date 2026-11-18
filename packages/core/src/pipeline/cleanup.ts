@@ -275,10 +275,16 @@ export function describeCleanup(runId: string, result: CleanupResult, dryRun = f
 
 /**
  * Store a cleanup's warnings and kept reason with the run, so `factory logs` shows them. The same
- * note twice in a row is stored once: a sweep retries a failing cleanup on every status.
+ * note twice in a row is stored once: a sweep retries a failing cleanup on every status. A cleanup
+ * that went through is stored only after an earlier cleanup note, so the run's reason no longer says
+ * it was kept or failed; a run cleaned up the first time keeps its own reason, such as its PR being
+ * merged.
  */
 export function recordCleanup(store: Store, target: Run, result: CleanupResult): void {
-  for (const note of [...(result.kept ? [`kept: ${result.kept}`] : []), ...result.warnings]) {
+  const afterNote = store.listEvents(target.id).at(-1)?.reason?.startsWith("cleanup: ") === true;
+  const done = afterNote && !result.kept && result.warnings.length === 0;
+  const removed = result.removed.length ? `removed ${result.removed.join(", ")}` : "nothing left to remove";
+  for (const note of [...(done ? [removed] : []), ...(result.kept ? [`kept: ${result.kept}`] : []), ...result.warnings]) {
     const reason = `cleanup: ${note}`;
     if (store.listEvents(target.id).at(-1)?.reason === reason) continue;
     store.appendEvent(target.id, target.state, target.state, reason);
@@ -303,6 +309,11 @@ export interface SweepOptions {
   graceMs?: number;
   /** Look again at runs kept on purpose, e.g. after their commits were pushed (`factory cleanup`). */
   recheckKept?: boolean;
+  /**
+   * Told about each finished run that still has its worktree and that this sweep left alone, and why.
+   * `recent`: only because it finished within the grace, so a sweep without it would clean it up.
+   */
+  onSkipped?: (runId: string, why: string, recent: boolean) => void;
 }
 
 function keptOnPurpose(runDir: string): boolean {
@@ -319,14 +330,23 @@ function keptOnPurpose(runDir: string): boolean {
  */
 export function cleanupFinishedRuns(store: Store, project: Project, options: SweepOptions): string[] {
   const now = options.now ?? new Date();
-  const cutoff = new Date(now.getTime() - (options.graceMs ?? CLEANUP_GRACE_MS)).toISOString();
+  const graceMs = options.graceMs ?? CLEANUP_GRACE_MS;
+  const cutoff = new Date(now.getTime() - graceMs).toISOString();
   const lines: string[] = [];
   for (const target of store.listRuns({ project_id: project.id })) {
-    if (!isTerminal(target.state) || !target.worktree_path || target.updated_at > cutoff) continue;
-    // A worker still holding the run (e.g. stuck in a git call after a cancel) cleans it up itself.
-    if (target.lease_expires_at !== null && target.lease_expires_at > now.toISOString()) continue;
+    if (!isTerminal(target.state) || !target.worktree_path) continue;
     const runDir = options.runDirOf(target.id);
     if (existsSync(join(runDir, CLEANUP_MARKER)) && !(options.recheckKept && keptOnPurpose(runDir))) continue;
+    // A worker still holding the run (e.g. stuck in a git call after a cancel) cleans it up itself.
+    if (target.lease_expires_at !== null && target.lease_expires_at > now.toISOString()) {
+      options.onSkipped?.(target.id, "a worker still holds it; cleaned up once the worker stops, or its lease runs out", false);
+      continue;
+    }
+    if (target.updated_at > cutoff) {
+      const ago = Math.max(0, Math.round((now.getTime() - new Date(target.updated_at).getTime()) / 1000));
+      options.onSkipped?.(target.id, `finished ${ago}s ago; cleaned up ${Math.round(graceMs / 60_000)} minutes after it finished`, true);
+      continue;
+    }
     const result = cleanupFinishedRun(store, target, { root: project.repo_path, runDir, defaultBranch: options.defaultBranch, run: options.run, dryRun: options.dryRun });
     lines.push(...describeCleanup(target.id, result, options.dryRun));
   }

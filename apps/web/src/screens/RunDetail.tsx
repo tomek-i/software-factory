@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
+import { Leftover } from "../components/Cleanup";
 import { OpenFeedback } from "../components/OpenFeedback";
 import { RunActions } from "../components/RunActions";
 import { StateBadge } from "../components/StateBadge";
@@ -174,6 +175,8 @@ export function RunDetail() {
               <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} />
             </CardContent>
           </Card>
+
+          <Leftover key={`${run.project}/${run.id}`} run={run} leftover={data.leftover} />
 
           <Card>
             <CardHeader>

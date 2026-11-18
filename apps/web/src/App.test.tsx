@@ -47,6 +47,8 @@ class FakeServer {
   drafts: DraftView[] = [];
   draftDetails: Record<string, DraftDetail> = {};
   projectsStatus = 200;
+  /** The project list. */
+  projects: ProjectInfo[] = [PROJECT];
   /** Merge-gate details by run id; others get a 404. */
   mergeGate: Record<string, MergeGateDetails> = {};
   /** Run files by path, served for every run. */
@@ -102,7 +104,7 @@ data: ${JSON.stringify(event)}
       for (const [suffix, answer] of this.answers) if (url.pathname.endsWith(suffix)) return json(200, answer);
       return json(200, {});
     }
-    if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, [PROJECT]) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
+    if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, this.projects) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
     if (url.pathname === "/api/scheduler") return json(200, { running: [] });
     if (url.pathname === "/api/runs") {
       const view = url.searchParams.get("view");
@@ -690,6 +692,43 @@ describe("run details", () => {
     expect((await screen.findByLabelText("Contents of round-1/checks.md")).textContent).toBe("GATE: PASS");
   });
 
+  it("shows a finished run's leftover worktree and branch, and cleans them up", async () => {
+    server.runs = [runRow({ state: "cancelled", waitingGate: null, reason: "not needed" })];
+    const detail = server.detail;
+    server.detail = (run) => ({ ...detail(run), leftover: { worktree: ".worktrees/run-1", branch: "factory/12-add", kept: "the branch has commits that are not on the remote" } });
+    server.answers.set("/run-1/cleanup", { lines: ["run-1: kept: the branch has commits that are not on the remote"] });
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    expect(await screen.findByText(".worktrees/run-1")).toBeTruthy();
+    expect(screen.getByText("factory/12-add")).toBeTruthy();
+    expect(screen.getByText("Kept on purpose: the branch has commits that are not on the remote")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Clean up/ }));
+
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-1/cleanup", body: { state: "cancelled" } }]));
+    expect(within(await screen.findByRole("status")).getByText("run-1: kept: the branch has commits that are not on the remote")).toBeTruthy();
+  });
+
+  it("keeps saying what it removed once the run's worktree and branch are gone", async () => {
+    server.runs = [runRow({ state: "done", waitingGate: null })];
+    const detail = server.detail;
+    let left = true;
+    server.detail = (run) => ({ ...detail(run), ...(left ? { leftover: { worktree: ".worktrees/run-1", branch: "factory/12-add" } } : {}) });
+    server.answers.set("/run-1/cleanup", { lines: ["run-1: removed worktree, local branch factory/12-add"] });
+    renderAt("/runs/p1/run-1");
+    const user = userEvent.setup();
+
+    const clean = await screen.findByRole("button", { name: /Clean up/ });
+    // The server removes them on the post, so every later read of the run has no leftover.
+    left = false;
+    await user.click(clean);
+
+    expect(within(await screen.findByRole("status")).getByText("run-1: removed worktree, local branch factory/12-add")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(".worktrees/run-1")).toBeNull());
+    expect(screen.getByRole("status").textContent).toBe("run-1: removed worktree, local branch factory/12-add");
+    expect(screen.queryByRole("button", { name: /Clean up/ })).toBeNull();
+  });
+
   it("lists each acceptance criterion with its status and evidence, wrapping long paths", async () => {
     const evidence = "packages/core/src/pipeline/driver.acceptance.test.ts:123";
     server.runs = [runRow({ state: "build", waitingGate: null })];
@@ -867,6 +906,63 @@ describe("runs", () => {
 
     expect(await screen.findByText("Editing feature.txt")).toBeTruthy();
     expect(screen.queryByText("triage approved")).toBeNull();
+  });
+
+  it("cleans up finished runs, lists the ones left alone, and cleans those up on request", async () => {
+    server.runs = [runRow({ state: "done", waitingGate: null })];
+    server.answers.set("/p1/cleanup", { lines: ["run-0: removed worktree, local branch factory/3-x"], skipped: [{ runId: "run-1", why: "finished 40s ago; cleaned up 2 minutes after it finished", recent: true }] });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    // Finished runs are under All.
+    expect(screen.queryByRole("button", { name: /Clean up finished runs/ })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: /Clean up finished runs/ }));
+
+    const status = await screen.findByRole("status");
+    expect(within(status).getByText("run-0: removed worktree, local branch factory/3-x")).toBeTruthy();
+    expect(status.textContent).toContain("run-1: finished 40s ago; cleaned up 2 minutes after it finished");
+    await user.click(screen.getByRole("button", { name: "Also clean up the runs that just finished" }));
+    await waitFor(() =>
+      expect(server.posts).toEqual([
+        { path: "/api/projects/p1/cleanup", body: { now: false } },
+        { path: "/api/projects/p1/cleanup", body: { now: true } },
+      ]),
+    );
+  });
+
+  it("reports each project's cleanup on its own, keeping what the others did when one fails", async () => {
+    server.projects = [PROJECT, { key: "p2", name: "blog", path: "/repos/blog", status: "ok" }];
+    server.answers.set("/p1/cleanup", { lines: ["run-0: removed worktree"], skipped: [] });
+    server.failures.set("/p2/cleanup", { status: 500, error: "git is locked" });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: /Clean up finished runs/ }));
+
+    const status = screen.getByRole("status");
+    expect(await within(status).findByText("run-0: removed worktree")).toBeTruthy();
+    expect(within(status).getByRole("heading", { name: "shop" })).toBeTruthy();
+    expect(within(status).getByRole("heading", { name: "blog" })).toBeTruthy();
+    expect(within(status).getByRole("alert").textContent).toBe("git is locked");
+  });
+
+  it("forgets a cleanup's outcome when another project is picked", async () => {
+    server.projects = [PROJECT, { key: "p2", name: "blog", path: "/repos/blog", status: "ok" }];
+    server.answers.set("/p1/cleanup", { lines: [], skipped: [{ runId: "run-1", why: "finished 4s ago", recent: true }] });
+    renderAt("/runs");
+    const user = userEvent.setup();
+
+    await screen.findByRole("option", { name: "blog" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p1");
+    await user.click(await screen.findByRole("button", { name: "All" }));
+    await user.click(await screen.findByRole("button", { name: /Clean up finished runs/ }));
+    expect(await screen.findByRole("button", { name: "Also clean up the runs that just finished" })).toBeTruthy();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project" }), "p2");
+    expect(screen.queryByText(/finished 4s ago/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Also clean up the runs that just finished" })).toBeNull();
   });
 });
 

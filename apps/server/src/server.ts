@@ -6,6 +6,8 @@ import fastifyStatic from "@fastify/static";
 import {
   approveRun,
   cancelRun,
+  cleanupRunNow,
+  cleanupRuns,
   continuation,
   dismissAlert,
   ensureQueued,
@@ -124,6 +126,8 @@ export interface RunDetail {
   /** Every file in the run folder, sorted, `/`-separated. */
   files: string[];
   sections: OverviewSection[];
+  /** A finished run's worktree (relative to the repo) and branch that cleanup has not removed, and why it kept them. */
+  leftover?: { worktree: string; branch: string; kept?: string };
 }
 
 const WAITING: Run["state"][] = ["needs_human", "needs_info"];
@@ -220,6 +224,14 @@ function redactFailure(failure: WaitingFailure, redact: (text: string) => string
 function redactorOf(ctx: ProjectContext, run: Run): (text: string) => string {
   const roots = [ctx.project.repo_path, ...(run.worktree_path ? [run.worktree_path] : [])];
   return (text) => redactPaths(text, { home: homedir(), roots });
+}
+
+/**
+ * Paths relative to the repository only, the home folder as `~`: for what cleanup says about a
+ * worktree, which relative to the worktree itself would read as ".".
+ */
+function projectRedactor(ctx: ProjectContext): (text: string) => string {
+  return (text) => redactPaths(text, { home: homedir(), roots: [ctx.project.repo_path] });
 }
 
 function redactSection(section: OverviewSection, redact: (text: string) => string): OverviewSection {
@@ -391,6 +403,15 @@ export function createServer(options: ServerOptions): FastifyInstance {
       hasRunDir: overview.hasRunDir,
       files: overview.files,
       sections: overview.sections.map((s) => redactSection(s, redact)),
+      ...(overview.leftover
+        ? {
+            leftover: {
+              worktree: projectRedactor(ctx)(overview.leftover.worktree).split("\\").join("/"),
+              branch: overview.leftover.branch,
+              ...(overview.leftover.kept ? { kept: projectRedactor(ctx)(overview.leftover.kept) } : {}),
+            },
+          }
+        : {}),
     };
   });
 
@@ -463,6 +484,19 @@ export function createServer(options: ServerOptions): FastifyInstance {
   runAction("cancel", (ctx, run, body) => {
     const cancelled = cancelRun(ctx, run.id, text(body, "message")?.trim() || "cancelled from the web", { run: options.run, github: options.github?.(ctx.project) });
     return { run: cancelled.run, stopped: cancelled.stopped, media: cancelled.media, cleaned: cancelled.cleaned, ...(cancelled.closedPr !== undefined ? { closedPr: cancelled.closedPr } : {}) };
+  });
+
+  // The same protections as the automatic cleanup: work that would be lost is kept, with the reason.
+  runAction("cleanup", (ctx, run) => ({ lines: cleanupRunNow(ctx, run.id, options.run).map(projectRedactor(ctx)) }));
+
+  // `factory cleanup` for one project: what it removed and kept, and the runs it left alone.
+  app.post<{ Params: { key: string }; Body: unknown }>("/api/projects/:key/cleanup", async (req) => {
+    const ctx = projects.byKey(req.params.key);
+    const { store, project, config } = ctx;
+    const report = cleanupRuns(store, project, config, { run: options.run, now: flag(req.body, "now") });
+    changed(req.params.key);
+    const redact = projectRedactor(ctx);
+    return { lines: report.lines.map(redact), skipped: report.skipped.map((s) => ({ ...s, why: redact(s.why) })) };
   });
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });

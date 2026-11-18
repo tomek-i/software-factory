@@ -120,7 +120,7 @@ factory new --discard <draft>                # drop a draft
 Work is picked **locally**, never from GitHub labels, so nobody on GitHub can feed issues into your factory.
 
 ```sh
-factory sync               # pull open issues from GitHub; also finishes runs whose PR or issue was closed there
+factory sync               # pull open issues from GitHub; also finishes and cleans up runs whose PR or issue was closed there
 factory issues             # list them (Q marks queued ones); -q/--queued, -a/--all
 factory queue 12 15 18     # queue issues for the factory (fetches ones not synced yet)
 factory unqueue 15         # take one back out
@@ -154,7 +154,7 @@ factory cancel <run>                       # stop the run, its agent and its che
 Afterwards:
 
 ```sh
-factory cleanup                     # remove worktrees and branches finished runs left behind; --dry-run first
+factory cleanup                     # remove worktrees and branches finished runs left behind; --dry-run first, --now for runs that just finished
 factory lessons                     # lessons the learner proposed; -a/--all includes decided ones
 factory lessons approve 3 4         # open one PR that adds these lessons to .factory/lessons.md
 factory lessons reject 5 -m "why"   # never apply this lesson; -m is optional
