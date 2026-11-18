@@ -37,13 +37,15 @@ export function commitToRemote(options: CommitToRemoteOptions): string {
   };
 
   git(["fetch", "--quiet", "--", "origin", base]);
-  options.check?.(git(["rev-parse", `origin/${base}`]).trim());
+  // Everything below works from this commit, not the ref: another fetch (a worker's, say) may move the ref meanwhile.
+  const baseCommit = git(["rev-parse", `origin/${base}`]).trim();
+  options.check?.(baseCommit);
   const dir = mkdtempSync(join(tmpdir(), options.tempPrefix));
   const worktree = join(dir, "worktree");
   let added = false;
   try {
     // Detached: no local branch is left behind; the commit only goes to the remote branch.
-    git(["worktree", "add", "--quiet", "--detach", worktree, `origin/${base}`]);
+    git(["worktree", "add", "--quiet", "--detach", worktree, baseCommit]);
     added = true;
     git(["add", "--", ...options.write(worktree)], worktree);
     try {

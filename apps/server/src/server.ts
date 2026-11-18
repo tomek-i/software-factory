@@ -8,6 +8,7 @@ import {
   cancelRun,
   cleanupRunNow,
   cleanupRuns,
+  ConfigError,
   SettingsChanged,
   continuation,
   dismissAlert,
@@ -317,6 +318,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     if (err instanceof Conflict || err instanceof SettingsChanged) return reply.code(409).send({ error: err.message });
     if (err instanceof TooManyRequests) return reply.code(429).header("Retry-After", String(err.retryAfter)).send({ error: err.message });
     if (err instanceof ServiceError || err instanceof BadRequest) return reply.code(400).send({ error: err.message });
+    // Reading the settings fetches the default branch; offline, that fails with git's own message.
+    if (err instanceof ConfigError) return reply.code(502).send({ error: err.message });
     if (err instanceof GithubError) return reply.code(502).send({ error: `GitHub: ${err.message}` });
     // Fastify's own (a malformed JSON body, say) carry a 4xx status and a message meant for the client.
     if (err.statusCode && err.statusCode >= 400 && err.statusCode < 500) return reply.code(err.statusCode).send({ error: err.message });

@@ -52,6 +52,13 @@ describe("editConfigText", () => {
     expect(parseConfig(out).gates.pr).toBe("auto");
   });
 
+  it("keeps a file's unindented lists as they are, and refuses to set through an alias", () => {
+    const flat = "version: 1\nchecks:\n- name: test\n  run: pnpm test\nreviews:\n  always:\n  - code\n";
+    expect(editConfigText(flat, [{ path: "gates.merge", value: "auto" }])).toBe(`${flat}gates:\n  merge: auto\n`);
+    const aliased = "version: 1\nshared: &g\n  merge: human\ngates: *g\n";
+    expect(() => editConfigText(aliased, [{ path: "gates.pr", value: "auto" }])).toThrow(/gates\.pr: written in a form this can't change safely/);
+  });
+
   it("keeps CRLF line endings", () => {
     const out = editConfigText(TEXT.replace(/\n/g, "\r\n"), [{ path: "concurrency.max_runs", value: 3 }]);
     expect(out.split("\n").every((line, i, lines) => i === lines.length - 1 || line.endsWith("\r"))).toBe(true);
