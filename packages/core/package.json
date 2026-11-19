@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@factory/shared": "workspace:*",
-    "better-sqlite3": "^12.4.1",
+    "better-sqlite3": "^13.2.0",
     "execa": "^10.2.1",
     "yaml": "^2.6.1"
   },
