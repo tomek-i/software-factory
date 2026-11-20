@@ -9,6 +9,7 @@ import { openRegisteredProject, type ProjectContext } from "../service/project.j
 import { driveIssue, trustedConfig, type DriveDeps, type Driven, type DriveOptions } from "../service/runs.js";
 import type { Project, Run } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
+import { atStartLimit, startLimit, waitingToStart, type StartLimit } from "./start-limit.js";
 import { readStopRequest, type StopRequest } from "./stop.js";
 
 /**
@@ -34,12 +35,18 @@ export type SchedulerEvent =
   | { type: "error"; message: string }
   | { type: "paused"; until: string }
   | { type: "resumed" }
+  /** A project's queued issues wait for `github.max_starts_per_day`: said once, not every tick. */
+  | { type: "limited"; project: string; started: number; max: number; until?: string }
+  /** A project held by its start limit starts queued issues again. */
+  | { type: "unlimited"; project: string }
   | { type: "stopping"; now: boolean; interrupted: number };
 
 export interface SchedulerStatus {
   running: { project: string; issue: number; runId?: string }[];
   /** Usage limit reached: nothing starts or continues before this time. */
   pausedUntil?: string;
+  /** Projects whose queued issues wait for their start limit; `until` is unset when it is 0. */
+  limited: { project: string; started: number; max: number; until?: string }[];
   /** `drain` finishes the runs it has and starts none; `now` interrupted them. */
   stopping?: "drain" | "now";
 }
@@ -105,6 +112,8 @@ export class Scheduler {
   private readonly unopenable = new Set<string>();
   private readonly inFlight = new Map<string, InFlight>();
   private readonly cooldown = new Map<string, number>();
+  /** Projects held by their start limit, by path, with what was last said about it. */
+  private readonly limited = new Map<string, { project: string; limit: StartLimit }>();
   private pausedUntil?: number;
   private stopping?: "drain" | "now";
   private wake?: () => void;
@@ -121,6 +130,7 @@ export class Scheduler {
     return {
       running: [...this.inFlight.values()].map((f) => ({ project: f.project.ctx.project.name, issue: f.issue, runId: f.runId })),
       pausedUntil: this.pausedUntil === undefined ? undefined : new Date(this.pausedUntil).toISOString(),
+      limited: [...this.limited.values()].map(({ project, limit }) => ({ project, started: limit.started, max: limit.max, until: limit.nextStartAt })),
       stopping: this.stopping,
     };
   }
@@ -170,16 +180,17 @@ export class Scheduler {
       this.pausedUntil = undefined;
       this.emit({ type: "resumed" });
     }
+    const projects = this.openProjects();
+    this.reviewStartLimits(projects, now);
     if (this.inFlight.size >= this.maxRuns) return;
 
-    const projects = this.openProjects();
     for (const candidate of [...this.recoveries(projects, now), ...this.newStarts(projects, now)]) {
       if (this.inFlight.size >= this.maxRuns || this.pausedUntil !== undefined) return;
       if (this.inFlight.has(keyOf(candidate.project, candidate.issue))) continue;
       const config = this.config(candidate.project, now);
       if (!config) continue;
       if (this.runningIn(candidate.project, now) >= config.concurrency.max_runs) continue;
-      if (!candidate.runId && this.startedToday(candidate.project, now) >= config.github.max_starts_per_day) continue;
+      if (!candidate.runId && this.heldByStartLimit(candidate.project, config, now)) continue;
       if (!this.stillOpen(candidate, now)) continue;
       this.launch(candidate);
     }
@@ -280,9 +291,48 @@ export class Scheduler {
     return found.sort((a, b) => compare(a.queuedAt, b.queuedAt) || a.seq - b.seq).map((f) => f.candidate);
   }
 
-  private startedToday(project: Opened, now: number): number {
-    const since = new Date(now - 24 * 60 * 60_000).toISOString();
-    return project.ctx.store.listRuns({ project_id: project.ctx.project.id }).filter((r) => r.created_at >= since).length;
+  /**
+   * Looks again at every project held by its start limit, even on a tick that starts nothing (the
+   * worker is full), so what it says stays true: a project that has gone, or has nothing left waiting
+   * to start, is no longer held, and one whose window has moved on is let go.
+   */
+  private reviewStartLimits(projects: Opened[], now: number): void {
+    for (const [key, held] of this.limited) {
+      const project = projects.find((p) => p.entry.path === key);
+      const config = project && this.config(project, now);
+      if (!project || !config || waitingToStart(project.ctx.store, project.ctx.project.id).length === 0) {
+        this.limited.delete(key);
+        continue;
+      }
+      if (!atStartLimit(startLimit(project.ctx.store, project.ctx.project.id, config.github.max_starts_per_day, now))) {
+        this.limited.delete(key);
+        this.emit({ type: "unlimited", project: held.project });
+      }
+    }
+  }
+
+  /**
+   * Whether the project's start limit holds its new runs back. Said once when it starts holding (and
+   * again if the time it lifts changes), and once when it lets them go, so the queue never just
+   * stops without a word.
+   */
+  private heldByStartLimit(project: Opened, config: FactoryConfig, now: number): boolean {
+    const { store, project: row } = project.ctx;
+    const limit = startLimit(store, row.id, config.github.max_starts_per_day, now);
+    const key = project.entry.path;
+    const held = this.limited.get(key);
+    if (!atStartLimit(limit)) {
+      if (held) {
+        this.limited.delete(key);
+        this.emit({ type: "unlimited", project: row.name });
+      }
+      return false;
+    }
+    if (!held || held.limit.nextStartAt !== limit.nextStartAt) {
+      this.emit({ type: "limited", project: row.name, started: limit.started, max: limit.max, until: limit.nextStartAt });
+    }
+    this.limited.set(key, { project: row.name, limit });
+    return true;
   }
 
   private stillOpen(candidate: Candidate, now: number): boolean {

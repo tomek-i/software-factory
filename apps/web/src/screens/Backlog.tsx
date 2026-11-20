@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { Clock, ExternalLink, RefreshCw } from "lucide-react";
 import { StateBadge } from "../components/StateBadge";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Select } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { api, type BacklogIssue, type ProjectInfo } from "../lib/api";
+import { api, type BacklogIssue, type ProjectInfo, type StartLimit } from "../lib/api";
 import { useProject } from "../lib/project";
 import { ago } from "../lib/utils";
 import { githubUrl } from "./RunDetail";
@@ -106,6 +106,19 @@ export function BacklogTable({ project, issues, label }: { project: string; issu
   );
 }
 
+/** Why queued issues are not starting, worded as `factory status` words it. */
+export function startLimitText(limit: StartLimit, now = new Date()): string {
+  if (limit.max === 0) return "Start limit: github.max_starts_per_day is 0, so no queued issue starts until it is raised.";
+  const runs = `${limit.started} run${limit.started === 1 ? "" : "s"}`;
+  let next = "";
+  if (limit.nextStartAt) {
+    const at = new Date(limit.nextStartAt);
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    next = ` The next queued issue can start at ${at.toDateString() === now.toDateString() ? time : `${time} on ${at.toLocaleDateString()}`}.`;
+  }
+  return `Start limit reached: ${runs} started in the last 24 h (github.max_starts_per_day).${next}`;
+}
+
 function ProjectBacklog({ project }: { project: ProjectInfo }) {
   const queryClient = useQueryClient();
   const backlog = useQuery({ queryKey: ["backlog", project.key], queryFn: () => api.backlog(project.key) });
@@ -147,6 +160,12 @@ function ProjectBacklog({ project }: { project: ProjectInfo }) {
         </p>
       )}
       {backlog.error && <p className="text-sm text-destructive">{backlog.error.message}</p>}
+      {backlog.data?.startLimit && (
+        <p role="status" className="flex items-start gap-1.5 text-sm text-amber-700 dark:text-amber-400">
+          <Clock aria-hidden className="mt-0.5 size-4 shrink-0" />
+          {startLimitText(backlog.data.startLimit)}
+        </p>
+      )}
       {backlog.data?.issues.length === 0 && <p className="text-sm text-muted-foreground">No open issues synced. Sync to pull them from GitHub.</p>}
       {backlog.data && backlog.data.issues.length > 0 && <BacklogTable project={project.key} issues={backlog.data.issues} label={label} />}
     </section>

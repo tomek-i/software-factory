@@ -64,8 +64,12 @@ Commands such as `factory approve <run>` and `factory show <run>` take `<run>` a
 - `--max-runs` for the worker, across its projects (default 3).
   Each worker keeps to its own, so two `factory work` in different projects can drive twice as many runs.
 - `github.max_starts_per_day` per project (default 10): new runs in the last 24 hours, by anyone.
+  - It is a rolling 24 hours, not a calendar day: a run counts for exactly 24 hours after it started.
+  - Every started run counts, cancelled and rejected ones included.
   - Continuing a run doesn't count.
   - 0 means the worker starts nothing new in that project.
+  - When it holds queued issues back, the worker says so once per project, with the time the next one can start, and again when it lifts.
+    `factory status`, `factory issues` and the web Backlog show the same line while it holds.
 
 ### The usage limit
 

@@ -6,6 +6,7 @@ import { runCommand, Store, type CommandRunner, type GithubPort } from "@factory
 import { runInit } from "./init.js";
 import { createStyle, styleFor } from "../style.js";
 import { runIssues, runQueue, runSync } from "./issues.js";
+import { runStatus } from "./runs.js";
 
 // eslint-disable-next-line no-control-regex -- matching escape characters is the point
 const strip = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
@@ -150,5 +151,38 @@ describe("issue commands", () => {
     const dir = mkdtempSync(join(tmpdir(), "factory-issues-"));
     runCommand("git", ["init", "-q"], { cwd: dir });
     expect(() => runSync(dir, run)).toThrow(/factory init/);
+  });
+});
+
+describe("the start limit", () => {
+  /** A queued #1, and `started` runs on other issues: done, as a day's work leaves them. */
+  function project(started: number, queue = true) {
+    const dir = repo();
+    runSync(dir, run);
+    if (queue) runQueue(dir, ["1"], true, run);
+    const store = new Store(join(dir, ".factory", "factory.db"));
+    const id = store.listProjects()[0]!.id;
+    for (let i = 0; i < started; i++) store.writeState(store.createRun({ project_id: id, title: `Run ${i}`, issue_number: 100 + i }).id, "done");
+    store.close();
+    return dir;
+  }
+  const line = /Start limit reached: 10 runs started in the last 24 h \(github\.max_starts_per_day\)\. The next queued issue can start at (\d{4}-\d\d-\d\d )?\d\d:\d\d\./;
+
+  it("is named, with the time of the next start, when it holds a queued issue back", () => {
+    const dir = project(10);
+
+    expect(runIssues(dir, {}, run)).toMatch(line);
+    expect(runIssues(dir, { queued: true }, run)).toMatch(line);
+    expect(runStatus(dir, {}, { run })).toMatch(line);
+  });
+
+  it("is not mentioned under the limit, or with nothing queued", () => {
+    const under = project(9);
+    const idle = project(10, false);
+
+    for (const dir of [under, idle]) {
+      expect(runIssues(dir, {}, run)).not.toContain("Start limit");
+      expect(runStatus(dir, {}, { run })).not.toContain("Start limit");
+    }
   });
 });

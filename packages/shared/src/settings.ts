@@ -157,7 +157,7 @@ export const SETTINGS: readonly Setting[] = [
 
   { path: "github.status_labels", section: "github", label: "Status labels", help: "Mirror a run's status onto its issue as labels. Run factory init again to create them.", kind: { type: "boolean" } },
   { path: "github.label_prefix", section: "github", label: "Label prefix", help: "The prefix of the status labels.", kind: { type: "string" } },
-  { path: "github.max_starts_per_day", section: "github", label: "Starts per day", help: "How many new runs the worker starts per project in 24 hours.", kind: { type: "integer", min: 0 } },
+  { path: "github.max_starts_per_day", section: "github", label: "Starts per day", help: "How many new runs the worker starts per project in a rolling 24 hours. Every started run counts, cancelled and rejected ones included.", kind: { type: "integer", min: 0 } },
   { path: "github.poll_interval_sec", section: "github", label: "Poll interval (seconds)", help: "Accepted, but not used yet.", kind: { type: "integer", min: 30 } },
 ];
 
