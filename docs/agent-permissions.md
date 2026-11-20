@@ -45,7 +45,7 @@ A repo overrides it with `.factory/prompts/<role>.md` on its default branch.
 | Triage | no | the issue and the repo | only its run folder | `.factory/prompts/triage.md` |
 | Refine | no | the issue and the repo, read-only | only its own file in `spec-N/` | `.factory/prompts/refine.md` |
 | Spec critic | no | the issue, the refined spec and the repo, read-only | only its own file in `spec-N/`, so it cannot rewrite the spec it judges | `.factory/prompts/critic.md` |
-| Builder | yes | its worktree | edits and Bash, but denied `git push`, `gh pr`, `gh api` and edits to `.factory/` | `.factory/prompts/builder.md` |
+| Builder | yes | its worktree; before the merge, the factory's open review notes, framed as data | edits and Bash, but denied `git push`, `gh pr`, `gh api` and edits to `.factory/` | `.factory/prompts/builder.md` |
 | Reviewers | no | `round-N/change.diff` and the code around it | only their own review file, so one lens cannot change another's verdict | `.factory/prompts/reviewer.md` plus `review-<lens>.md` |
 | Reviewer, acceptance lens | no | `round-N/change.diff`, the code and the engine's numbered acceptance criteria | only `acceptance.md` | `.factory/prompts/reviewer.md` plus `review-acceptance.md` |
 | Verifier | no | `round-N/change.diff` and the code | only `verify.md` | `.factory/prompts/verifier.md` |
