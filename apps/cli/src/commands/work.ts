@@ -192,7 +192,7 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
     case "limited":
       return prefix(event.project)(style.attention(startLimitLine({ started: event.started, max: event.max, nextStartAt: event.until })));
     case "unlimited":
-      return prefix(event.project)("Start limit lifted: starting queued issues again.");
+      return prefix(event.project)("Start limit lifted: queued issues can start again.");
     case "stopping":
       return event.now
         ? style.attention(`Stopping now: interrupted ${event.interrupted} run${event.interrupted === 1 ? "" : "s"}.`)

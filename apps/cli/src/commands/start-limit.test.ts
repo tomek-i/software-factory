@@ -9,7 +9,8 @@ const today = (hours: number, minutes: number) => new Date(new Date().setHours(h
 describe("localTime", () => {
   it("is the time alone today, and with the date on another day", () => {
     const morning = today(9, 5);
-    const tomorrow = new Date(morning.getTime() + 24 * 60 * 60_000);
+    // By calendar day, not +24 h, which is 23 or 25 hours across a daylight-saving change.
+    const tomorrow = new Date(new Date(morning).setDate(morning.getDate() + 1));
     const date = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
 
     expect(localTime(morning.toISOString(), morning.getTime())).toBe("09:05");
@@ -39,6 +40,6 @@ describe("describeSchedulerEvent: the start limit", () => {
     expect(describeSchedulerEvent({ type: "limited", project: "shop", started: 10, max: 10, until }, plain)).toBe(
       `[shop] Start limit reached: 10 runs started in the last 24 h (github.max_starts_per_day). The next queued issue can start at ${localTime(until)}.`,
     );
-    expect(describeSchedulerEvent({ type: "unlimited", project: "shop" }, plain)).toBe("[shop] Start limit lifted: starting queued issues again.");
+    expect(describeSchedulerEvent({ type: "unlimited", project: "shop" }, plain)).toBe("[shop] Start limit lifted: queued issues can start again.");
   });
 });

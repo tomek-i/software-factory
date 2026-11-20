@@ -186,6 +186,53 @@ describe("Scheduler: starting queued issues", () => {
     expect(t.issues()).toEqual([1, 2]);
   });
 
+  it("stops saying the start limit holds a project once nothing waits to start there", async () => {
+    const shop = project("shop", { version: 1, github: { max_starts_per_day: 1 } });
+    shop.queue(1, 2);
+    const t = scheduler([shop]);
+    t.s.tick();
+    await t.drives[0]!.finish();
+    t.s.tick();
+    expect(t.s.status().limited).toHaveLength(1);
+
+    shop.store.setQueued(shop.row.id, 2, false);
+    t.s.tick();
+
+    expect(t.s.status().limited).toEqual([]);
+    expect(t.events.some((e) => e.type === "unlimited")).toBe(false);
+
+    // Queued again while still at the limit: said again.
+    shop.store.setQueued(shop.row.id, 2, true);
+    t.s.tick();
+    expect(t.events.filter((e) => e.type === "limited")).toHaveLength(2);
+  });
+
+  it("says the start limit lifted even while the worker is full", async () => {
+    const shop = project("shop", { version: 1, github: { max_starts_per_day: 1 } });
+    shop.queue(1, 2);
+    const t = scheduler([shop], { maxRuns: 1 });
+    t.s.tick();
+    await t.drives[0]!.finish();
+    t.s.tick();
+    const until = t.s.status().limited[0]!.until!;
+
+    // A stopped run from two days ago (outside the window) takes the only slot when it is continued.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(t.now() - 48 * 60 * MINUTE);
+    shop.queue(3);
+    shop.store.writeState(shop.store.createRun({ project_id: shop.row.id, title: "Issue 3", issue_number: 3 }).id, "build");
+    vi.useRealTimers();
+    t.s.tick();
+    expect(t.issues()).toEqual([1, 3]);
+
+    t.advance(Date.parse(until) - t.now());
+    t.s.tick();
+
+    expect(t.events).toContainEqual({ type: "unlimited", project: "shop" });
+    expect(t.s.status().limited).toEqual([]);
+    expect(t.issues()).toEqual([1, 3]);
+  });
+
   it("says nothing about the start limit while under it, or for a run it continues", () => {
     const shop = project("shop", { version: 1, github: { max_starts_per_day: 5 } });
     shop.queue(1);

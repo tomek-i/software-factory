@@ -9,7 +9,7 @@ import { openRegisteredProject, type ProjectContext } from "../service/project.j
 import { driveIssue, trustedConfig, type DriveDeps, type Driven, type DriveOptions } from "../service/runs.js";
 import type { Project, Run } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
-import { atStartLimit, startLimit, type StartLimit } from "./start-limit.js";
+import { atStartLimit, startLimit, waitingToStart, type StartLimit } from "./start-limit.js";
 import { readStopRequest, type StopRequest } from "./stop.js";
 
 /**
@@ -180,9 +180,10 @@ export class Scheduler {
       this.pausedUntil = undefined;
       this.emit({ type: "resumed" });
     }
+    const projects = this.openProjects();
+    this.reviewStartLimits(projects, now);
     if (this.inFlight.size >= this.maxRuns) return;
 
-    const projects = this.openProjects();
     for (const candidate of [...this.recoveries(projects, now), ...this.newStarts(projects, now)]) {
       if (this.inFlight.size >= this.maxRuns || this.pausedUntil !== undefined) return;
       if (this.inFlight.has(keyOf(candidate.project, candidate.issue))) continue;
@@ -288,6 +289,26 @@ export class Scheduler {
       }
     }
     return found.sort((a, b) => compare(a.queuedAt, b.queuedAt) || a.seq - b.seq).map((f) => f.candidate);
+  }
+
+  /**
+   * Looks again at every project held by its start limit, even on a tick that starts nothing (the
+   * worker is full), so what it says stays true: a project that has gone, or has nothing left waiting
+   * to start, is no longer held, and one whose window has moved on is let go.
+   */
+  private reviewStartLimits(projects: Opened[], now: number): void {
+    for (const [key, held] of this.limited) {
+      const project = projects.find((p) => p.entry.path === key);
+      const config = project && this.config(project, now);
+      if (!project || !config || waitingToStart(project.ctx.store, project.ctx.project.id).length === 0) {
+        this.limited.delete(key);
+        continue;
+      }
+      if (!atStartLimit(startLimit(project.ctx.store, project.ctx.project.id, config.github.max_starts_per_day, now))) {
+        this.limited.delete(key);
+        this.emit({ type: "unlimited", project: held.project });
+      }
+    }
   }
 
   /**
