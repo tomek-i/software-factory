@@ -36,8 +36,10 @@ Commands such as `factory approve <run>` and `factory show <run>` take `<run>` a
 
 `factory work` (and `factory serve`, which runs the same worker) keeps going until you stop it.
 
+- `factory work` works on the project of the folder it is started in, a run's worktree included.
+  `factory work --all` and `factory serve` work on every project in the project list.
 - It runs in the foreground and prints each run's progress prefixed with `[project#issue]`.
-- Every few seconds it picks work from every project in the project list (see `factory projects`).
+- Every few seconds it picks work from those projects (see `factory projects` for the list).
 - It picks in this order:
   1. **Stopped runs first.** A run in a working stage whose issue is still queued, and that nobody is working on, is continued where it stopped.
   2. **Then queued issues**, in queue order.
@@ -59,7 +61,8 @@ Commands such as `factory approve <run>` and `factory show <run>` take `<run>` a
 ### Its limits
 
 - `concurrency.max_runs` per project. This counts runs other processes are driving too, such as a `factory run` in another terminal.
-- `--max-runs` for the worker, across projects (default 3).
+- `--max-runs` for the worker, across its projects (default 3).
+  Each worker keeps to its own, so two `factory work` in different projects can drive twice as many runs.
 - `github.max_starts_per_day` per project (default 10): new runs in the last 24 hours, by anyone.
   - Continuing a run doesn't count.
   - 0 means the worker starts nothing new in that project.

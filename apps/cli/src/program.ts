@@ -174,10 +174,10 @@ export function buildProgram(): Command {
 
   program
     .command("work")
-    .description("work through the queues of every registered project until stopped: continue stopped runs, start queued issues")
-    .option("--max-runs <n>", `runs at once, across projects (default ${DEFAULT_MAX_RUNS})`, parseMaxRuns)
-    .action(async (options: { maxRuns?: number }) => {
-      refuseRunningOnAnyProject();
+    .description("work through this project's queue until stopped: continue stopped runs, start queued issues")
+    .option("--all", "work through the queues of every registered project")
+    .option("--max-runs <n>", `runs this worker drives at once, across its projects (default ${DEFAULT_MAX_RUNS})`, parseMaxRuns)
+    .action(async (options: { maxRuns?: number; all?: boolean }) => {
       // Ctrl+C interrupts the runs (kills their agents, gives the leases back) so they can be continued.
       const interrupt = new AbortController();
       process.once("SIGINT", () => interrupt.abort());

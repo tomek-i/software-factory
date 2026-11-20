@@ -12,7 +12,7 @@ import type { CommandRunner } from "../util/exec.js";
 import { readStopRequest, type StopRequest } from "./stop.js";
 
 /**
- * Works through the queues of every project in the project list: continues runs nobody is working
+ * Works through the queues of the projects it is given: continues runs nobody is working
  * on (a worker died, or a run was stopped), then starts queued issues, within the limits. Every run
  * is driven with `driveIssue`, exactly as `factory run` does, so trust, gates and hard rules apply
  * the same way. `factory work` runs it in the foreground; `factory serve` will run it in the server.

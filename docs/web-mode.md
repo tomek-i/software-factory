@@ -6,7 +6,7 @@ The commands are in [Using the factory](usage.md#web-mode).
 
 ## What it does
 
-- `factory serve` does what `factory work` does: the same picking, limits and stopping (see [Working through the queue](runs.md#working-through-the-queue)).
+- `factory serve` does what `factory work --all` does: the same picking, limits and stopping, across every project in the project list (see [Working through the queue](runs.md#working-through-the-queue)).
 - `factory stop`, `factory stop --now` and Ctrl+C stop it as they stop `factory work`.
 - It serves a web app for every project in the project list.
 - It listens on `http://127.0.0.1:4180` unless `--port` says otherwise.
