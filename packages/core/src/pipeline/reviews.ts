@@ -125,6 +125,32 @@ export interface ReviewComment {
   body: string;
 }
 
+/**
+ * What a review note on a line of the change was, so the merge stage can answer its thread: a minor
+ * finding or nit (`note`), a blocking finding the verifier refuted, or one it confirmed.
+ */
+export interface NoteMarker {
+  kind: "note" | "refuted" | "confirmed";
+  round: number;
+  finding: string;
+}
+
+/** The hidden line at the end of an inline review note. */
+export function noteMarker(m: NoteMarker): string {
+  return `<!-- factory:note kind=${m.kind} round=${m.round} finding=${encodeURIComponent(m.finding)} -->`;
+}
+
+/** The marker of a review note the factory posted, or undefined for any other comment. */
+export function parseNoteMarker(body: string): NoteMarker | undefined {
+  const match = /<!-- factory:note kind=(note|refuted|confirmed) round=(\d+) finding=(\S+) -->/.exec(body);
+  if (!match) return undefined;
+  try {
+    return { kind: match[1] as NoteMarker["kind"], round: Number(match[2]), finding: decodeURIComponent(match[3]!) };
+  } catch {
+    return undefined;
+  }
+}
+
 /** What the reviews leave for the human: the review's body and its comments on lines of the change. */
 export interface ReviewNotes {
   body: string;
@@ -137,15 +163,16 @@ export interface ReviewNotes {
  * or the review round cap). A finding whose file and line are in `inDiff` becomes a comment on that
  * line, starting with its lens and severity; the rest go in the body, grouped, with their place as
  * text. Without `inDiff` everything is in the body. Undefined when there is nothing to note.
+ * Each comment ends with a `noteMarker` for `round`, so its thread can be answered before the merge.
  */
-export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"verify">, inDiff?: DiffLines): ReviewNotes | undefined {
+export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"verify">, inDiff?: DiffLines, round = 0): ReviewNotes | undefined {
   const comments: ReviewComment[] = [];
   /** Comments on the finding's line when that line is in the diff; false when it goes in the body. */
-  const inline = (f: Finding, text: string): boolean => {
+  const inline = (f: Finding, text: string, kind: NoteMarker["kind"], id = f.id): boolean => {
     if (!f.file || !f.line) return false;
     const path = f.file.replace(/\\/g, "/").replace(/^\.\//, "");
     if (!inDiff?.get(path)?.has(f.line)) return false;
-    comments.push({ path, line: f.line, body: text });
+    comments.push({ path, line: f.line, body: `${text}\n\n${noteMarker({ kind, round, finding: id })}` });
     return true;
   };
   const item = (f: Finding) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`;
@@ -154,13 +181,13 @@ export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"ver
   const byId = new Map(blockingFindings(reviews).map((b) => [b.finding.id, b]));
   if (verified?.header.VERDICT === "CONFIRMED") {
     count += verified.findings.length;
-    const rest = verified.findings.filter((f) => !inline(f, `**${byId.get(f.id)?.lens ?? "verifier"}** · ${f.severity} (confirmed by the verifier, not fixed): ${f.claim}`));
+    const rest = verified.findings.filter((f) => !inline(f, `**${byId.get(f.id)?.lens ?? "verifier"}** · ${f.severity} (confirmed by the verifier, not fixed): ${f.claim}`, "confirmed"));
     if (rest.length) parts.push(["**Confirmed by the verifier, not fixed**", ...rest.map(item)].join("\n"));
   }
   for (const { lens, verdict } of reviews) {
     const minor = verdict.findings.filter((f) => !isBlocking(f));
     count += minor.length;
-    const rest = minor.filter((f) => !inline(f, `**${lens}** · ${f.severity}: ${f.claim}`));
+    const rest = minor.filter((f) => !inline(f, `**${lens}** · ${f.severity}: ${f.claim}`, "note"));
     if (rest.length) parts.push([`**${lens}**`, ...rest.map(item)].join("\n"));
   }
   if (verified) {
@@ -170,7 +197,7 @@ export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"ver
       const b = byId.get(id);
       if (!b) return [`- ${id}: ${reason}`];
       const { lens, finding } = b;
-      if (inline(finding, `**${lens}** · ${finding.severity} (refuted by the verifier): ${finding.claim}\n\nRefuted: ${reason}`)) return [];
+      if (inline(finding, `**${lens}** · ${finding.severity} (refuted by the verifier): ${finding.claim}\n\nRefuted: ${reason}`, "refuted", id)) return [];
       return [`- ${lens} ${finding.severity}: ${finding.claim}${findingPlace(finding)}\n  Refuted: ${reason}`];
     });
     if (rest.length) parts.push(["**Refuted by the verifier**", ...rest].join("\n"));
