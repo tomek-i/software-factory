@@ -90,6 +90,8 @@ The project list holds every repo you ran `factory init` in, so `factory work --
 - `factory projects` lists the repos and flags one whose folder has gone, or that has no `.factory/factory.db`.
 - `factory projects remove <path>` drops a repo from the list. The repo and its database are not touched.
 - A repo set up before the list existed joins it when you run `factory init` there again.
+- Run in a repo that has a `.factory/factory.db` but is not in the list, `factory work`, `factory serve` and `factory projects` name it and say to run `factory init` there.
+  Nothing joins the list until you do.
 
 ### Screenshots and videos on PRs
 

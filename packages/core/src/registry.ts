@@ -5,6 +5,8 @@ import { registryFileSchema, type RegistryEntry } from "@factory/shared";
 import { FACTORY_DIR } from "./config/load.js";
 import { factoryDataDir } from "./github/attachments.js";
 import { ServiceError } from "./service/errors.js";
+import type { CommandRunner } from "./util/exec.js";
+import { mainCheckout } from "./util/git.js";
 
 /**
  * The repos this user's factory manages, so a long-running worker or the web server can find every
@@ -46,6 +48,24 @@ export function sameProjectPath(a: string, b: string, platform: NodeJS.Platform 
 export function projectStatus(path: string): ProjectStatus {
   if (!existsSync(path)) return "missing_repo";
   return existsSync(join(path, FACTORY_DIR, "factory.db")) ? "ok" : "missing_db";
+}
+
+/**
+ * The repo containing cwd when it has a factory database but is not in the project list (set up
+ * before the list existed, or removed from it), so a command can say to run `factory init` there
+ * rather than that nothing is registered. Undefined outside a repo, or for one in the list.
+ */
+export function unregisteredRepo(cwd: string, registered: { path: string }[], run?: CommandRunner): string | undefined {
+  const checkout = mainCheckout(cwd, run);
+  if (checkout === undefined) return undefined;
+  const root = resolve(checkout);
+  if (projectStatus(root) !== "ok") return undefined;
+  return registered.some((e) => sameProjectPath(e.path, root)) ? undefined : root;
+}
+
+/** What to tell someone standing in an `unregisteredRepo`. Adding it stays their explicit `factory init`. */
+export function unregisteredHint(root: string): string {
+  return `This repository (${root}) has a factory database but is not in your project list. Run \`factory init\` here to add it (your config is kept).`;
 }
 
 export function listRegistered(options: RegistryOptions = {}): RegisteredProject[] {

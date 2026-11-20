@@ -11,6 +11,8 @@ import {
   reportLines,
   Scheduler,
   ServiceError,
+  unregisteredHint,
+  unregisteredRepo,
   type CommandRunner,
   type GithubPort,
   type Project,
@@ -41,6 +43,8 @@ export interface ServeDeps {
   /** Aborted on Ctrl+C: interrupts the runs, like `factory stop --now`. */
   signal?: AbortSignal;
   projects?: () => RegistryEntry[];
+  /** The folder it was started in, checked for a repo the project list misses. */
+  cwd?: string;
   /** Opens a project; the CLI wraps it to refuse a project the factory itself lives in. */
   openProject?: (entry: RegistryEntry) => ProjectContext;
   /** What finishing runs whose PR was merged or closed reports, per project, before serving. */
@@ -95,7 +99,9 @@ async function serve(options: ServeOptions, deps: ServeDeps): Promise<{ message:
   const list = deps.projects ?? listRegistered;
   const set = new ProjectSet(list, deps.openProject ?? openRegisteredProject);
   const entries = list();
-  if (entries.length === 0) throw new ServiceError("No projects registered. Run `factory init` in a repository first.");
+  const missing = unregisteredRepo(deps.cwd ?? process.cwd(), entries, deps.run);
+  if (entries.length === 0) throw new ServiceError(missing ? unregisteredHint(missing) : "No projects registered. Run `factory init` in a repository first.");
+  if (missing) print(`Warning: ${unregisteredHint(missing)}`);
 
   const reconcile = deps.reconcile ?? ((ctx) => reportLines(reconcileAndSweep(ctx.store, ctx.project, ctx.config, { run: deps.run, github: deps.github?.(ctx.project) })));
   for (const entry of entries) {

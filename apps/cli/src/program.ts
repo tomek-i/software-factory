@@ -79,7 +79,7 @@ export function buildProgram(): Command {
     .command("projects")
     .description("list the repositories the factory manages (added by `factory init`)")
     .action(() => {
-      console.log(runProjects({}, styleFor(process.stdout)));
+      console.log(runProjects(process.cwd(), {}, styleFor(process.stdout)));
     });
 
   projects
