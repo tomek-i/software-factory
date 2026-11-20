@@ -139,7 +139,10 @@ Whose issues and comments count as the spec. See [Trust](trust.md).
 ## github
 
 - `status_labels` (default off) and `label_prefix` (default `factory`): see [Status labels](#status-labels).
-- `max_starts_per_day` (default 10): how many new runs the worker starts per project in 24 hours.
+- `max_starts_per_day` (default 10): how many new runs the worker starts per project in a rolling 24 hours.
+  Every started run counts, cancelled and rejected ones included.
+  When it holds queued issues back, `factory status`, `factory issues`, `factory work` and the web Backlog say so, and when the next one can start.
+  See [Its limits](runs.md#its-limits).
 - `poll_interval_sec` is accepted but not used yet.
 
 ### Status labels

@@ -885,6 +885,25 @@ describe("backlog", () => {
     };
   }
 
+  it("says when the start limit holds the queue back, and when the next issue can start", async () => {
+    const at = new Date(new Date().setHours(13, 53, 0, 0));
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    server.backlog = { ...server.backlog, issues: [issue({ number: 1, title: "Waiting one", queued: true, position: 1, run: null })], startLimit: { started: 10, max: 10, nextStartAt: at.toISOString() } };
+    renderAt("/backlog");
+
+    expect((await screen.findByRole("status")).textContent).toBe(
+      `Start limit reached: 10 runs started in the last 24 h (github.max_starts_per_day). The next queued issue can start at ${time}.`,
+    );
+  });
+
+  it("says nothing about the start limit when it isn't holding anything back", async () => {
+    server.backlog = { ...server.backlog, issues: [issue({ number: 1, title: "Waiting one", queued: true, position: 1, run: null })] };
+    renderAt("/backlog");
+
+    await screen.findByText("Waiting one");
+    expect(screen.queryByText(/Start limit/)).toBeNull();
+  });
+
   it("shows each issue's labels and filters by one label without asking the server", async () => {
     server.backlog.issues = [
       issue({ number: 1, title: "Broken checkout", labels: ["bug", "Area: web"] }),

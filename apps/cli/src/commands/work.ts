@@ -24,6 +24,7 @@ import { CliError } from "../context.js";
 import { refuseRunningOnItself } from "../self.js";
 import { plain, type Style } from "../style.js";
 import { describeOutcome, formatEvent } from "./runs.js";
+import { startLimitLine } from "./start-limit.js";
 
 export interface WorkDeps {
   run?: CommandRunner;
@@ -188,6 +189,10 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
       return style.attention(`Usage limit reached: starting and continuing nothing until ${event.until}.`);
     case "resumed":
       return "Usage limit reset: carrying on.";
+    case "limited":
+      return prefix(event.project)(style.attention(startLimitLine({ started: event.started, max: event.max, nextStartAt: event.until })));
+    case "unlimited":
+      return prefix(event.project)("Start limit lifted: starting queued issues again.");
     case "stopping":
       return event.now
         ? style.attention(`Stopping now: interrupted ${event.interrupted} run${event.interrupted === 1 ? "" : "s"}.`)

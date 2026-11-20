@@ -23,10 +23,18 @@ export interface BacklogIssue {
   run: { id: string; state: RunState; waitingGate: Gate | null } | null;
 }
 
+/** The project's `github.max_starts_per_day` holding its queued issues back; `nextStartAt` is unset when it is 0. */
+export interface StartLimit {
+  started: number;
+  max: number;
+  nextStartAt?: string;
+}
+
 export interface Backlog {
   github: string | null;
   syncedAt: string | null;
   issues: BacklogIssue[];
+  startLimit?: StartLimit;
 }
 
 export interface SyncResult {
@@ -174,6 +182,7 @@ export interface RunFile {
 export interface SchedulerStatus {
   running: { project: string; issue: number; runId?: string }[];
   pausedUntil?: string;
+  limited?: { project: string; started: number; max: number; until?: string }[];
   stopping?: "drain" | "now";
 }
 
@@ -264,6 +273,8 @@ export type ServerEvent =
   | { type: "error"; message: string }
   | { type: "paused"; until: string }
   | { type: "resumed" }
+  | { type: "limited"; project: string; started: number; max: number; until?: string }
+  | { type: "unlimited"; project: string }
   | { type: "stopping"; now: boolean; interrupted: number };
 
 /** An error the server explained, or no session. */

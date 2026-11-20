@@ -258,6 +258,25 @@ describe("projects and the backlog", () => {
     expect((await call(app, "GET", "/api/projects/nope/issues")).statusCode).toBe(404);
   });
 
+  it("says when the start limit holds the queue back, and only then", async () => {
+    const ctx = memoryProject();
+    ctx.config = factoryConfigSchema.parse({ version: 1, github: { max_starts_per_day: 1 } });
+    issue(ctx, 1);
+    issue(ctx, 2);
+    const { app } = server([ctx]);
+    const url = `/api/projects/${projectKey(ctx.root)}/issues`;
+
+    // Under the limit, and then at it with nothing waiting to start.
+    ctx.store.setQueued(ctx.project.id, 1, true);
+    expect((await call(app, "GET", url)).json().startLimit).toBeUndefined();
+    const run = ctx.store.createRun({ project_id: ctx.project.id, title: "Issue 1", issue_number: 1 });
+    expect((await call(app, "GET", url)).json().startLimit).toBeUndefined();
+
+    ctx.store.setQueued(ctx.project.id, 2, true);
+    const until = new Date(Date.parse(run.created_at) + 24 * 60 * 60_000).toISOString();
+    expect((await call(app, "GET", url)).json().startLimit).toEqual({ started: 1, max: 1, nextStartAt: until });
+  });
+
   it("syncs issues from GitHub and reports what changed", async () => {
     const ctx = memoryProject();
     issue(ctx, 1);
@@ -797,7 +816,11 @@ describe("runs", () => {
   });
 
   it("reports the scheduler's state", async () => {
-    const status = { running: [{ project: "demo", issue: 3 }], pausedUntil: "2026-11-16T12:00:00.000Z" };
+    const status = {
+      running: [{ project: "demo", issue: 3 }],
+      pausedUntil: "2026-11-16T12:00:00.000Z",
+      limited: [{ project: "demo", started: 10, max: 10, until: "2026-11-17T09:00:00.000Z" }],
+    };
     const { app } = server([memoryProject()], { scheduler: { status: () => status } });
     expect((await call(app, "GET", "/api/scheduler")).json()).toEqual(status);
   });
