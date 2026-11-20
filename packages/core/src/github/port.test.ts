@@ -159,9 +159,12 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh(JSON.stringify([{ name: "x", bucket: "weird" }])).run).pullRequestChecks(42)).toThrow(/unexpected output/);
   });
 
-  it("lists the review threads that are neither resolved nor outdated, naming apps as GitHub shows them", () => {
-    const comment = (login: string | null, typename: string, body: string, own = false) => ({
-      nodes: [{ author: login === null ? null : { __typename: typename, login }, body, url: `https://github.com/o/r/pull/42#discussion_r${body.length}`, viewerDidAuthor: own }],
+  it("lists the unresolved review threads, outdated ones included, with their replies, naming apps as GitHub shows them", () => {
+    const comment = (login: string | null, typename: string, body: string, own = false, replies: string[] = []) => ({
+      nodes: [
+        { author: login === null ? null : { __typename: typename, login }, body, url: `https://github.com/o/r/pull/42#discussion_r${body.length}`, viewerDidAuthor: own },
+        ...replies.map((reply) => ({ author: { __typename: "User", login: "factory-bot" }, body: reply, url: "u", viewerDidAuthor: true })),
+      ],
     });
     const threads = {
       pageInfo: { hasNextPage: false },
@@ -169,15 +172,16 @@ describe("ghPort", () => {
         { id: "T1", isResolved: false, isOutdated: false, path: "src/a.ts", line: 37, comments: comment("github-advanced-security", "Bot", "Polynomial regular expression") },
         { id: "T2", isResolved: true, isOutdated: false, path: "src/a.ts", line: 3, comments: comment("bob", "User", "resolved") },
         { id: "T3", isResolved: false, isOutdated: true, path: "src/a.ts", line: null, comments: comment("bob", "User", "outdated") },
-        { id: "T4", isResolved: false, isOutdated: false, path: "README.md", line: null, comments: comment("factory-bot", "User", "a note", true) },
+        { id: "T4", isResolved: false, isOutdated: false, path: "README.md", line: null, comments: comment("factory-bot", "User", "a note", true, ["Declined: not worth it"]) },
         { id: "T5", isResolved: false, isOutdated: false, path: "x.ts", line: 1, comments: comment(null, "User", "gone") },
       ],
     };
     const { calls, run } = fakeGh(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: threads } } } }));
     expect(ghPort(project, run).unresolvedReviewThreads(42)).toEqual([
-      { id: "T1", author: "github-advanced-security[bot]", own: false, path: "src/a.ts", line: 37, body: "Polynomial regular expression", url: "https://github.com/o/r/pull/42#discussion_r29" },
-      { id: "T4", author: "factory-bot", own: true, path: "README.md", body: "a note", url: "https://github.com/o/r/pull/42#discussion_r6" },
-      { id: "T5", author: "ghost", own: false, path: "x.ts", line: 1, body: "gone", url: "https://github.com/o/r/pull/42#discussion_r4" },
+      { id: "T1", author: "github-advanced-security[bot]", own: false, path: "src/a.ts", line: 37, body: "Polynomial regular expression", url: "https://github.com/o/r/pull/42#discussion_r29", outdated: false, replies: [] },
+      { id: "T3", author: "bob", own: false, path: "src/a.ts", body: "outdated", url: "https://github.com/o/r/pull/42#discussion_r8", outdated: true, replies: [] },
+      { id: "T4", author: "factory-bot", own: true, path: "README.md", body: "a note", url: "https://github.com/o/r/pull/42#discussion_r6", outdated: false, replies: ["Declined: not worth it"] },
+      { id: "T5", author: "ghost", own: false, path: "x.ts", line: 1, body: "gone", url: "https://github.com/o/r/pull/42#discussion_r4", outdated: false, replies: [] },
     ]);
     expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*reviewThreads.*isOutdated/), "-f", "owner=o", "-f", "name=r", "-F", "n=42"]);
 
@@ -186,6 +190,21 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("{}").run).unresolvedReviewThreads(42)).toThrow(/unexpected output/);
     const broken = { data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "T9", isResolved: false, isOutdated: false, comments: { nodes: [] } }] } } } } };
     expect(() => ghPort(project, fakeGh(JSON.stringify(broken)).run).unresolvedReviewThreads(42)).toThrow(/unexpected review thread/);
+  });
+
+  it("replies to a review thread, keeping a body that starts with @ as text", () => {
+    const { calls, run } = fakeGh(JSON.stringify({ data: { addPullRequestReviewThreadReply: { comment: { id: "C1" } } } }));
+    ghPort(project, run).replyToReviewThread("T4", "@file Declined: not worth it");
+    expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=mutation.*addPullRequestReviewThreadReply/), "-f", "t=T4", "-f", "b=@file Declined: not worth it"]);
+  });
+
+  it("resolves a review thread, and says so when GitHub did not", () => {
+    const { calls, run } = fakeGh(JSON.stringify({ data: { resolveReviewThread: { thread: { isResolved: true } } } }));
+    ghPort(project, run).resolveReviewThread("T4");
+    expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=mutation.*resolveReviewThread/), "-f", "t=T4"]);
+
+    const refused = fakeGh(JSON.stringify({ data: { resolveReviewThread: null }, errors: [{ message: "no permission" }] }));
+    expect(() => ghPort(project, refused.run).resolveReviewThread("T4")).toThrow(/did not resolve thread T4/);
   });
 
   it("lists the open code scanning alerts on the PR's head ref, and none for a repo without code scanning", () => {

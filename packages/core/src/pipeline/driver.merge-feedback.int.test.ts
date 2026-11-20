@@ -18,6 +18,8 @@ const thread = (id: string, author: string, body: string, extra: Partial<ReviewT
   line: 1,
   body,
   url: `https://github.com/o/r/pull/7#discussion_${id}`,
+  outdated: false,
+  replies: [],
   ...extra,
 });
 const BOT = thread("T1", "github-advanced-security[bot]", "Polynomial regular expression used on uncontrolled data");

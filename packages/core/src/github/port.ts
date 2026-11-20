@@ -88,11 +88,18 @@ export interface GithubPort {
   /** The PR's head commit and the size of its diff. */
   pullRequestDiff(number: number): PullRequestDiff;
   /**
-   * The PR's review threads that are neither resolved nor outdated (their line changed since), each
-   * with its first comment. Throws when the PR has more threads than one page holds, rather than
-   * judge it on part of them.
+   * The PR's unresolved review threads, outdated ones (their line changed since) included: GitHub's
+   * rule that conversations be resolved before merging counts them too. Each comes with its first
+   * comment and the bodies of the replies. Throws when the PR has more threads than one page holds,
+   * rather than judge it on part of them.
    */
   unresolvedReviewThreads(number: number): ReviewThread[];
+  /** Reply to a review thread, under its last comment. */
+  replyToReviewThread(threadId: string, body: string): void;
+  /** Mark a review thread resolved. */
+  resolveReviewThread(threadId: string): void;
+  /** Open an issue and return its number. */
+  createIssue(issue: { title: string; body: string; labels?: string[] }): number;
   /**
    * Open code scanning alerts on the PR's head ref (`refs/pull/<n>/head`; its merge ref lists none in
    * practice). Empty when the repository has no code scanning.
@@ -172,6 +179,10 @@ export interface ReviewThread {
   body: string;
   /** The thread's first comment on GitHub. */
   url: string;
+  /** Its line changed since the comment, so GitHub no longer shows it on the diff. */
+  outdated: boolean;
+  /** The bodies of the comments after the first, oldest first. */
+  replies: string[];
 }
 
 export interface RepoLabel {
@@ -182,11 +193,11 @@ export interface RepoLabel {
 const CHECK_BUCKETS: readonly RequiredCheck["bucket"][] = ["pass", "fail", "pending", "skipping", "cancel"];
 
 /**
- * What `factory new` needs from GitHub to open the issues it drafted. Kept apart from GithubPort:
- * the pipeline never creates issues, so its fakes need not grow these methods. Faked in tests.
+ * What else `factory new` needs from GitHub to open the issues it drafted (`createIssue` is on
+ * GithubPort, for the merge stage's follow-up issues). Kept apart so the pipeline's fakes need not
+ * grow these methods. Faked in tests.
  */
 export interface IssueWriterPort {
-  /** Open an issue and return its number. */
   createIssue(issue: { title: string; body: string; labels?: string[] }): number;
   /** The repository's labels, so the issue writer can pick from them. */
   listLabels(): RepoLabel[];
@@ -196,7 +207,9 @@ export interface IssueWriterPort {
 
 const PR_REVIEWS = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){nodes{body viewerDidAuthor}}}}}";
 const REVIEW_THREADS =
-  "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved isOutdated path line comments(first:1){nodes{author{__typename login} body url viewerDidAuthor}}}}}}}";
+  "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved isOutdated path line comments(first:20){nodes{author{__typename login} body url viewerDidAuthor}}}}}}}";
+const REPLY_TO_THREAD = "mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}";
+const RESOLVE_THREAD = "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}";
 const OWN_ISSUE_BODY ="query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){body viewerDidAuthor}}}";
 
 const ADD_SUB_ISSUE = "mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{number}}}";
@@ -474,10 +487,21 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
         throw new GithubError(`gh api graphql returned unexpected output: ${out.slice(0, 200) || "(empty)"}`);
       }
       if (threads!.pageInfo?.hasNextPage === true) throw new GithubError(`PR #${number} has more than 100 review threads; resolve some on GitHub`);
-      return (threads!.nodes as Record<string, unknown>[]).flatMap((t) => {
-        if (t.isResolved === true || t.isOutdated === true) return [];
-        return [parseThread(t)];
-      });
+      return (threads!.nodes as Record<string, unknown>[]).flatMap((t) => (t.isResolved === true ? [] : [parseThread(t)]));
+    },
+    replyToReviewThread(threadId, body) {
+      // -f, not -F: a body starting with "@" must stay text rather than name a file to read.
+      gh(["api", "graphql", "-f", `query=${REPLY_TO_THREAD}`, "-f", `t=${threadId}`, "-f", `b=${body}`]);
+    },
+    resolveReviewThread(threadId) {
+      const out = gh(["api", "graphql", "-f", `query=${RESOLVE_THREAD}`, "-f", `t=${threadId}`]);
+      let resolved: unknown;
+      try {
+        resolved = (JSON.parse(out) as { data?: { resolveReviewThread?: { thread?: { isResolved?: unknown } } } }).data?.resolveReviewThread?.thread?.isResolved;
+      } catch {
+        resolved = undefined;
+      }
+      if (resolved !== true) throw new GithubError(`gh api graphql did not resolve thread ${threadId}: ${out.slice(0, 200) || "(empty)"}`);
     },
     codeScanningAlerts(number) {
       const args = ["api", "-X", "GET", `repos/${repo}/code-scanning/alerts`, "-f", `ref=refs/pull/${number}/head`, "-f", "state=open", "-F", "per_page=100"];
@@ -544,7 +568,8 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
 
 /** One review thread of GitHub's GraphQL API, checked field by field. */
 function parseThread(t: Record<string, unknown>): ReviewThread {
-  const first = ((t.comments as { nodes?: unknown } | undefined)?.nodes as Record<string, unknown>[] | undefined)?.[0];
+  const comments = ((t.comments as { nodes?: unknown } | undefined)?.nodes as Record<string, unknown>[] | undefined) ?? [];
+  const first = comments[0];
   const author = first?.author as { __typename?: unknown; login?: unknown } | null | undefined;
   if (typeof t.id !== "string" || !first || typeof first.body !== "string" || typeof first.url !== "string") {
     throw new GithubError(`gh api graphql returned an unexpected review thread: ${JSON.stringify(t).slice(0, 200)}`);
@@ -562,6 +587,8 @@ function parseThread(t: Record<string, unknown>): ReviewThread {
     ...(typeof line === "number" && Number.isInteger(line) && line > 0 ? { line } : {}),
     body: first.body,
     url: first.url,
+    outdated: t.isOutdated === true,
+    replies: comments.slice(1).flatMap((c) => (typeof c.body === "string" ? [c.body] : [])),
   };
 }
 

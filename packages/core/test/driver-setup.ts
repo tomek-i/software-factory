@@ -130,8 +130,13 @@ export function setup(
     checksWhenClear?: RequiredCheck[];
     /** Every check on the PR's head, required or not: what each look returns, in turn; the last one repeats. None by default. */
     allChecks?: PullRequestCheck[][];
-    /** Open review threads (neither resolved nor outdated): what each look returns, in turn; the last one repeats. None by default. */
+    /**
+     * Unresolved review threads: what each look returns, in turn; the last one repeats. None by default.
+     * Replies the factory posts show on them, and a thread it resolved drops out.
+     */
     threads?: ReviewThread[][];
+    /** What resolving a thread throws, once per thread id listed. */
+    resolveErrors?: string[];
   } = {
     state: "open",
     draft: true,
@@ -142,6 +147,9 @@ export function setup(
   let allCheckViews = 0;
   let threadViews = 0;
   const dismissals: { alert: number; reason: DismissReason; comment: string }[] = [];
+  const replies: { thread: string; body: string }[] = [];
+  const resolved: string[] = [];
+  const issues: { number: number; title: string; body: string; labels?: string[] }[] = [];
   const github: GithubPort = {
     commentOnIssue: (issue, body) => comments.push({ issue, body, id: 100 + comments.length, edits: 0 }),
     findComment: (issue, marker) => comments.findLast((c) => c.issue === issue && c.body.startsWith(marker))?.id,
@@ -206,7 +214,20 @@ export function setup(
     },
     unresolvedReviewThreads: () => {
       const all = pr.threads ?? [[]];
-      return all[Math.min(threadViews++, all.length - 1)]!;
+      return all[Math.min(threadViews++, all.length - 1)]!
+        .filter((t) => !resolved.includes(t.id))
+        .map((t) => ({ ...t, replies: [...t.replies, ...replies.filter((r) => r.thread === t.id).map((r) => r.body)] }));
+    },
+    replyToReviewThread: (thread, body) => void replies.push({ thread, body }),
+    resolveReviewThread: (thread) => {
+      const error = pr.resolveErrors?.shift();
+      if (error) throw new Error(error);
+      resolved.push(thread);
+    },
+    createIssue: (issue) => {
+      const number = 50 + issues.length;
+      issues.push({ number, ...issue });
+      return number;
     },
     codeScanningAlerts: () => [...(pr.alerts ?? [])],
     dismissCodeScanningAlert: (alert, reason, comment) => {
@@ -241,7 +262,7 @@ export function setup(
     checksGraceMs: 200,
     capture: options.capture,
   });
-  return { root, remote, store, project, driver, fake, github, comments, issueBody, prs, readyPrs, closedReady, edits, reviews, reviewErrors, seen, pr, merges, dismissals };
+  return { root, remote, store, project, driver, fake, github, comments, issueBody, prs, readyPrs, closedReady, edits, reviews, reviewErrors, seen, pr, merges, dismissals, replies, resolved, issues };
 }
 
 /** Helpers of the `PipelineDriver > reviews` tests. */

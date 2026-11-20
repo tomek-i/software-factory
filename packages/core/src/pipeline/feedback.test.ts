@@ -5,7 +5,7 @@ import type { RunEvent } from "../store/store.js";
 import { acknowledgedBy, actionable, feedbackKeys, feedbackReasons, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
 
 const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["@Alice"] } });
-const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, ...extra });
+const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, outdated: false, replies: [], ...extra });
 
 describe("open feedback", () => {
   it("reads open threads and failed checks that are not required, leaving out its own threads and what was acknowledged", () => {
