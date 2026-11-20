@@ -1,16 +1,17 @@
-import { dirname } from "node:path";
 import {
   asWorker,
   DEFAULT_MAX_RUNS,
   listRegistered,
+  mainCheckout,
   openRegisteredProject,
   reconcileAndSweep,
   reportLines,
   requestStop,
-  runCommand,
   sameProjectPath,
   Scheduler,
   ServiceError,
+  unregisteredHint,
+  unregisteredRepo,
   type CommandRunner,
   type GithubPort,
   type Project,
@@ -76,31 +77,25 @@ export async function runWork(options: WorkOptions, deps: WorkDeps = {}): Promis
 }
 
 /**
- * The main checkout of the repository containing cwd, so a folder inside one of its worktrees (a
- * run's, under `.worktrees`) counts as that project rather than as an unregistered repo of its own.
- */
-function mainCheckout(cwd: string, run: CommandRunner = runCommand): string | undefined {
-  const result = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd });
-  return result.code === 0 ? dirname(result.stdout) : undefined;
-}
-
-/**
  * The projects to work on, read again on every tick, and the ones they are at the start: the whole
  * list with `all`, otherwise the registered project containing cwd, so a worker started in one repo
- * leaves the other queues alone.
+ * leaves the other queues alone. `warning` is for a repo here that the list misses.
  */
-function chosenProjects(options: WorkOptions, deps: WorkDeps): { projects: () => RegistryEntry[]; entries: RegistryEntry[] } {
+function chosenProjects(options: WorkOptions, deps: WorkDeps): { projects: () => RegistryEntry[]; entries: RegistryEntry[]; warning?: string } {
   const registered = deps.projects ?? listRegistered;
+  const cwd = deps.cwd ?? process.cwd();
   if (options.all) {
     const entries = registered();
-    if (entries.length === 0) throw new CliError("No projects registered. Run `factory init` in a repository first.");
-    return { projects: registered, entries };
+    const missing = unregisteredRepo(cwd, entries, deps.run);
+    if (entries.length === 0) throw new CliError(missing ? unregisteredHint(missing) : "No projects registered. Run `factory init` in a repository first.");
+    return { projects: registered, entries, warning: missing && unregisteredHint(missing) };
   }
-  const root = mainCheckout(deps.cwd ?? process.cwd(), deps.run);
+  const root = mainCheckout(cwd, deps.run);
   const projects = () => (root === undefined ? [] : registered().filter((entry) => sameProjectPath(entry.path, root)));
   const entries = projects();
   if (entries.length === 0) {
-    throw new CliError("This folder is not in a registered project. Run `factory init` here, or `factory work --all` to work on every registered project.");
+    const missing = unregisteredRepo(cwd, registered(), deps.run);
+    throw new CliError(missing ? unregisteredHint(missing) : "This folder is not in a registered project. Run `factory init` here, or `factory work --all` to work on every registered project.");
   }
   return { projects, entries };
 }
@@ -110,8 +105,9 @@ async function work(options: WorkOptions, deps: WorkDeps): Promise<{ message: st
   const startedAt = Date.now();
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
-  const { projects, entries } = chosenProjects(options, deps);
+  const { projects, entries, warning } = chosenProjects(options, deps);
   refuseRunningOnAnyProject(() => entries);
+  if (warning) print(style.attention(`Warning: ${warning}`));
   const openProject = deps.scheduler?.open ?? openRegisteredProject;
   // Checked on every open, not only at start: a project can be registered while the worker runs.
   const open = (entry: RegistryEntry): ProjectContext => {

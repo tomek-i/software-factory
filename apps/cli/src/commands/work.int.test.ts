@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, isTerminal } from "@factory/shared";
 import { findRepoRoot, readStopRequest, Store, takeUpgradeLock, upgradeLockPath, workersDir, type DriveFn, type DriveOutcome, type ProjectContext, type StopRequest } from "@factory/core";
@@ -62,7 +62,7 @@ function setup(outcomes: DriveOutcome[], issues = [12], names = ["shop"]) {
 
 describe("runWork", () => {
   it("says to register a project when there is none", async () => {
-    await expect(runWork({ all: true }, { projects: () => [] })).rejects.toThrow(/No projects registered/);
+    await expect(runWork({ all: true }, { cwd: mkdtempSync(join(tmpdir(), "factory-no-repo-")), projects: () => [] })).rejects.toThrow(/No projects registered/);
   });
 
   it("works only on the project it was started in", async () => {
@@ -112,6 +112,22 @@ describe("runWork", () => {
 
     await expect(runWork({}, { ...deps, cwd: repo() })).rejects.toThrow(/not in a registered project.*factory work --all/);
     await expect(runWork({}, { ...deps, cwd: mkdtempSync(join(tmpdir(), "factory-no-repo-")) })).rejects.toThrow(CliError);
+  }, 30_000);
+
+  it("names the repo it is started in when that has a database but is not in the list", async () => {
+    const unlisted = repo();
+    mkdirSync(join(unlisted, ".factory"));
+    writeFileSync(join(unlisted, ".factory", "factory.db"), "");
+    const hint = `This repository (${resolve(unlisted)}) has a factory database but is not in your project list. Run \`factory init\` here to add it (your config is kept).`;
+    const { deps, lines } = setup([{ kind: "finished", state: "done" }]);
+
+    await expect(runWork({}, { ...deps, cwd: unlisted })).rejects.toThrow(new CliError(hint));
+    await expect(runWork({ all: true }, { ...deps, cwd: unlisted, projects: () => [] })).rejects.toThrow(new CliError(hint));
+
+    // With other projects listed, --all works on them and says what it leaves out.
+    await runWork({ all: true }, { ...deps, cwd: unlisted });
+    expect(lines).toContain(`Warning: ${hint}`);
+    expect(lines.some((l) => l.startsWith("[shop#12] Run "))).toBe(true);
   }, 30_000);
 
   it("says it is running before it opens a project, and stops saying so when it stops", async () => {
