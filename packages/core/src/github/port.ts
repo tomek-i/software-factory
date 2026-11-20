@@ -181,8 +181,8 @@ export interface ReviewThread {
   url: string;
   /** Its line changed since the comment, so GitHub no longer shows it on the diff. */
   outdated: boolean;
-  /** The bodies of the comments after the first, oldest first. */
-  replies: string[];
+  /** The comments after the first, oldest first; `own` when the factory's account wrote one. */
+  replies: { body: string; own: boolean }[];
 }
 
 export interface RepoLabel {
@@ -207,7 +207,7 @@ export interface IssueWriterPort {
 
 const PR_REVIEWS = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){nodes{body viewerDidAuthor}}}}}";
 const REVIEW_THREADS =
-  "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved isOutdated path line comments(first:20){nodes{author{__typename login} body url viewerDidAuthor}}}}}}}";
+  "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved isOutdated path line comments(first:50){nodes{author{__typename login} body url viewerDidAuthor}}}}}}}";
 const REPLY_TO_THREAD = "mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{id}}}";
 const RESOLVE_THREAD = "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}";
 const OWN_ISSUE_BODY ="query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){body viewerDidAuthor}}}";
@@ -588,7 +588,7 @@ function parseThread(t: Record<string, unknown>): ReviewThread {
     body: first.body,
     url: first.url,
     outdated: t.isOutdated === true,
-    replies: comments.slice(1).flatMap((c) => (typeof c.body === "string" ? [c.body] : [])),
+    replies: comments.slice(1).flatMap((c) => (typeof c.body === "string" ? [{ body: c.body, own: c.viewerDidAuthor === true }] : [])),
   };
 }
 

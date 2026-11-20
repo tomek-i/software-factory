@@ -134,7 +134,7 @@ export const SETTINGS: readonly Setting[] = [
     label: "Queue follow-ups",
     help: "Queue those follow-up issues for the factory to work on, rather than leave them for you to pick.",
     kind: { type: "boolean" },
-    sensitive: "Each deferred note starts a run of its own without you choosing it.",
+    sensitive: "Each deferred note starts a run of its own without you choosing it, trusted if your account is in the trusted authors.",
   },
 
   { path: "loops.max_critic_rounds", section: "loops", label: "Critic rounds", help: "The spec critic sending the spec back to refine.", kind: { type: "integer", min: 1 } },

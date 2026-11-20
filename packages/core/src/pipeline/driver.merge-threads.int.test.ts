@@ -1,10 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseVerdict } from "@factory/shared";
-import { buildStep, review, setup, TRIAGE } from "../../test/driver-setup.js";
-import { git, REVIEW_PASS, type FakeStep } from "../../test/helpers.js";
+import { factoryConfigSchema } from "@factory/shared";
+import { buildStep, setup, TRIAGE } from "../../test/driver-setup.js";
+import { git, type FakeStep } from "../../test/helpers.js";
 import { approve, CODE_PASS, mergeConfig } from "../../test/merge-setup.js";
+import { RunMachine } from "./transitions.js";
 import type { ReviewThread } from "../github/port.js";
 import { runDirOf } from "./driver.js";
 import { noteMarker, type NoteMarker } from "./reviews.js";
@@ -29,10 +30,13 @@ const REFUTED = note("T2", "**code** · major (refuted by the verifier): it says
   finding: "code-1",
 });
 
-/** The builder's answer to the notes, committing a change first when `commit` is set. */
-const answers = (list: object[], commit = false): FakeStep => ({
+/**
+ * The builder's answer to the notes, committing a change first when `commit` is true; `head` hands
+ * over HEAD as it is (a commit made by an earlier turn).
+ */
+const answers = (list: object[], commit: boolean | "head" = false): FakeStep => ({
   role: "builder",
-  ...(commit
+  ...(commit === true
     ? {
         files: { "feature.txt": "fixed\n", "total.txt": "renamed\n" },
         exec: [
@@ -59,29 +63,38 @@ describe("PipelineDriver merge stage: the factory's own review threads", () => {
     expect(fake.calls().filter((c) => c.role === "builder")).toHaveLength(1);
   });
 
-  it("answers a confirmed finding with the commit of the round that fixed it", async () => {
-    const confirmed =
-      'VERDICT: CONFIRMED\n\n## Summary\n- real\n\n## Findings\n```json\n[{ "id": "code-1", "severity": "major", "file": "feature.txt", "line": 1, "claim": "it says fixed", "evidence": "read line 1" }]\n```\n';
-    const { driver, pr, merges, replies, resolved, root } = setup(
-      [
-        { output: TRIAGE() },
-        buildStep("fixed"),
-        { role: "reviewer-code", output: review("CHANGES", "major") },
-        { role: "verifier", output: confirmed },
-        { ...buildStep("fixed"), files: { "feature.txt": "fixed\n", "rework.txt": "1\n" } },
-        { role: "reviewer-code", output: REVIEW_PASS },
-      ],
+  it("asks the builder about a confirmed finding, which can name the earlier commit that fixed it", async () => {
+    const { driver, pr, merges, replies, resolved, fake } = setup(
+      [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, answers([{ id: "T3", outcome: "fixed", reason: "the rework fixed it", commit: "{{HEAD}}" }])],
       { config: mergeConfig("merge: always") },
     );
     pr.threads = [[note("T3", "**code** · major (confirmed by the verifier, not fixed): it says fixed", { kind: "confirmed", round: 1, finding: "code-1" })]];
     const run = driver.startRun(12);
 
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    // The round after the confirmed verdict starts with the build that fixed it.
-    const fixedIn = parseVerdict("checks", readFileSync(join(runDirOf(root, run.id), "round-2", "checks.md"), "utf8")).header.COMMIT;
-    expect(replies).toEqual([{ thread: "T3", body: reply(`Fixed in ${fixedIn.slice(0, 12)}`) }]);
+    expect(fake.calls().filter((c) => c.role === "builder")).toHaveLength(2);
+    expect(replies).toEqual([{ thread: "T3", body: reply(`Fixed in ${merges[0]!.head.slice(0, 12)}: the rework fixed it`) }]);
     expect(resolved).toEqual(["T3"]);
-    expect(merges).toHaveLength(1);
+  });
+
+  it("accepts a fix committed by a turn that stopped before it wrote its answers", async () => {
+    const { driver, store, pr, merges, replies } = setup(
+      [
+        { output: TRIAGE() },
+        buildStep("fixed"),
+        CODE_PASS,
+        { ...answers([], true), stream: "error_max_turns", output: undefined },
+        answers([{ id: "T1", outcome: "fixed", reason: "renamed it" }], "head"),
+      ],
+      { config: mergeConfig("merge: always") },
+    );
+    pr.threads = [[NIT]];
+    const run = driver.startRun(12);
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked" });
+
+    new RunMachine(store, factoryConfigSchema.parse({ version: 1 })).resume(run.id, "merge", { comment: "go on" });
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(replies).toEqual([{ thread: "T1", body: reply(`Fixed in ${merges[0]!.head.slice(0, 12)}: renamed it`) }]);
   });
 
   it("lets the builder fix a note: the commit goes through the gate and the push before the reply, and needs approving", async () => {
@@ -143,7 +156,7 @@ describe("PipelineDriver merge stage: the factory's own review threads", () => {
     expect(store.getIssue(project.id, 50)).toBeUndefined();
   });
 
-  it("queues the follow-up issue as the factory's own with merge.queue_followups", async () => {
+  it("queues the follow-up issue with merge.queue_followups, not as the factory's own idea", async () => {
     const { driver, store, project, pr } = setup(
       [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, answers([{ id: "T1", outcome: "deferred", reason: "later", title: "Rename the counter" }])],
       { config: mergeConfig("merge: always", "merge:\n  queue_followups: true\n") },
@@ -152,7 +165,7 @@ describe("PipelineDriver merge stage: the factory's own review threads", () => {
     const run = driver.startRun(12);
 
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
-    expect(store.getIssue(project.id, 50)).toMatchObject({ title: "Rename the counter", state: "open", created_by_factory: true, queued_at: expect.any(String) });
+    expect(store.getIssue(project.id, 50)).toMatchObject({ title: "Rename the counter", state: "open", created_by_factory: false, queued_at: expect.any(String) });
   });
 
   it("only says a note was deferred with merge.followup_issues off", async () => {
@@ -228,5 +241,61 @@ describe("PipelineDriver merge stage: the factory's own review threads", () => {
     expect(replies).toEqual([{ thread: "T4", body: reply("Declined: already handled") }]);
     const asked = fake.calls().filter((c) => c.role === "builder")[1]!;
     expect(asked.stdin).toMatch(/<<<NOTES [0-9a-f]{12}>>>\n### Thread T4 at feature.txt:1\n\n\*\*docs\*\* · minor: mention the flag in the README\n/);
+  });
+
+  it("treats a note a human re-opened after the factory resolved it as that human's feedback", async () => {
+    const { driver, store, pr, merges, replies, resolved } = setup(
+      [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, answers([{ id: "T1", outcome: "declined", reason: "the name matches the API" }])],
+      { config: mergeConfig("merge: human") },
+    );
+    pr.threads = [[NIT]];
+    const run = driver.startRun(12);
+    expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringMatching(/^waiting at merge gate: gate is set to human/) });
+    expect(resolved).toEqual(["T1"]);
+
+    // Someone disagrees and re-opens it on GitHub before approving.
+    resolved.length = 0;
+    approve(store, run.id);
+    expect(await driver.drive(run.id)).toMatchObject({
+      kind: "parked",
+      reason: "waiting at merge gate: unresolved review thread by factory-bot at feature.txt:1 (https://github.com/o/r/pull/7#discussion_T1)",
+    });
+    expect(replies).toHaveLength(1);
+
+    // Like any human's thread, approving the merge with it open covers it.
+    approve(store, run.id);
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(merges).toHaveLength(1);
+  });
+
+  it("still answers and resolves a deferred note when its follow-up issue cannot be opened", async () => {
+    const { driver, pr, github, merges, replies, resolved } = setup(
+      [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, answers([{ id: "T1", outcome: "deferred", reason: "later", title: "Rename the counter" }])],
+      { config: mergeConfig("merge: always") },
+    );
+    pr.threads = [[NIT]];
+    github.createIssue = () => {
+      throw new Error("issues are disabled");
+    };
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(replies).toEqual([{ thread: "T1", body: reply("Deferred (could not open a follow-up issue: issues are disabled): later") }]);
+    expect(resolved).toEqual(["T1"]);
+    expect(merges).toHaveLength(1);
+  });
+
+  it("leaves the operator's own comments, which are not notes, to the human like anyone's", async () => {
+    const { driver, pr, merges, replies, fake } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
+    pr.threads = [[note("T5", "Can we call this total?")]];
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toMatchObject({
+      kind: "parked",
+      reason: "waiting at merge gate: unresolved review thread by factory-bot at feature.txt:1 (https://github.com/o/r/pull/7#discussion_T5)",
+    });
+    expect(replies).toEqual([]);
+    expect(merges).toEqual([]);
+    expect(fake.calls().filter((c) => c.role === "builder")).toHaveLength(1);
   });
 });

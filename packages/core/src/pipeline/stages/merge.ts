@@ -25,7 +25,8 @@ import { gateFingerprint, resyncFingerprint } from "../fingerprint.js";
 import { resolveGate, type GateInput } from "../gates.js";
 import { changeReport } from "../hard-rules.js";
 import { bullets, pause, readValid, reviewPath, runEvidence, section, verdictPath } from "../shared.js";
-import { answerThreads, postThreadAnswers } from "../threads.js";
+import { isFactoryNote } from "../reviews.js";
+import { answerThreads, postThreadAnswers, reopenedThreads } from "../threads.js";
 import type { StageContext, StepResult } from "./context.js";
 
 /**
@@ -73,28 +74,32 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
    */
   const lookAtFeedback = (required: string[]): FeedbackOutcome => {
     const mode = config.merge.open_feedback;
+    // Factory notes a human opened again after the factory resolved them are that human's feedback now.
+    const reopened = reopenedThreads(dir);
     let read: OpenFeedback;
     try {
-      read = readOpenFeedback(github, number, required, acknowledgedFeedback(ctx, run, worktree, head));
+      read = readOpenFeedback(github, number, required, acknowledgedFeedback(ctx, run, worktree, head), { reopened, threadsOnly: mode === "ignore" });
     } catch (err) {
       return { result: ctx.escalate(run, `could not read the review threads and checks of PR #${number}: ${(err as Error).message}`) };
     }
-    // The factory's own threads the thread pass could not resolve always hold the merge for a human,
+    // The factory's notes the thread pass could not resolve always hold the merge for a human,
     // whatever the mode: a PR is never merged with one open. Everyone else's follow the mode.
-    const own = read.threads.filter((t) => t.own);
-    const theirs: OpenFeedback = mode === "ignore" ? { threads: [], checks: [] } : { threads: read.threads.filter((t) => !t.own), checks: read.checks };
-    const open: OpenFeedback = { threads: [...theirs.threads, ...own], checks: theirs.checks };
+    const notes = read.threads.filter((t) => isFactoryNote(t, reopened));
+    const theirs: OpenFeedback = mode === "ignore" ? { threads: [], checks: [] } : { threads: read.threads.filter((t) => !isFactoryNote(t, reopened)), checks: read.checks };
+    const open: OpenFeedback = { threads: [...theirs.threads, ...notes], checks: theirs.checks };
     if (!hasFeedback(open)) return { reasons: [] };
-    // For the builder, whether it gets them now or a human sends the run back with them.
     mkdirSync(resyncDir, { recursive: true });
-    writeFileSync(feedbackPath, feedbackReport(config, number, open));
-    const data = { openFeedback: feedbackData(open) };
     const untrusted = mode === "fix" ? untrustedReason(config, theirs) : undefined;
     if (mode === "fix" && !untrusted && hasFeedback(theirs)) {
+      // Only what it is sent back for: the factory's notes are answered by the thread pass.
+      writeFileSync(feedbackPath, feedbackReport(config, number, theirs));
       const why = `open feedback on PR #${number}: ${feedbackReasons(theirs).join("; ")}`;
       return { result: backToBuild(why, { openFeedback: feedbackData(theirs) }, resyncFingerprint({ feedback: feedbackKeys(theirs) })) };
     }
-    return { reasons: [...feedbackReasons(open), ...(untrusted ? [untrusted] : [])], data };
+    // For the builder, should a human send the run back with them.
+    writeFileSync(feedbackPath, feedbackReport(config, number, open));
+    const data = { openFeedback: feedbackData(open) };
+    return { reasons: [...feedbackReasons(open, reopened), ...(untrusted ? [untrusted] : [])], data };
   };
 
   const conflicts = resync(ctx, worktree, resyncDir);

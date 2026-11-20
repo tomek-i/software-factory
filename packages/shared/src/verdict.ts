@@ -279,8 +279,8 @@ export const THREAD_OUTCOMES = ["fixed", "declined", "deferred"] as const;
 export type ThreadOutcome = (typeof THREAD_OUTCOMES)[number];
 
 /**
- * The builder's answer to one review note: fixed in its commit, declined with why, or deferred to a
- * follow-up issue titled `title`.
+ * The builder's answer to one review note: fixed (in the hand-over's commit, or an earlier one on the
+ * branch named in `commit`), declined with why, or deferred to a follow-up issue titled `title`.
  */
 export const threadAnswerSchema = z
   .object({
@@ -288,6 +288,7 @@ export const threadAnswerSchema = z
     outcome: z.preprocess((s) => (typeof s === "string" ? s.trim().toLowerCase() : s), z.enum(THREAD_OUTCOMES)),
     reason: z.string().trim().min(1),
     title: z.string().trim().min(1).max(200).optional(),
+    commit: sha.optional(),
   })
   .refine((a) => a.outcome !== "deferred" || a.title !== undefined, { message: "a deferred note needs a title for its follow-up issue", path: ["title"] });
 export type ThreadAnswer = z.infer<typeof threadAnswerSchema>;

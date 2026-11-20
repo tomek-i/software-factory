@@ -1,4 +1,5 @@
 import { isBlocking, type Finding, type ParsedVerdict, type ReviewLens } from "@factory/shared";
+import type { ReviewThread } from "../github/port.js";
 import { escapeRegExp, section } from "./shared.js";
 
 /** The review lenses' findings and the verifier's judgement of them. */
@@ -140,15 +141,31 @@ export function noteMarker(m: NoteMarker): string {
   return `<!-- factory:note kind=${m.kind} round=${m.round} finding=${encodeURIComponent(m.finding)} -->`;
 }
 
-/** The marker of a review note the factory posted, or undefined for any other comment. */
+/**
+ * The marker of a review note the factory posted, or undefined for any other comment. Only at the
+ * very end: a claim that quotes a marker (from issue text, say) must not pass for one.
+ */
 export function parseNoteMarker(body: string): NoteMarker | undefined {
-  const match = /<!-- factory:note kind=(note|refuted|confirmed) round=(\d+) finding=(\S+) -->/.exec(body);
+  const match = /<!-- factory:note kind=(note|refuted|confirmed) round=(\d+) finding=(\S+) -->\s*$/.exec(body);
   if (!match) return undefined;
   try {
     return { kind: match[1] as NoteMarker["kind"], round: Number(match[2]), finding: decodeURIComponent(match[3]!) };
   } catch {
     return undefined;
   }
+}
+
+/** How inline notes started before they carried a marker: `**<lens>** · <severity>`. */
+const UNMARKED_NOTE = /^\*\*[\w-]+\*\* · (critical|major|minor|nit)\b/;
+
+/**
+ * One of the factory's review notes, which the merge stage answers and resolves itself: started by
+ * the factory's account, and marked (or shaped like a note from before the markers). Anything else
+ * that account wrote is the operator's own comment, and one a human re-opened after the factory
+ * resolved it (`reopened`) is theirs to settle: both count as human feedback.
+ */
+export function isFactoryNote(thread: Pick<ReviewThread, "id" | "own" | "body">, reopened: string[] = []): boolean {
+  return thread.own && !reopened.includes(thread.id) && (parseNoteMarker(thread.body) !== undefined || UNMARKED_NOTE.test(thread.body));
 }
 
 /** What the reviews leave for the human: the review's body and its comments on lines of the change. */
@@ -172,7 +189,8 @@ export function reviewNotes(reviews: LensReview[], verified?: ParsedVerdict<"ver
     if (!f.file || !f.line) return false;
     const path = f.file.replace(/\\/g, "/").replace(/^\.\//, "");
     if (!inDiff?.get(path)?.has(f.line)) return false;
-    comments.push({ path, line: f.line, body: `${text}\n\n${noteMarker({ kind, round, finding: id })}` });
+    // A claim can quote anything; an HTML comment in it must not read as a marker.
+    comments.push({ path, line: f.line, body: `${text.replace(/<!--/g, "&lt;!--")}\n\n${noteMarker({ kind, round, finding: id })}` });
     return true;
   };
   const item = (f: Finding) => `- ${f.severity}: ${f.claim}${findingPlace(f)}`;

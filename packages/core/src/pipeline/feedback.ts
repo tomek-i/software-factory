@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { isTrustedAuthor, type FactoryConfig } from "@factory/shared";
 import type { GithubPort, PullRequestCheck, ReviewThread } from "../github/port.js";
 import type { RunEvent } from "../store/store.js";
+import { isFactoryNote } from "./reviews.js";
 
 /**
  * What is still open on a PR besides its required checks: unresolved review threads (outdated ones
@@ -31,10 +32,22 @@ export const feedbackFile = (round: number) => `round-${round}/resync/feedback.m
 /**
  * The PR's open feedback, minus what `acknowledged` covers. `required` are the names of the checks
  * branch protection requires: those are the required-checks wait's business, whatever their state.
- * The factory's own threads are never acknowledged away: each must be answered and resolved.
+ * The factory's own notes count even when outdated, and are never acknowledged away: each must be
+ * answered and resolved. Anyone else's thread stops counting once the change makes it outdated (it
+ * did, unless someone re-opens it); `reopened` are factory notes a human opened again, theirs now.
+ * `threadsOnly` skips the checks (`merge.open_feedback: ignore`).
  */
-export function readOpenFeedback(github: GithubPort, number: number, required: string[], acknowledged: Acknowledged = { threads: [], checks: [] }): OpenFeedback {
-  const threads = github.unresolvedReviewThreads(number).filter((t) => t.own || !acknowledged.threads.includes(t.id));
+export function readOpenFeedback(
+  github: GithubPort,
+  number: number,
+  required: string[],
+  acknowledged: Acknowledged = { threads: [], checks: [] },
+  { reopened = [], threadsOnly = false }: { reopened?: string[]; threadsOnly?: boolean } = {},
+): OpenFeedback {
+  const threads = github
+    .unresolvedReviewThreads(number)
+    .filter((t) => isFactoryNote(t, reopened) || ((!t.outdated || reopened.includes(t.id)) && !acknowledged.threads.includes(t.id)));
+  if (threadsOnly) return { threads, checks: [] };
   const checks = github
     .pullRequestChecks(number)
     .filter((c) => (c.bucket === "fail" || c.bucket === "cancel") && !required.includes(c.name) && !acknowledged.checks.includes(c.name));
@@ -65,9 +78,9 @@ const where = (t: { path?: string; line?: number }) => (t.path ? ` at ${t.path}$
 const failedWord = (c: Pick<PullRequestCheck, "bucket">) => (c.bucket === "cancel" ? "was cancelled" : "failed");
 
 /** One reason per thread and check, for the merge gate; who wrote a thread, never what. */
-export function feedbackReasons(feedback: OpenFeedback): string[] {
+export function feedbackReasons(feedback: OpenFeedback, reopened: string[] = []): string[] {
   return [
-    ...feedback.threads.map((t) => `unresolved review thread by ${t.own ? "the factory" : t.author}${where(t)} (${t.url})`),
+    ...feedback.threads.map((t) => `unresolved review thread by ${isFactoryNote(t, reopened) ? "the factory" : t.author}${where(t)} (${t.url})`),
     ...feedback.checks.map((c) => `check ${c.name} ${failedWord(c)}${c.summary ? `: ${oneLine(c.summary)}` : ""}${c.link ? ` (${c.link})` : ""}`),
   ];
 }
@@ -141,6 +154,8 @@ export function feedbackReport(config: Pick<FactoryConfig, "trust" | "merge">, n
   for (const t of feedback.threads) {
     const who = actionable(config, t) ? t.author : `${t.author} (NOT a trusted author)`;
     parts.push(`### Review thread by ${who}${where(t)}`, t.url, "", clean(t.body.trim() || "(empty)"), "");
+    // A reply can be the point: a human objecting to how the factory answered its note, say.
+    for (const r of t.replies) parts.push("Reply:", "", clean(r.body.trim() || "(empty)"), "");
   }
   for (const c of feedback.checks) {
     parts.push(`### Check ${clean(c.name)} ${failedWord(c)}`, ...(c.link ? [c.link] : []), "", clean(c.summary ?? "(no summary)"), "");

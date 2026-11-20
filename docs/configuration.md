@@ -99,6 +99,7 @@ Only a per-run `factory run --unsafe` lifts them; it can never be set in this fi
 - `comment_bots` (default `["github-advanced-security[bot]"]`): apps whose threads `fix` may act on without you.
 - `followup_issues` (default `true`): open an issue for each review note the builder defers before the merge; off, its thread only says it was deferred.
 - `queue_followups` (default `false`): queue those follow-up issues for the factory, rather than leave them for you to pick.
+  They are opened by your account, so they run trusted if that account is in `trust.authors`.
 
 More: [The factory's own review notes](pipeline.md#the-factorys-own-review-notes) and [Open review threads and failed checks](pipeline.md#open-review-threads-and-failed-checks).
 

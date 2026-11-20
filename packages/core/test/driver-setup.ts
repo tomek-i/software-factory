@@ -216,7 +216,7 @@ export function setup(
       const all = pr.threads ?? [[]];
       return all[Math.min(threadViews++, all.length - 1)]!
         .filter((t) => !resolved.includes(t.id))
-        .map((t) => ({ ...t, replies: [...t.replies, ...replies.filter((r) => r.thread === t.id).map((r) => r.body)] }));
+        .map((t) => ({ ...t, replies: [...t.replies, ...replies.filter((r) => r.thread === t.id).map((r) => ({ body: r.body, own: true }))] }));
     },
     replyToReviewThread: (thread, body) => void replies.push({ thread, body }),
     resolveReviewThread: (thread) => {

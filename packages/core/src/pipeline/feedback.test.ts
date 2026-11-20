@@ -8,9 +8,18 @@ const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["@Alic
 const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, outdated: false, replies: [], ...extra });
 
 describe("open feedback", () => {
-  it("reads open threads, its own included, and failed checks that are not required, leaving out what was acknowledged", () => {
+  it("reads open threads and failed checks that are not required, leaving out what was acknowledged and other people's outdated threads", () => {
+    const note = (id: string, extra: Partial<ReviewThread> = {}) => thread(id, "factory", { own: true, body: "**code** · nit: a note", ...extra });
     const github = {
-      unresolvedReviewThreads: () => [thread("T1", "bob"), thread("T2", "factory", { own: true }), thread("T3", "carol"), thread("T4", "factory", { own: true })],
+      unresolvedReviewThreads: () => [
+        thread("T1", "bob"),
+        note("T2", { outdated: true }),
+        thread("T3", "carol"),
+        note("T4"),
+        thread("T5", "bob", { outdated: true }),
+        thread("T6", "factory", { own: true, body: "Can we rename this?" }),
+        note("T7", { outdated: true }),
+      ],
       pullRequestChecks: () => [
         { name: "test", bucket: "fail" as const },
         { name: "CodeQL", bucket: "fail" as const },
@@ -19,13 +28,16 @@ describe("open feedback", () => {
         { name: "docs", bucket: "fail" as const },
       ],
     } as unknown as GithubPort;
-    // An approval never acknowledges the factory's own thread away (T4): it must be resolved.
-    const open = readOpenFeedback(github, 7, ["test"], { threads: ["T3", "T4"], checks: ["docs"] });
-    expect(open.threads.map((t) => t.id)).toEqual(["T1", "T2", "T4"]);
+    // An approval never acknowledges the factory's note away (T4), even outdated (T2); the operator's own
+    // comment (T6) and a note a human re-opened (T7) are human feedback, acknowledged like any other.
+    const open = readOpenFeedback(github, 7, ["test"], { threads: ["T3", "T4", "T6"], checks: ["docs"] }, { reopened: ["T7"] });
+    expect(open.threads.map((t) => t.id)).toEqual(["T1", "T2", "T4", "T7"]);
     expect(open.checks.map((c) => c.name)).toEqual(["CodeQL", "e2e"]);
-    expect(feedbackKeys(open)).toEqual(["check:CodeQL", "check:e2e", "thread:T1", "thread:T2", "thread:T4"]);
-    expect(feedbackReasons({ threads: [thread("T2", "factory-bot", { own: true, path: "a.ts", line: 3 })], checks: [] })).toEqual([
+    expect(feedbackKeys(open)).toEqual(["check:CodeQL", "check:e2e", "thread:T1", "thread:T2", "thread:T4", "thread:T7"]);
+    expect(readOpenFeedback(github, 7, ["test"], undefined, { threadsOnly: true }).checks).toEqual([]);
+    expect(feedbackReasons({ threads: [note("T2", { author: "factory-bot", path: "a.ts", line: 3 }), thread("T6", "factory-bot", { own: true, body: "Hm?" })], checks: [] })).toEqual([
       "unresolved review thread by the factory at a.ts:3 (https://x/T2)",
+      "unresolved review thread by factory-bot (https://x/T6)",
     ]);
   });
 

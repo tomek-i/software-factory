@@ -143,6 +143,20 @@ describe("PipelineDriver merge stage: open review threads and failed optional ch
     expect(existsSync(join(runDirOf(root, run.id), "round-1", "resync", "feedback.md"))).toBe(true);
   });
 
+  it("with fix, merges once a trusted author's thread is outdated by the builder's change, as nobody resolved it", async () => {
+    const { driver, store, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, fixStep(1), CODE_PASS], {
+      config: feedbackConfig("fix"),
+    });
+    const alice = thread("T4", "alice", "Rename this to total.");
+    // The first merge: the thread pass's look and the stage's. After the fix, the thread is outdated.
+    pr.threads = [[alice], [alice], [{ ...alice, outdated: true }]];
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(merges).toHaveLength(1);
+    expect(store.getRun(run.id)).toMatchObject({ resync_rounds: 1 });
+  });
+
   it("with fix, still asks a human about a thread by someone it does not trust", async () => {
     const { driver, store, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: feedbackConfig("fix") });
     pr.threads = [[BOT, BOB]];

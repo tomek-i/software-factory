@@ -180,7 +180,7 @@ describe("ghPort", () => {
     expect(ghPort(project, run).unresolvedReviewThreads(42)).toEqual([
       { id: "T1", author: "github-advanced-security[bot]", own: false, path: "src/a.ts", line: 37, body: "Polynomial regular expression", url: "https://github.com/o/r/pull/42#discussion_r29", outdated: false, replies: [] },
       { id: "T3", author: "bob", own: false, path: "src/a.ts", body: "outdated", url: "https://github.com/o/r/pull/42#discussion_r8", outdated: true, replies: [] },
-      { id: "T4", author: "factory-bot", own: true, path: "README.md", body: "a note", url: "https://github.com/o/r/pull/42#discussion_r6", outdated: false, replies: ["Declined: not worth it"] },
+      { id: "T4", author: "factory-bot", own: true, path: "README.md", body: "a note", url: "https://github.com/o/r/pull/42#discussion_r6", outdated: false, replies: [{ body: "Declined: not worth it", own: true }] },
       { id: "T5", author: "ghost", own: false, path: "x.ts", line: 1, body: "gone", url: "https://github.com/o/r/pull/42#discussion_r4", outdated: false, replies: [] },
     ]);
     expect(calls[0]).toEqual(["api", "graphql", "-f", expect.stringMatching(/^query=.*reviewThreads.*isOutdated/), "-f", "owner=o", "-f", "name=r", "-F", "n=42"]);
