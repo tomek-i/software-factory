@@ -41,8 +41,10 @@ describe("runProjects", () => {
 
   it("says nothing more for a listed repo, or a repo without a database", () => {
     const { dir, opts } = setup();
-    const repo = initialisedRepo(dir, "shop");
-    runCommand("git", ["init", "-q"], { cwd: repo });
+    const folder = initialisedRepo(dir, "shop");
+    runCommand("git", ["init", "-q"], { cwd: folder });
+    // Registered as `factory init` does, by git's path: a temp folder's short (8.3) name on Windows would not match it.
+    const repo = resolve(findRepoRoot(folder)!);
     registerProject({ path: repo, name: "shop" }, opts);
     const bare = join(dir, "bare");
     mkdirSync(bare);
