@@ -8,9 +8,9 @@ const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["@Alic
 const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, outdated: false, replies: [], ...extra });
 
 describe("open feedback", () => {
-  it("reads open threads and failed checks that are not required, leaving out its own threads and what was acknowledged", () => {
+  it("reads open threads, its own included, and failed checks that are not required, leaving out what was acknowledged", () => {
     const github = {
-      unresolvedReviewThreads: () => [thread("T1", "bob"), thread("T2", "factory", { own: true }), thread("T3", "carol")],
+      unresolvedReviewThreads: () => [thread("T1", "bob"), thread("T2", "factory", { own: true }), thread("T3", "carol"), thread("T4", "factory", { own: true })],
       pullRequestChecks: () => [
         { name: "test", bucket: "fail" as const },
         { name: "CodeQL", bucket: "fail" as const },
@@ -19,10 +19,14 @@ describe("open feedback", () => {
         { name: "docs", bucket: "fail" as const },
       ],
     } as unknown as GithubPort;
-    const open = readOpenFeedback(github, 7, ["test"], { threads: ["T3"], checks: ["docs"] });
-    expect(open.threads.map((t) => t.id)).toEqual(["T1"]);
+    // An approval never acknowledges the factory's own thread away (T4): it must be resolved.
+    const open = readOpenFeedback(github, 7, ["test"], { threads: ["T3", "T4"], checks: ["docs"] });
+    expect(open.threads.map((t) => t.id)).toEqual(["T1", "T2", "T4"]);
     expect(open.checks.map((c) => c.name)).toEqual(["CodeQL", "e2e"]);
-    expect(feedbackKeys(open)).toEqual(["check:CodeQL", "check:e2e", "thread:T1"]);
+    expect(feedbackKeys(open)).toEqual(["check:CodeQL", "check:e2e", "thread:T1", "thread:T2", "thread:T4"]);
+    expect(feedbackReasons({ threads: [thread("T2", "factory-bot", { own: true, path: "a.ts", line: 3 })], checks: [] })).toEqual([
+      "unresolved review thread by the factory at a.ts:3 (https://x/T2)",
+    ]);
   });
 
   it("lets fix act alone only on trusted authors and allowed bots, whatever the case", () => {

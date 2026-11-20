@@ -122,6 +122,9 @@ export const verdictHeaderSchemas = {
   learn: z.object({ LESSONS: z.string().regex(/^\d+$/, "must be a whole number").transform(Number) }),
   // The issues themselves follow the header in delimited blocks (see drafts/draft.ts in core).
   issue_writer: z.object({ DECISION: z.enum(["PROCEED", "ESCALATE"]) }),
+  // The builder's answers to the review notes before the merge, in a `## Threads` block. COMMIT is
+  // `none` when it changed nothing.
+  threads: z.object({ STATUS: z.enum(["DONE", "BLOCKED"]), COMMIT: z.union([sha, z.literal("none")]) }),
 } as const;
 
 export type VerdictKind = keyof typeof verdictHeaderSchemas;
@@ -272,6 +275,49 @@ function parseCriteriaLines(lines: string[]): { criteria: CriterionAnswer[]; pro
   return { criteria: result.data, problems: duplicates.length ? [`duplicate criterion ids: ${duplicates.join(", ")}`] : [] };
 }
 
+export const THREAD_OUTCOMES = ["fixed", "declined", "deferred"] as const;
+export type ThreadOutcome = (typeof THREAD_OUTCOMES)[number];
+
+/**
+ * The builder's answer to one review note: fixed in its commit, declined with why, or deferred to a
+ * follow-up issue titled `title`.
+ */
+export const threadAnswerSchema = z
+  .object({
+    id: z.string().min(1),
+    outcome: z.preprocess((s) => (typeof s === "string" ? s.trim().toLowerCase() : s), z.enum(THREAD_OUTCOMES)),
+    reason: z.string().trim().min(1),
+    title: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine((a) => a.outcome !== "deferred" || a.title !== undefined, { message: "a deferred note needs a title for its follow-up issue", path: ["title"] });
+export type ThreadAnswer = z.infer<typeof threadAnswerSchema>;
+
+/** The builder's `## Threads` section: exactly one ```json array, one answer per thread id. */
+function parseThreadLines(lines: string[]): { answers: ThreadAnswer[]; problems: string[] } {
+  const section = sectionLines(lines, "threads");
+  if (!section) return { answers: [], problems: ["## Threads is missing"] };
+  const blocks = [...section.join("\n").matchAll(/```json\s*\n([\s\S]*?)\n```/g)];
+  if (blocks.length !== 1) return { answers: [], problems: ["## Threads must contain exactly one ```json array block"] };
+  let data: unknown;
+  try {
+    data = JSON.parse(blocks[0]![1]!);
+  } catch (err) {
+    return { answers: [], problems: [`threads JSON is invalid: ${(err as Error).message}`] };
+  }
+  const result = z.array(threadAnswerSchema).safeParse(data);
+  if (!result.success) return { answers: [], problems: result.error.issues.map((i) => `threads.${i.path.join(".")}: ${i.message}`) };
+  const ids = result.data.map((a) => a.id);
+  const duplicates = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
+  return { answers: result.data, problems: duplicates.length ? [`duplicate thread ids: ${duplicates.join(", ")}`] : [] };
+}
+
+/** The answers of a threads output body (ParsedVerdict.body). Throws VerdictParseError when malformed. */
+export function parseThreadAnswers(body: string): ThreadAnswer[] {
+  const { answers, problems } = parseThreadLines(body.replace(/\r\n/g, "\n").split("\n"));
+  if (problems.length) throw new VerdictParseError("invalid thread answers", problems);
+  return answers;
+}
+
 /** The answers of an acceptance output body (ParsedVerdict.body). Throws VerdictParseError when malformed. */
 export function parseCriteria(body: string): CriterionAnswer[] {
   const { criteria, problems } = parseCriteriaLines(body.replace(/\r\n/g, "\n").split("\n"));
@@ -334,6 +380,10 @@ export function parseVerdict<K extends VerdictKind>(kind: K, text: string): Pars
     const verdict = header.success ? (header.data as { VERDICT: string }).VERDICT : undefined;
     if (criteriaProblems.length === 0 && verdict === "PASS" && notMet) problems.push("VERDICT: PASS contradicts a NOT_MET criterion");
     if (criteriaProblems.length === 0 && verdict === "CHANGES" && !notMet) problems.push("VERDICT: CHANGES needs at least one NOT_MET criterion");
+  }
+  // A blocked builder answers no thread; it says why in `## Blocker`.
+  if (kind === "threads" && !(header.success && (header.data as { STATUS: string }).STATUS === "BLOCKED")) {
+    problems.push(...parseThreadLines(bodyLines).problems);
   }
   if (kind === "learn") {
     const { lessons, problems: lessonProblems } = parseLessonLines(bodyLines);

@@ -4,10 +4,9 @@ import type { GithubPort, PullRequestCheck, ReviewThread } from "../github/port.
 import type { RunEvent } from "../store/store.js";
 
 /**
- * What is still open on a PR besides its required checks: review threads that are neither
- * resolved nor outdated (other than the factory's own review notes), and failed or cancelled checks
- * that branch protection does not require. The merge stage reads it right before merging and acts
- * on it per `merge.open_feedback`.
+ * What is still open on a PR besides its required checks: unresolved review threads (outdated ones
+ * and the factory's own included), and failed or cancelled checks that branch protection does not
+ * require. The merge stage reads it right before merging and acts on it per `merge.open_feedback`.
  */
 export interface OpenFeedback {
   threads: ReviewThread[];
@@ -32,9 +31,10 @@ export const feedbackFile = (round: number) => `round-${round}/resync/feedback.m
 /**
  * The PR's open feedback, minus what `acknowledged` covers. `required` are the names of the checks
  * branch protection requires: those are the required-checks wait's business, whatever their state.
+ * The factory's own threads are never acknowledged away: each must be answered and resolved.
  */
 export function readOpenFeedback(github: GithubPort, number: number, required: string[], acknowledged: Acknowledged = { threads: [], checks: [] }): OpenFeedback {
-  const threads = github.unresolvedReviewThreads(number).filter((t) => !t.own && !acknowledged.threads.includes(t.id));
+  const threads = github.unresolvedReviewThreads(number).filter((t) => t.own || !acknowledged.threads.includes(t.id));
   const checks = github
     .pullRequestChecks(number)
     .filter((c) => (c.bucket === "fail" || c.bucket === "cancel") && !required.includes(c.name) && !acknowledged.checks.includes(c.name));
@@ -67,7 +67,7 @@ const failedWord = (c: Pick<PullRequestCheck, "bucket">) => (c.bucket === "cance
 /** One reason per thread and check, for the merge gate; who wrote a thread, never what. */
 export function feedbackReasons(feedback: OpenFeedback): string[] {
   return [
-    ...feedback.threads.map((t) => `unresolved review thread by ${t.author}${where(t)} (${t.url})`),
+    ...feedback.threads.map((t) => `unresolved review thread by ${t.own ? "the factory" : t.author}${where(t)} (${t.url})`),
     ...feedback.checks.map((c) => `check ${c.name} ${failedWord(c)}${c.summary ? `: ${oneLine(c.summary)}` : ""}${c.link ? ` (${c.link})` : ""}`),
   ];
 }
