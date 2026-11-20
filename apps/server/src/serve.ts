@@ -81,7 +81,7 @@ export function openInBrowser(url: string): void {
 
 /**
  * `factory serve`: the web app and its API on 127.0.0.1, with the scheduler working through every
- * project's queue as `factory work` does. The scheduler and the routes share one context per project.
+ * project's queue as `factory work --all` does. The scheduler and the routes share one context per project.
  * Resolves once stopped, like `factory work`.
  */
 export function startServe(options: ServeOptions, deps: ServeDeps = {}): Promise<{ message: string; interrupted: boolean }> {

@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import {
   asWorker,
   DEFAULT_MAX_RUNS,
@@ -6,6 +7,8 @@ import {
   reconcileAndSweep,
   reportLines,
   requestStop,
+  runCommand,
+  sameProjectPath,
   Scheduler,
   ServiceError,
   type CommandRunner,
@@ -30,6 +33,8 @@ export interface WorkDeps {
   /** Aborted on Ctrl+C: interrupts the runs, like `factory stop --now`. */
   signal?: AbortSignal;
   projects?: () => RegistryEntry[];
+  /** The folder it was started in: without `all`, only the registered project containing it is worked on. */
+  cwd?: string;
   /** What finishing runs whose PR was merged or closed reports, per project, before work starts. */
   reconcile?: (ctx: ProjectContext) => string[];
   /** For tests: the scheduler's other dependencies. */
@@ -50,11 +55,18 @@ export function refuseRunningOnAnyProject(projects: () => RegistryEntry[] = list
   for (const project of projects()) refuseRunningOnItself(project.path);
 }
 
+export interface WorkOptions {
+  maxRuns?: number;
+  /** Work on every project in the project list, not only the one it was started in. */
+  all?: boolean;
+}
+
 /**
- * `factory work`: work through the queues of every project in the project list until stopped.
+ * `factory work`: work through the queue of the project it was started in (of every project in the
+ * project list with `all`) until stopped.
  * Resolves with the last line to print; `interrupted` says the runs were stopped mid-way.
  */
-export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+export async function runWork(options: WorkOptions, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
   try {
     return await asWorker(() => work(options, deps));
   } catch (err) {
@@ -63,20 +75,49 @@ export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}
   }
 }
 
-async function work(options: { maxRuns?: number }, deps: WorkDeps): Promise<{ message: string; interrupted: boolean }> {
+/**
+ * The main checkout of the repository containing cwd, so a folder inside one of its worktrees (a
+ * run's, under `.worktrees`) counts as that project rather than as an unregistered repo of its own.
+ */
+function mainCheckout(cwd: string, run: CommandRunner = runCommand): string | undefined {
+  const result = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd });
+  return result.code === 0 ? dirname(result.stdout) : undefined;
+}
+
+/**
+ * The projects to work on, read again on every tick, and the ones they are at the start: the whole
+ * list with `all`, otherwise the registered project containing cwd, so a worker started in one repo
+ * leaves the other queues alone.
+ */
+function chosenProjects(options: WorkOptions, deps: WorkDeps): { projects: () => RegistryEntry[]; entries: RegistryEntry[] } {
+  const registered = deps.projects ?? listRegistered;
+  if (options.all) {
+    const entries = registered();
+    if (entries.length === 0) throw new CliError("No projects registered. Run `factory init` in a repository first.");
+    return { projects: registered, entries };
+  }
+  const root = mainCheckout(deps.cwd ?? process.cwd(), deps.run);
+  const projects = () => (root === undefined ? [] : registered().filter((entry) => sameProjectPath(entry.path, root)));
+  const entries = projects();
+  if (entries.length === 0) {
+    throw new CliError("This folder is not in a registered project. Run `factory init` here, or `factory work --all` to work on every registered project.");
+  }
+  return { projects, entries };
+}
+
+async function work(options: WorkOptions, deps: WorkDeps): Promise<{ message: string; interrupted: boolean }> {
   // A `factory stop` sent while it is still starting up (reconciling below) counts.
   const startedAt = Date.now();
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
-  const projects = deps.projects ?? listRegistered;
+  const { projects, entries } = chosenProjects(options, deps);
+  refuseRunningOnAnyProject(() => entries);
   const openProject = deps.scheduler?.open ?? openRegisteredProject;
   // Checked on every open, not only at start: a project can be registered while the worker runs.
   const open = (entry: RegistryEntry): ProjectContext => {
     refuseRunningOnItself(entry.path);
     return openProject(entry);
   };
-  const entries = projects();
-  if (entries.length === 0) throw new CliError("No projects registered. Run `factory init` in a repository first.");
 
   const reconcile = deps.reconcile ?? ((ctx) => reportLines(reconcileAndSweep(ctx.store, ctx.project, ctx.config, { run: deps.run, github: deps.github?.(ctx.project) })));
   for (const entry of entries) {
@@ -95,7 +136,8 @@ async function work(options: { maxRuns?: number }, deps: WorkDeps): Promise<{ me
   }
 
   const maxRuns = options.maxRuns ?? DEFAULT_MAX_RUNS;
-  print(`Working through the queues of ${entries.length} project${entries.length === 1 ? "" : "s"}, up to ${maxRuns} run${maxRuns === 1 ? "" : "s"} at once.`);
+  const which = options.all ? `the queues of ${entries.length} project${entries.length === 1 ? "" : "s"}` : `the queue of ${entries[0]!.name}`;
+  print(`Working through ${which}, up to ${maxRuns} run${maxRuns === 1 ? "" : "s"} at once.`);
   print(style.hint("Stop with `factory stop` (finishes the runs going on) or `factory stop --now`; Ctrl+C interrupts."));
   const scheduler = new Scheduler({
     maxRuns,
