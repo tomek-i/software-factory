@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import type { GithubPort, ReviewThread } from "../github/port.js";
 import type { RunEvent } from "../store/store.js";
-import { acknowledgedBy, actionable, feedbackKeys, feedbackReasons, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
+import { acknowledgedBy, actionable, feedbackData, feedbackKeys, feedbackReasons, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
 
 const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["@Alice"] } });
 const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, outdated: false, replies: [], ...extra });
@@ -87,5 +87,16 @@ describe("open feedback", () => {
     ];
     expect(acknowledgedBy(events, 1)).toEqual({ threads: ["T1"], checks: ["CodeQL"] });
     expect(acknowledgedBy([event("merge", "needs_human", { commit: "c" }), events[1]!], 1)).toEqual({ threads: [], checks: [] });
+  });
+
+  it("never lets an approval cover a thread that was the factory's own note when the human saw it", () => {
+    const event = (from: string, to: string, data: unknown): RunEvent => ({ id: 0, run_id: "r", from_state: from, to_state: to, reason: "", data, created_at: "" }) as RunEvent;
+    const note = thread("T2", "factory", { own: true, body: "**code** · nit: a note" });
+    const data = feedbackData({ threads: [thread("T1", "bob"), note], checks: [] });
+    expect(data.threads.map((t) => t.factory)).toEqual([undefined, true]);
+    // Re-opened by a human, it is theirs, and an approval covers it like anyone's.
+    expect(feedbackData({ threads: [note], checks: [] }, ["T2"]).threads[0]!.factory).toBeUndefined();
+    const events = [event("merge", "needs_human", { commit: "c", openFeedback: data }), event("needs_human", "merge", { gate: "merge", commit: "c" })];
+    expect(acknowledgedBy(events, 1).threads).toEqual(["T1"]);
   });
 });

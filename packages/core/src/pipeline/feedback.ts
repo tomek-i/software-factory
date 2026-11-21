@@ -22,7 +22,8 @@ export interface Acknowledged {
 
 /** The open feedback as a run event stores it: no full comment bodies, only a line of each. */
 export interface FeedbackData {
-  threads: { id: string; author: string; path?: string; line?: number; url: string; excerpt: string }[];
+  /** `factory`: one of the factory's own notes then, which an approval never covers. */
+  threads: { id: string; author: string; path?: string; line?: number; url: string; excerpt: string; factory?: true }[];
   checks: { name: string; bucket: string; summary?: string; link?: string }[];
 }
 
@@ -92,7 +93,7 @@ export function untrustedReason(config: Pick<FactoryConfig, "trust" | "merge">, 
   return `merge.open_feedback is fix, but ${authors.join(", ")} ${authors.length > 1 ? "are" : "is"} neither a trusted author nor in merge.comment_bots`;
 }
 
-export function feedbackData(feedback: OpenFeedback): FeedbackData {
+export function feedbackData(feedback: OpenFeedback, reopened: string[] = []): FeedbackData {
   return {
     threads: feedback.threads.map((t) => ({
       id: t.id,
@@ -101,6 +102,7 @@ export function feedbackData(feedback: OpenFeedback): FeedbackData {
       ...(t.line ? { line: t.line } : {}),
       url: t.url,
       excerpt: oneLine(t.body),
+      ...(isFactoryNote(t, reopened) ? { factory: true as const } : {}),
     })),
     checks: feedback.checks.map((c) => ({ name: c.name, bucket: c.bucket, ...(c.summary ? { summary: oneLine(c.summary) } : {}), ...(c.link ? { link: c.link } : {}) })),
   };
@@ -120,14 +122,16 @@ export function feedbackDataOf(data: unknown): FeedbackData | undefined {
 
 /**
  * What the human approval of the merge gate that `approval` points at saw: the open feedback the
- * run was parked with just before it. Nothing when it was parked for anything else.
+ * run was parked with just before it. Nothing when it was parked for anything else. A thread that
+ * was the factory's own note then is left out: should someone reply to it later, the human never
+ * saw that reply.
  */
 export function acknowledgedBy(events: RunEvent[], approval: number): Acknowledged {
   const parked = events.slice(0, approval).findLast((e) => e.to_state === "needs_human");
   const data = feedbackDataOf(parked?.data);
   if (!data) return { threads: [], checks: [] };
   return {
-    threads: data.threads.flatMap((t) => (typeof t?.id === "string" ? [t.id] : [])),
+    threads: data.threads.flatMap((t) => (typeof t?.id === "string" && t.factory !== true ? [t.id] : [])),
     checks: data.checks.flatMap((c) => (typeof c?.name === "string" ? [c.name] : [])),
   };
 }

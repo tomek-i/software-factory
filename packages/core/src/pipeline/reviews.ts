@@ -158,14 +158,20 @@ export function parseNoteMarker(body: string): NoteMarker | undefined {
 /** How inline notes started before they carried a marker: `**<lens>** · <severity>`. */
 const UNMARKED_NOTE = /^\*\*[\w-]+\*\* · (critical|major|minor|nit)\b/;
 
+/** On every reply the merge stage posts to one of its notes, so its answers tell apart from anyone's reply. */
+export const ANSWER_MARKER = "<!-- factory:answer -->";
+
 /**
  * One of the factory's review notes, which the merge stage answers and resolves itself: started by
  * the factory's account, and marked (or shaped like a note from before the markers). Anything else
- * that account wrote is the operator's own comment, and one a human re-opened after the factory
- * resolved it (`reopened`) is theirs to settle: both count as human feedback.
+ * that account wrote is the operator's own comment. A note a human re-opened after the factory
+ * resolved it (`reopened`), or replied to with anything but the factory's own answer, is theirs to
+ * settle. All of these count as human feedback. The factory runs as the operator's account, so an
+ * unmarked reply from it is the operator's.
  */
-export function isFactoryNote(thread: Pick<ReviewThread, "id" | "own" | "body">, reopened: string[] = []): boolean {
-  return thread.own && !reopened.includes(thread.id) && (parseNoteMarker(thread.body) !== undefined || UNMARKED_NOTE.test(thread.body));
+export function isFactoryNote(thread: Pick<ReviewThread, "id" | "own" | "body" | "replies">, reopened: string[] = []): boolean {
+  const humanReplied = thread.replies.some((r) => !(r.own && r.body.includes(ANSWER_MARKER)));
+  return thread.own && !reopened.includes(thread.id) && !humanReplied && (parseNoteMarker(thread.body) !== undefined || UNMARKED_NOTE.test(thread.body));
 }
 
 /** What the reviews leave for the human: the review's body and its comments on lines of the change. */

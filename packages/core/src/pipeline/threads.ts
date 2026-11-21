@@ -9,7 +9,7 @@ import type { ReviewThread } from "../github/port.js";
 import type { Run } from "../store/store.js";
 import { redactPaths } from "../util/redact.js";
 import { oneLine } from "./feedback.js";
-import { isFactoryNote, parseNoteMarker, refutedFindings } from "./reviews.js";
+import { ANSWER_MARKER, isFactoryNote, parseNoteMarker, refutedFindings } from "./reviews.js";
 import { quietMentions, readValid, section, verdictPath } from "./shared.js";
 import { handOverProblems } from "./stages/build.js";
 import type { StageContext, StepResult } from "./stages/context.js";
@@ -43,8 +43,8 @@ export interface RecordedAnswer {
   resolved?: boolean;
 }
 
-/** On every reply, so a reply posted just before a crash is not posted again. */
-export const ANSWER_MARKER = "<!-- factory:answer -->";
+// Also tells a reply posted just before a crash, so it is not posted again.
+export { ANSWER_MARKER };
 
 /** The run's answers to its review threads; one file for the run, so an answer outlives the round it was made in. */
 export const threadsRecordFile = (runDir: string) => join(runDir, "threads.json");
@@ -149,7 +149,15 @@ export async function answerThreads(ctx: StageContext, run: Run, worktree: Workt
     return undefined;
   }
   const file = threadsRecordFile(dir);
-  const answers = readAnswers(file);
+  // A fix a later build rewrote away is asked about again now, before the push, rather than found
+  // missing after it, when only a human could send the note back.
+  const answers = readAnswers(file).filter((a) => {
+    const thread = threads.find((t) => t.id === a.thread);
+    if (!thread || a.replied || a.outcome !== "fixed" || !a.commit) return true;
+    if (thread.replies.some((r) => r.own && r.body.includes(ANSWER_MARKER)) || onBranch(ctx, worktree, a.commit)) return true;
+    ctx.info(run, `the fix for review thread ${thread.url} (${a.commit.slice(0, 7)}) is no longer on the branch; asking again`);
+    return false;
+  });
   const fresh = threads.filter((t) => !answers.some((a) => a.thread === t.id));
   if (fresh.length === 0) return undefined;
   const forBuilder: ReviewThread[] = [];
@@ -315,7 +323,9 @@ export function postThreadAnswers(ctx: StageContext, run: Run, worktree: Worktre
       writeAnswers(file, answers);
       continue;
     }
-    const posted = answer.replied || thread.replies.some((r) => r.own && r.body.includes(ANSWER_MARKER));
+    // Someone replied since the answer was recorded: theirs to settle, so it is neither posted nor resolved.
+    if (!isFactoryNote(thread)) continue;
+    const posted =answer.replied || thread.replies.some((r) => r.own && r.body.includes(ANSWER_MARKER));
     if (!posted && answer.outcome === "fixed" && answer.commit && !onBranch(ctx, worktree, answer.commit)) {
       ctx.info(run, `the fix for review thread ${thread.url} (${answer.commit.slice(0, 7)}) is no longer on the branch; asking again`);
       answers = answers.filter((a) => a !== answer);

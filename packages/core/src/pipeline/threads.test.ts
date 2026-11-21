@@ -74,6 +74,16 @@ ${noteMarker({ kind: "note", round: 1, finding: "code-2" })}`);
     expect(isFactoryNote(marked, ["T1"])).toBe(false);
   });
 
+  it("treats a note anyone replied to as human feedback, but not one with only the factory's own answer", () => {
+    const marked = thread("T1", `x
+
+${noteMarker({ kind: "note", round: 1, finding: "code-2" })}`);
+    expect(isFactoryNote({ ...marked, replies: [{ body: `Declined: no\n\n${ANSWER_MARKER}`, own: true }] })).toBe(true);
+    expect(isFactoryNote({ ...marked, replies: [{ body: "This is a real bug, please fix it", own: false }] })).toBe(false);
+    // The factory runs as the operator's account: their reply is theirs, not an answer.
+    expect(isFactoryNote({ ...marked, replies: [{ body: "Please fix this one", own: true }] })).toBe(false);
+  });
+
   it("says in one line how each thread was answered, then marks the reply", () => {
     expect(replyText(answer({ outcome: "wrong", reason: "it is checked" }))).toBe(`Wrong: refuted by the verifier: it is checked\n\n${ANSWER_MARKER}`);
     expect(replyText(answer({ outcome: "fixed", commit: SHA }))).toBe(`Fixed in ${SHA.slice(0, 12)}\n\n${ANSWER_MARKER}`);

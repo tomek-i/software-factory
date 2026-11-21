@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
@@ -283,6 +283,82 @@ describe("PipelineDriver merge stage: the factory's own review threads", () => {
     expect(replies).toEqual([{ thread: "T1", body: reply("Deferred (could not open a follow-up issue: issues are disabled): later") }]);
     expect(resolved).toEqual(["T1"]);
     expect(merges).toHaveLength(1);
+  });
+
+  it("asks the builder again when the commit it named as the fix is no longer on the branch", async () => {
+    const { driver, store, root, pr, github, merges, replies, resolved, fake } = setup(
+      [
+        { output: TRIAGE() },
+        buildStep("fixed"),
+        CODE_PASS,
+        answers([{ id: "T1", outcome: "fixed", reason: "renamed it" }], true),
+        answers([{ id: "T1", outcome: "declined", reason: "the name matches the API" }]),
+      ],
+      { config: mergeConfig("merge: always") },
+    );
+    pr.threads = [[NIT]];
+    const post = github.replyToReviewThread;
+    let failures = 1;
+    github.replyToReviewThread = (thread, body) => {
+      if (failures-- > 0) throw new Error("HTTP 502");
+      post(thread, body);
+    };
+    const run = driver.startRun(12);
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked", reason: expect.stringContaining("unresolved review thread by the factory") });
+
+    // A later build rewrote the fix away; the recorded answer still names it.
+    const file = join(runDirOf(root, run.id), "threads.json");
+    const recorded = JSON.parse(readFileSync(file, "utf8")) as { commit?: string }[];
+    recorded[0]!.commit = "b".repeat(40);
+    writeFileSync(file, JSON.stringify(recorded));
+
+    approve(store, run.id);
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(fake.calls().filter((c) => c.role === "builder")).toHaveLength(3);
+    expect(replies).toEqual([{ thread: "T1", body: reply("Declined: the name matches the API") }]);
+    expect(resolved).toEqual(["T1"]);
+    expect(merges).toHaveLength(1);
+  });
+
+  it("leaves a note someone replied to for the human: the builder never answers or resolves it over them", async () => {
+    const { driver, pr, merges, replies, resolved, fake } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: always") });
+    pr.threads = [[{ ...NIT, replies: [{ body: "Don't decline this, it is a real bug", own: false }] }]];
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toMatchObject({
+      kind: "parked",
+      reason: "waiting at merge gate: unresolved review thread by factory-bot at feature.txt:1 (https://github.com/o/r/pull/7#discussion_T1)",
+    });
+    expect(fake.calls().filter((c) => c.role === "builder")).toHaveLength(1);
+    expect(replies).toEqual([]);
+    expect(resolved).toEqual([]);
+    expect(merges).toEqual([]);
+  });
+
+  it("does not post a recorded answer on a note someone replied to before it went out", async () => {
+    const { driver, store, pr, github, merges, replies, resolved } = setup(
+      [{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, answers([{ id: "T1", outcome: "declined", reason: "the name matches the API" }])],
+      { config: mergeConfig("merge: always") },
+    );
+    pr.threads = [[NIT]];
+    const post = github.replyToReviewThread;
+    let failures = 1;
+    github.replyToReviewThread = (thread, body) => {
+      if (failures-- > 0) throw new Error("HTTP 502");
+      post(thread, body);
+    };
+    const run = driver.startRun(12);
+    expect(await driver.drive(run.id)).toMatchObject({ kind: "parked" });
+
+    pr.threads = [[{ ...NIT, replies: [{ body: "Don't decline this, it is a real bug", own: false }] }]];
+    approve(store, run.id);
+    expect(await driver.drive(run.id)).toMatchObject({
+      kind: "parked",
+      reason: "waiting at merge gate: unresolved review thread by factory-bot at feature.txt:1 (https://github.com/o/r/pull/7#discussion_T1)",
+    });
+    expect(merges).toEqual([]);
+    expect(replies).toEqual([]);
+    expect(resolved).toEqual([]);
   });
 
   it("leaves the operator's own comments, which are not notes, to the human like anyone's", async () => {

@@ -353,7 +353,7 @@ After the re-sync, and before the quality gate runs again, the merge stage answe
   - The issue is queued for the factory only with `merge.queue_followups`.
     It is not marked as the factory's own idea, but it is opened by your account: if that account is in `trust.authors`, its run is trusted.
 - The replies are posted only after the push, so a commit they name is on GitHub.
-  A fix whose commit is no longer on the branch (reverted, or rewritten) is not posted; the builder is asked again.
+  A fix whose commit is no longer on the branch (reverted, or rewritten by a later build) is not posted; the builder is asked again on the next merge attempt.
 - Each inline note carries a hidden tag (its round, finding and kind), which is how the stage tells them apart.
   Comments your own account wrote by hand are not notes: they count as anyone's review threads (below).
 - The answers are recorded in the run folder (`threads.json`) before anything is posted, so a retry posts no second reply.
@@ -361,6 +361,8 @@ After the re-sync, and before the quality gate runs again, the merge stage answe
   Approving retries it; you can also resolve the thread on GitHub.
 - If you re-open a note the factory resolved, it becomes your feedback: it holds the merge like anyone's thread, and approving the merge covers it.
   Sending the run back to the builder gives it the thread with its replies.
+- The same goes for a note anyone replies to, you included, before the factory has answered it: the factory never answers or resolves it over that reply.
+  An approval you gave while it was still the factory's note doesn't cover the reply.
 - The builder writes its answers to `round-N/resync/threads.md`; a missing or malformed file stops the run, as for any agent.
 
 ### Open review threads and failed checks

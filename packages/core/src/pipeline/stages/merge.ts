@@ -98,7 +98,7 @@ export async function merge(ctx: StageContext, run: Run): Promise<StepResult> {
     }
     // For the builder, should a human send the run back with them.
     writeFileSync(feedbackPath, feedbackReport(config, number, open));
-    const data = { openFeedback: feedbackData(open) };
+    const data = { openFeedback: feedbackData(open, reopened) };
     return { reasons: [...feedbackReasons(open, reopened), ...(untrusted ? [untrusted] : [])], data };
   };
 
