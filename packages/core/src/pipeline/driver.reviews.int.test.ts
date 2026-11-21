@@ -70,7 +70,7 @@ describe("PipelineDriver", () => {
           number: 7,
           commit,
           body: `<!-- factory:${run.id}:review-round-1-${commit.slice(0, 12)} -->\nReview notes, left for you to judge. A note about a line of the change is on that line.\n`,
-          comments: [{ path: "feature.txt", line: 1, body: "**code** · minor: it says fixed" }],
+          comments: [{ path: "feature.txt", line: 1, body: "**code** · minor: it says fixed\n\n<!-- factory:note kind=note round=1 finding=code-1 -->" }],
         },
       ]);
     });

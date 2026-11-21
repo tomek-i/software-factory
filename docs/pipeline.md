@@ -73,6 +73,7 @@ In words:
    The acceptance lens checks the issue's acceptance criteria one by one.
 4. **Capture** shows a UI change in the PR with screenshots and a video.
 5. **Re-sync** merges the default branch into the PR, the PR's required checks must pass, and then the **merge gate** decides.
+   Before that, the factory answers and resolves its own review notes (fixed, declined, wrong or deferred to a follow-up issue).
    Unresolved review threads and failed optional checks stop the merge too, unless `merge.open_feedback` says otherwise.
 6. After the merge, a **learner** proposes lessons, and the met acceptance criteria are ticked on the issue.
 
@@ -333,17 +334,48 @@ If branch protection requires status checks, the stage waits for them on the pus
 - When they pass, the gate's reasons (or its proceed decision) name them: `required checks passed on <sha>: ...`.
 - What to do about a failed check: [When a required check fails](runs.md#when-a-required-check-fails).
 
+### The factory's own review notes
+
+A PR is never merged with one of the factory's review notes unresolved.
+After the re-sync, and before the quality gate runs again, the merge stage answers each of its own open notes and resolves it:
+
+- **Wrong**: a finding the verifier refuted gets the verifier's reason, without the builder.
+- Every other note goes to the builder, in one turn per merge attempt: minor findings and nits, confirmed findings, and notes posted before notes were tagged.
+  The builder answers each one:
+  - **fixed**: it changes the code and commits; or it names the earlier commit on the branch that already fixed it;
+  - **declined**: with its reason;
+  - **deferred**: with a reason and a title for a follow-up issue.
+- A fix the builder commits here goes through the quality gate, the hard rules, the push and the required checks, but not through the review lenses again.
+  It changes the head, so an earlier merge approval doesn't cover it.
+- A deferred note opens a follow-up issue that quotes it and links the thread, unless `merge.followup_issues` is off.
+  - The reply links the issue: `Deferred to #N: <reason>`.
+  - Opening it is tried once; if that fails, the reply says so instead and the note is still resolved.
+  - The issue is queued for the factory only with `merge.queue_followups`.
+    It is not marked as the factory's own idea, but it is opened by your account: if that account is in `trust.authors`, its run is trusted.
+- The replies are posted only after the push, so a commit they name is on GitHub.
+  A fix whose commit is no longer on the branch (reverted, or rewritten by a later build) is not posted; the builder is asked again on the next merge attempt.
+- Each inline note carries a hidden tag (its round, finding and kind), which is how the stage tells them apart.
+  Comments your own account wrote by hand are not notes: they count as anyone's review threads (below).
+- The answers are recorded in the run folder (`threads.json`) before anything is posted, so a retry posts no second reply.
+- If a reply or a resolve fails, the thread stays open and the run waits for you at the merge gate, whatever `merge.open_feedback` says.
+  Approving retries it; you can also resolve the thread on GitHub.
+- If you re-open a note the factory resolved, it becomes your feedback: it holds the merge like anyone's thread, and approving the merge covers it.
+  Sending the run back to the builder gives it the thread with its replies.
+- The same goes for a note anyone replies to, you included, before the factory has answered it: the factory never answers or resolves it over that reply.
+  An approval you gave while it was still the factory's note doesn't cover the reply.
+- The builder writes its answers to `round-N/resync/threads.md`; a missing or malformed file stops the run, as for any agent.
+
 ### Open review threads and failed checks
 
 - After the required checks, and again right before the merge, the engine reads what else is open on the PR:
-  - review threads that are neither resolved nor outdated (their line changed since);
+  - unresolved review threads; the factory's own notes count even when outdated (their line changed since), anyone else's stop counting once outdated;
   - checks on the PR's head that failed or were cancelled and that branch protection does not require.
-- Threads the factory's own account started (its review notes) never count.
+- One of the factory's own threads still open here always waits for you, as `unresolved review thread by the factory`; see [The factory's own review notes](#the-factorys-own-review-notes).
 - Required checks are left to the required-checks wait, whatever their state.
 - `merge.open_feedback` decides what happens:
   - `ask` (default): the run waits for you at the merge gate, whatever its mode, with each thread (author, file, line, link) and check (name, summary, link) as a reason.
   - `fix`: the run goes back to the builder with them, without you, and then through the gate, the reviews and the merge again.
-  - `ignore`: they are not read; the run merges as before.
+  - `ignore`: they are not read (the failed checks) or don't stop the merge (other people's threads); the factory's own notes still do.
 - `fix` acts alone only when every thread was started by a trusted author (`trust.authors`) or an app in `merge.comment_bots`.
   - The default app is `github-advanced-security[bot]`, which posts CodeQL's alerts.
   - A thread by anyone else makes the run wait for you, as with `ask`, and the reasons say whose.
@@ -355,15 +387,15 @@ If branch protection requires status checks, the stage waits for them on the pus
 - While the run waits, `factory show` and the web Inbox list each thread and check with its link.
 - What you can do:
   - **Merge anyway**: `factory approve <run>` (or Merge anyway in the web).
-    - It covers the listed threads and checks on that commit only.
+    - It covers the listed threads and checks on that commit only, never the factory's own threads.
     - A new commit from the builder, a new thread or a newly failed check needs a fresh decision.
   - **Send back to fix**: `factory resume <run> --to build -m "fix the open review threads"` (or Send to builder with this failure in the web).
     - This works for any author's thread, because you chose it; the builder still gets them framed as data.
   - **Wait**: resolve the threads or re-run the checks on GitHub, then `factory resume <run> --to merge -m "resolved on GitHub"`; the stage looks again.
 - CodeQL closes its own threads once a new scan no longer finds the problem.
-  Other threads stop counting once the builder's change makes them outdated, or someone resolves them.
+  Other people's threads stop counting once the builder's change makes them outdated, or someone resolves them.
 - If the threads or checks cannot be read, the run waits for you with gh's message.
-- The factory does not reply to or resolve threads itself.
+- The factory replies to and resolves only its own threads, never other people's.
 
 ### Merge gate
 

@@ -57,6 +57,11 @@ export const github: GithubPort = {
   pullRequestChecks: () => [],
   pullRequestDiff: () => ({ head: "h", additions: 0, deletions: 0, changedFiles: 0 }),
   unresolvedReviewThreads: () => [],
+  replyToReviewThread: () => undefined,
+  resolveReviewThread: () => undefined,
+  createIssue: () => {
+    throw new Error("no issues here");
+  },
   codeScanningAlerts: () => [],
   dismissCodeScanningAlert: () => undefined,
   hasReview: () => false,

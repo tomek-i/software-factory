@@ -26,6 +26,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `pipeline/acceptance.ts`: the acceptance lens's criteria (`extractCriteria`), its result file, the PR checklist, and `tickMetCriteria`, which ticks the met ones on GitHub after the merge
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/feedback.ts`: the PR's open review threads and failed optional checks the merge stage reads (`readOpenFeedback`), who `fix` may act on alone (`actionable`), and the report the builder gets (`feedbackReport`)
+- `pipeline/threads.ts`: the merge stage's answers to the factory's own review notes (`answerThreads`, then `postThreadAnswers` after the push), recorded in the run folder; the notes carry a `noteMarker` (`pipeline/reviews.ts`)
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
 - `pipeline/cleanup.ts`: removes finished runs' worktrees and branches
