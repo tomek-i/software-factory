@@ -212,6 +212,8 @@ export function verdictPath(runDir: string, kind: VerdictKind, round: number): s
       return join(runDir, `round-${round}`, `${kind}.md`);
     case "approver":
       return join(runDir, "approval.md");
+    case "threads":
+      return join(runDir, `round-${round}`, "resync", "threads.md");
     default:
       return join(runDir, `${kind}.md`);
   }

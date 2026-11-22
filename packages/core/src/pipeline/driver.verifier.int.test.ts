@@ -68,7 +68,7 @@ describe("PipelineDriver", () => {
         expect(store.listEvents(run.id).some((e) => e.from_state === "review" && e.to_state === "build")).toBe(false);
         expect(reviews).toHaveLength(1);
         expect(reviews[0]!.comments).toEqual([
-          { path: "feature.txt", line: 1, body: "**code** · major (refuted by the verifier): it says fixed\n\nRefuted: the check accepts exactly that" },
+          { path: "feature.txt", line: 1, body: "**code** · major (refuted by the verifier): it says fixed\n\nRefuted: the check accepts exactly that\n\n<!-- factory:note kind=refuted round=1 finding=code-1 -->" },
         ]);
         expect(approveTarget(store.getRun(run.id)!, "build")).toBe("capture");
       });
@@ -154,7 +154,7 @@ describe("PipelineDriver", () => {
         // Only the round that stopped is posted: a round that loops back to the builder leaves no review.
         expect(reviews).toHaveLength(1);
         expect(reviews[0]!.body).toContain(":review-round-2-");
-        expect(reviews[0]!.comments).toEqual([{ path: "feature.txt", line: 1, body: "**code** · major (confirmed by the verifier, not fixed): it says fixed" }]);
+        expect(reviews[0]!.comments).toEqual([{ path: "feature.txt", line: 1, body: "**code** · major (confirmed by the verifier, not fixed): it says fixed\n\n<!-- factory:note kind=confirmed round=2 finding=code-1 -->" }]);
       });
 
       it("stops at the review round cap, naming the hard rules, and tells the builder the findings when a human sends it back", async () => {
