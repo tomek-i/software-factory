@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
-import { driveIssue, loadConfig, runDirOf, Store, type CommandRunner, type GithubPort, type ProjectContext, type PullRequestCheck } from "@factory/core";
+import { driveIssue, loadConfig, runCommand, runDirOf, Store, type CommandRunner, type GithubPort, type ProjectContext, type PullRequestCheck } from "@factory/core";
 import { factoryConfigSchema } from "@factory/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setup, TRIAGE } from "../../../packages/core/test/driver-setup.js";
@@ -455,6 +455,51 @@ describe("runs", () => {
 
         expect(resumed.json()).toMatchObject({ run: { state: "build", review_rounds: 0, build_iterations: 0 }, to: "build", continuation: "ready" });
         expect(s.store.listEvents(run.id).at(-1)).toMatchObject({ reason: "human: code-1: the limiter is skipped", data: { gate: "review", resetLoops: true } });
+      },
+      GIT_TEST_TIMEOUT,
+    );
+
+    it(
+      "shows what a run waiting for its author asked, and adds the answer to the issue before triaging again",
+      async () => {
+        const s = setup([]);
+        const ctx: ProjectContext = { root: s.root, store: s.store, project: s.project, config: loadConfig(s.root) };
+        const run = s.store.createRun({ project_id: s.project.id, title: "t", issue_number: 12 });
+        s.store.writeState(run.id, "needs_info");
+        s.store.appendEvent(run.id, "triage", "needs_info", "triage needs more information");
+        mkdirSync(runDirOf(s.root, run.id), { recursive: true });
+        writeFileSync(join(runDirOf(s.root, run.id), "triage.md"), `${TRIAGE("NEEDS_INFO")}\n## Questions\n1. Which format?\n`);
+        // The operator's own edit, which the shared fake refuses as an edit by the pipeline.
+        s.github.editIssueBody = (_number, body) => {
+          s.issueBody.text = body;
+        };
+        // `gh issue view` answers with the issue as it is now; git (the trusted config) runs for real.
+        const gh: CommandRunner = (cmd, args, options) =>
+          cmd !== "gh"
+            ? runCommand(cmd, args, options)
+            : {
+                code: 0,
+                stdout: JSON.stringify({ number: 12, title: "t", body: s.issueBody.text, state: "OPEN", author: { login: "alice" }, labels: [], url: "u", updatedAt: "2026-01-01T00:00:00Z" }),
+                stderr: "",
+              };
+        const { app } = server([ctx], { github: () => s.github, run: gh });
+        const base = `/api/projects/${projectKey(s.root)}/runs/${run.id}`;
+
+        expect((await call(app, "GET", base)).json().questions).toEqual(["Which format?"]);
+        const shown = { state: "needs_info" };
+        const noOrigin = await app.inject({ method: "POST", url: `${base}/answer`, payload: { ...shown, answer: "CSV" }, headers: { host: HOST, ...AUTH } });
+        expect(noOrigin.statusCode).toBe(403);
+        expect((await call(app, "POST", `${base}/answer`, { state: "needs_human", answer: "CSV" })).statusCode).toBe(409);
+        expect((await call(app, "POST", `${base}/answer`, { ...shown, answer: 5 })).json()).toEqual({ error: "answer must be text." });
+        const long = await call(app, "POST", `${base}/answer`, { ...shown, answer: "x".repeat(20_001) });
+        expect(long.json()).toEqual({ error: "The answer is too long: keep it under 20000 characters, or edit the issue on GitHub." });
+        expect(s.store.getRun(run.id)!.state).toBe("needs_info");
+
+        const answered = await call(app, "POST", `${base}/answer`, { ...shown, answer: "CSV, please." });
+
+        expect(answered.json()).toMatchObject({ run: { state: "triage" }, continuation: "ready" });
+        expect(s.issueBody.text).toBe("Please add feature.txt.\n\n## Answers\n\nCSV, please.\n");
+        expect((await call(app, "POST", `${base}/answer`, shown)).statusCode).toBe(409);
       },
       GIT_TEST_TIMEOUT,
     );

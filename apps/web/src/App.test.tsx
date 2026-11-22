@@ -704,6 +704,39 @@ describe("run details", () => {
     await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-2/cancel", body: { state: "needs_human" } }));
   });
 
+  it("shows what a run waiting for its author asked, and answers, triages again or cancels from there", async () => {
+    server.runs = [runRow({ id: "run-3", issue: 13, state: "needs_info", waitingGate: null, reason: "triage needs more information" })];
+    const detail = server.detail;
+    server.detail = (run) => ({ ...detail(run), questions: ["Which broker comes first?", "Keep the ids?"] });
+    server.answers.set("/answer", { continuation: "not_queued" });
+    renderAt("/runs/p1/run-3");
+    const user = userEvent.setup();
+
+    const questions = await screen.findByRole("list", { name: "Questions for the issue's author" });
+    expect(within(questions).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Which broker comes first?", "Keep the ids?"]);
+    expect(screen.getByRole("link", { name: "on the issue" }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/13");
+    expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /Answer/ }));
+    const add = screen.getByRole("button", { name: "Add to the issue and triage again" });
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Answers"), "Stake first. Keep them.");
+    await user.click(add);
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-3/answer", body: { state: "needs_info", answer: "Stake first. Keep them." } }]));
+    expect(await screen.findByText("Added your answers to the issue. Triage runs again once the issue is queued.")).toBeTruthy();
+
+    server.posts = [];
+    server.answers.set("/answer", { continuation: "unsafe" });
+    await user.click(screen.getByRole("button", { name: /Triage again/ }));
+    await user.click(within(screen.getByRole("form", { name: "Triage again" })).getByRole("button", { name: "Triage again" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-3/answer", body: { state: "needs_info" } }]));
+    expect(await screen.findByText("Sent back to triage. It was started with --unsafe, so the worker leaves it: continue it with `factory run 13`.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-3/cancel", body: { state: "needs_info" } }));
+  });
+
   it("sends a run at a gate to the builder with its failure from the detail view", async () => {
     server.runs = [
       runRow({

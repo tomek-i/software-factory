@@ -92,6 +92,16 @@ What `factory show <run>` prints, in the browser.
   - A file over 1 MB is not shown either; `factory show <run> <file>` prints it.
 - Local paths in it are shortened: relative to the repo or worktree, and the home folder as `~`.
 - A run waiting for you has the same actions as in the Inbox, and says what was done once it went through.
+- A run waiting for the issue's author lists the questions triage or the spec critic asked, with a link to the issue.
+  - **Answer** adds your answers to the issue's description under `## Answers`, then triages again.
+    Triage reads the description, not comments, so this is how an answer reaches it.
+    The description is read from GitHub just before, so an edit made there since isn't lost.
+    One saved in the seconds between that read and the edit is, as GitHub can't make an edit conditional.
+    Mentions in the answer are quoted, so nobody is notified.
+  - **Triage again** is for answers already in the description, or in the repo (such as files the questions asked for).
+  - **Cancel run** ends it.
+  - The worker continues it once its issue is queued.
+    A run started with `--unsafe` is never continued by the worker; the page says to continue it with `factory run`.
 - A finished run whose worktree and branch are still there shows them, with why cleanup kept them, if it did.
   "Clean up" removes them now, with the same protections as the automatic cleanup.
 
