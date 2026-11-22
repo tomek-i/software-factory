@@ -5,7 +5,7 @@ import { tempDir } from "../../test/helpers.js";
 import { runDirOf } from "../pipeline/driver.js";
 import { Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
-import { isBinary, latestChecks, latestReviews, latestRoundFile, leftoverOf, listRunFiles, resolveInRunDir, runFile, runOverview, unshownFile } from "./show.js";
+import { isBinary, latestChecks, latestReviews, latestRoundFile, leftoverOf, listItems, listRunFiles, resolveInRunDir, runFile, runOverview, unshownFile } from "./show.js";
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n";
@@ -219,5 +219,18 @@ describe("runFile and resolveInRunDir", () => {
     expect(latestChecks(files)).toBe("round-10/checks.md");
     expect(latestRoundFile(files, "spec", "critic.md")).toBe("spec-2/critic.md");
     expect(listRunFiles(join(tempDir(), "missing"))).toEqual([]);
+  });
+});
+
+describe("listItems", () => {
+  it("reads bulleted and numbered items, joining wrapped lines", () => {
+    expect(listItems("- one\n  wrapped\n2) two\n* three")).toEqual(["one wrapped", "two", "three"]);
+  });
+
+  it("reads a bullet followed by a long run of spaces in linear time", () => {
+    const line = `* ${" ".repeat(50_000)}x`;
+    const started = performance.now();
+    expect(listItems(line)).toEqual(["x"]);
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
