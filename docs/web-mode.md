@@ -13,6 +13,8 @@ The commands are in [Using the factory](usage.md#web-mode).
 - It prints a link with a session token and opens it in your browser.
   `--no-open` only prints the link.
 - The project picker in the header narrows every screen to one project.
+- While the daily start limit (`github.max_starts_per_day`) holds a project's queue back, the header says "start limit until" the time the first held project can start again.
+  The Inbox and Backlog say it in full, per project (see [Its limits](runs.md#its-limits)).
 - The actions are the CLI's (`factory approve`, `reject`, `resume`, `checks`, `dismiss`, `cancel`, `queue`, `unqueue`, `sync`, `new`), with the same rules.
 - Live updates cover the runs `factory serve` itself drives.
   A `factory run` in another terminal shows on the next refresh.
