@@ -69,7 +69,8 @@ Commands such as `factory approve <run>` and `factory show <run>` take `<run>` a
   - Continuing a run doesn't count.
   - 0 means the worker starts nothing new in that project.
   - When it holds queued issues back, the worker says so once per project, with the time the next one can start, and again when it lifts.
-    `factory status`, `factory issues` and the web Backlog show the same line while it holds.
+    `factory status`, `factory issues` and the web Backlog and Inbox show the same line while it holds.
+    The web app's header shows it too, as "start limit until" the time the first held project can start again.
 
 ### The usage limit
 

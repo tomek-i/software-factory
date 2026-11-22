@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow, SchedulerStatus } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -53,6 +53,8 @@ class FakeServer {
   mergeGate: Record<string, MergeGateDetails> = {};
   /** Run files by path, served for every run. */
   files: Record<string, string> = {};
+  /** What `factory serve`'s scheduler is doing. */
+  scheduler: SchedulerStatus = { running: [] };
   /** The failed checks of each run's PR, by run id. */
   checks: Record<string, RunChecks> = {};
   /** The detail of a run is built from its row in runs. */
@@ -109,7 +111,7 @@ data: ${JSON.stringify(event)}
       return json(200, {});
     }
     if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, this.projects) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
-    if (url.pathname === "/api/scheduler") return json(200, { running: [] });
+    if (url.pathname === "/api/scheduler") return json(200, this.scheduler);
     if (url.pathname === "/api/runs") {
       const view = url.searchParams.get("view");
       return json(200, this.runs.filter((r) => view !== "waiting" || r.state === "needs_human" || r.state === "needs_info"));
@@ -205,9 +207,57 @@ describe("layout", () => {
 
     expect(await screen.findByText("No session")).toBeTruthy();
   });
+
+  it("warns on every screen while the start limit holds a queue back, with when it lifts", async () => {
+    const at = new Date(new Date().setHours(13, 53, 0, 0));
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    server.scheduler = { running: [], limited: [{ project: "shop", started: 10, max: 10, until: at.toISOString() }] };
+    renderAt("/runs");
+
+    const note = await screen.findByLabelText(/^Start limit/);
+    expect(note.textContent).toBe(`start limit until ${time}`);
+    expect(note.getAttribute("aria-label")).toBe(`Start limit reached for shop: the next queued issue can start at ${time}.`);
+  });
+
+  it("says no time when a limit of 0 holds a queue back, and nothing without a limit", async () => {
+    server.scheduler = { running: [], limited: [{ project: "shop", started: 0, max: 0 }] };
+    renderAt("/runs");
+    expect((await screen.findByLabelText(/^Start limit/)).textContent).toBe("start limit: none start");
+
+    cleanup();
+    server.scheduler = { running: [] };
+    renderAt("/runs");
+    await screen.findByText("0 running");
+    expect(screen.queryByLabelText(/^Start limit/)).toBeNull();
+  });
 });
 
 describe("inbox", () => {
+  it("says which projects the start limit holds back and when each can start again, for the project picked", async () => {
+    const at = new Date(new Date().setHours(13, 53, 0, 0));
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    server.projects = [PROJECT, { key: "p2", name: "cafe", path: "/repos/cafe", status: "ok" }];
+    server.scheduler = {
+      running: [],
+      limited: [
+        { project: "shop", started: 10, max: 10, until: at.toISOString() },
+        { project: "cafe", started: 0, max: 0 },
+      ],
+    };
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const notes = await screen.findByRole("list", { name: "Start limits" });
+    expect(within(notes).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      `shop: Start limit reached: 10 runs started in the last 24 h (github.max_starts_per_day). The next queued issue can start at ${time}.`,
+      "cafe: Start limit: github.max_starts_per_day is 0, so no queued issue starts until it is raised.",
+    ]);
+
+    await user.selectOptions(screen.getByLabelText("Project"), "p2");
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Start limits" })).getAllByRole("listitem")).toHaveLength(1));
+    expect(screen.getByRole("list", { name: "Start limits" }).textContent).toMatch(/^cafe: /);
+  });
+
   it("approves a gate with an optional note", async () => {
     server.runs = [runRow()];
     renderAt("/inbox");
