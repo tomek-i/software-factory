@@ -156,8 +156,11 @@ export interface RunDetail {
   questions?: string[];
 }
 
-/** What becomes of a run once it can go on: the worker continues it, or would once its issue is queued. */
-export type Continuation = "ready" | "not_queued" | "ended";
+/**
+ * What becomes of a run once it can go on: the worker continues it, or would once its issue is
+ * queued; one started with --unsafe only `factory run` continues.
+ */
+export type Continuation = "ready" | "not_queued" | "unsafe" | "ended";
 
 /** What a cleanup removed and kept (`lines`), and the runs it left alone with why. */
 export interface CleanupResult {

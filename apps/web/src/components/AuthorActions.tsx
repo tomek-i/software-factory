@@ -7,12 +7,14 @@ import { Textarea } from "./ui/input";
 
 type Mode = "answer" | "retriage" | "cancel";
 
-/** What happens after triage is asked again: the worker only picks up a queued issue. */
-const NEXT: Record<Continuation, string> = {
-  ready: "Triage runs again shortly.",
-  not_queued: "Triage runs again once the issue is queued.",
-  ended: "",
-};
+/** What happens after triage is asked again: the worker only picks up a queued issue, and never an --unsafe run. */
+const next = (continuation: Continuation, issue: number | null): string =>
+  ({
+    ready: "Triage runs again shortly.",
+    not_queued: "Triage runs again once the issue is queued.",
+    unsafe: `It was started with --unsafe, so the worker leaves it: continue it with \`factory run ${issue}\`.`,
+    ended: "",
+  })[continuation];
 
 /**
  * The decisions on a run waiting for its issue's author: answer its questions here (added to the
@@ -32,7 +34,7 @@ export function AuthorActions({ run, onDone }: { run: RunRow; onDone?: (what: st
       }
       const answered = await api.answer(run, m === "answer" ? text.trim() : undefined);
       const done = m === "answer" ? "Added your answers to the issue." : "Sent back to triage.";
-      return `${done} ${NEXT[answered.continuation]}`.trim();
+      return `${done} ${next(answered.continuation, run.issue)}`.trim();
     },
     onSuccess: (what) => {
       setMode(undefined);

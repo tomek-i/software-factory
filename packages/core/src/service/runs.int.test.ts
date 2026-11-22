@@ -210,6 +210,9 @@ describe("approve, resume, reject and cancel", () => {
     expect(continuation(s.store, s.project, run, "done")).toBe("ended");
     s.store.setQueued(s.project.id, 12, false);
     expect(continuation(s.store, s.project, run, "build")).toBe("not_queued");
+    // The worker never carries on a run started with --unsafe: someone has to drive it.
+    s.store.setQueued(s.project.id, 12, true);
+    expect(continuation(s.store, s.project, { ...run, unsafe: true }, "build")).toBe("unsafe");
   });
 
   it("rejects a waiting run, and reports a screenshots release it could not delete", async () => {
@@ -337,8 +340,31 @@ describe("answerRun", () => {
 
     expect(s.issueBody.text).toBe("Please add feature.txt.\n\nEdited: in the root folder.\n\n## Answers\n\nUse CSV.\n  Keep the ids.\n");
     expect(s.store.getIssue(s.project.id, 12)!.body).toBe(s.issueBody.text);
+    // Read once: nothing that can fail comes after the edit, so a retry never adds the answer twice.
+    expect(s.views).toEqual([12]);
     expect(answered.run).toMatchObject({ state: "triage" });
     expect(s.store.listEvents(s.run.id).at(-1)).toMatchObject({ from_state: "needs_info", to_state: "triage", reason: "triage again: answered from the web" });
+  });
+
+  it("quiets mentions and drops the factory's spec markers from the answer", () => {
+    const s = waiting();
+    answerRun(s.ctx, s.run.id, { answer: "Ask @bob. <!-- factory:refine -->not a spec<!-- /factory:refine -->" }, { run: s.gh, github: s.github });
+    expect(s.issueBody.text).toBe("Please add feature.txt.\n\n## Answers\n\nAsk `@bob`. not a spec\n");
+  });
+
+  it("edits nothing when the run moved on while GitHub was asked", () => {
+    const s = waiting();
+    const view = s.gh;
+    // A `factory run` in another terminal triages it meanwhile.
+    const gh: CommandRunner = (cmd, args, options) => {
+      const result = view(cmd, args, options);
+      if (cmd === "gh") s.store.writeState(s.run.id, "triage");
+      return result;
+    };
+    expect(() => answerRun(s.ctx, s.run.id, { answer: "Use CSV." }, { run: gh, github: s.github })).toThrow(
+      new ServiceError(`Run ${s.run.id} is not waiting for its author's answers (it is triage).`),
+    );
+    expect(s.issueBody.edits).toBe(0);
   });
 
   it("sends the run back to triage without touching the issue when there is no answer", () => {

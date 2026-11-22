@@ -676,9 +676,11 @@ describe("run details", () => {
     expect(await screen.findByText("Added your answers to the issue. Triage runs again once the issue is queued.")).toBeTruthy();
 
     server.posts = [];
+    server.answers.set("/answer", { continuation: "unsafe" });
     await user.click(screen.getByRole("button", { name: /Triage again/ }));
     await user.click(within(screen.getByRole("form", { name: "Triage again" })).getByRole("button", { name: "Triage again" }));
     await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-3/answer", body: { state: "needs_info" } }]));
+    expect(await screen.findByText("Sent back to triage. It was started with --unsafe, so the worker leaves it: continue it with `factory run 13`.")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: /Cancel run/ }));
     await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
