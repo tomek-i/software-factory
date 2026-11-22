@@ -7,7 +7,7 @@ function fileList(files: string[], style: Style): string {
   return files.length ? files.map((f) => `  ${style.detail(f)}`).join("\n") : "  (none)";
 }
 
-function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFeedback, issueClosed }: RunOverview, style: Style): string {
+function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFeedback, issueClosed, questions }: RunOverview, style: Style): string {
   const lines = [`Run ${style.detail(run.id)}`, `  state:   ${style.state(run.state)}`];
   if (run.waiting_gate) lines.push(`  waiting: ${style.attention(`${run.waiting_gate} gate`)}`);
   // Times merging the default branch sent the run back to the builder, apart from review rounds (loops.max_resyncs).
@@ -35,6 +35,11 @@ function overview({ run, issueTitle, runDir, hasRunDir, files, sections, openFee
     lines.push(
       style.hint(`Merge anyway with \`factory approve ${run.id}\`, or send it to the builder with \`factory resume ${run.id} --to build -m "fix the open review threads and checks"\`.`),
     );
+  }
+  // What the run waits for: the author's answers to these.
+  if (questions?.length) {
+    lines.push("", style.title(`Questions for the author of #${run.issue_number}`), ...questions.map((q, i) => `  ${i + 1}. ${q}`));
+    lines.push(style.hint(`Triage reads the issue's description, not its comments. Once the answers are there, \`factory run ${run.issue_number}\` triages it again.`));
   }
 
   if (!hasRunDir) {

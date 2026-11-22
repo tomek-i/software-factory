@@ -7,8 +7,9 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Select } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { api, type BacklogIssue, type ProjectInfo, type StartLimit } from "../lib/api";
+import { api, type BacklogIssue, type ProjectInfo } from "../lib/api";
 import { useProject } from "../lib/project";
+import { startLimitText } from "../lib/start-limit";
 import { ago } from "../lib/utils";
 import { githubUrl } from "./RunDetail";
 
@@ -104,19 +105,6 @@ export function BacklogTable({ project, issues, label }: { project: string; issu
       </Table>
     </Card>
   );
-}
-
-/** Why queued issues are not starting, worded as `factory status` words it. */
-export function startLimitText(limit: StartLimit, now = new Date()): string {
-  if (limit.max === 0) return "Start limit: github.max_starts_per_day is 0, so no queued issue starts until it is raised.";
-  const runs = `${limit.started} run${limit.started === 1 ? "" : "s"}`;
-  let next = "";
-  if (limit.nextStartAt) {
-    const at = new Date(limit.nextStartAt);
-    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    next = ` The next queued issue can start at ${at.toDateString() === now.toDateString() ? time : `${time} on ${at.toLocaleDateString()}`}.`;
-  }
-  return `Start limit reached: ${runs} started in the last 24 h (github.max_starts_per_day).${next}`;
 }
 
 function ProjectBacklog({ project }: { project: ProjectInfo }) {
