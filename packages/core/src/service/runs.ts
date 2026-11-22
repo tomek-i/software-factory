@@ -247,6 +247,28 @@ export function resumeRun(
   return { run: store.getRun(target.id)!, to };
 }
 
+/**
+ * Send a run waiting for its author's answers back to triage. Triage reads the issue's body, not its
+ * comments, so an answer given here is added to the body under `## Answers` first. The body is
+ * fetched from GitHub just before, so an edit the author made since the last sync is kept. If GitHub
+ * refuses the edit this throws, and the run keeps waiting.
+ */
+export function answerRun(ctx: ServiceContext, ref: string, options: { answer?: string }, deps: ServiceDeps = {}): { run: Run } {
+  const { store, project } = ctx;
+  const target = findRun(store, project, ref);
+  if (target.state !== "needs_info") throw new ServiceError(`Run ${target.id} is not waiting for its author's answers (it is ${target.state}).`);
+  const answer = options.answer?.trim();
+  if (answer && target.issue_number !== null) {
+    fetchIssue(store, project, target.issue_number, deps.run);
+    const body = store.getIssue(project.id, target.issue_number)!.body.trimEnd();
+    (deps.github ?? ghPort(project, deps.run)).editIssueBody(target.issue_number, `${body}\n\n## Answers\n\n${answer}\n`);
+    fetchIssue(store, project, target.issue_number, deps.run);
+  }
+  const reason = answer ? "triage again: answered from the web" : "triage again from the web";
+  new RunMachine(store, trustedConfig(project, ctx.config, deps.run)).transition(target.id, "triage", { reason });
+  return { run: store.getRun(target.id)! };
+}
+
 /** What happened to the screenshots release of a run that ended. */
 export interface DroppedMedia {
   tag: string;

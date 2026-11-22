@@ -4,6 +4,7 @@ import { isBlocking, isTerminal, parseVerdict, VerdictParseError, type Finding, 
 import { acceptanceCount, readAcceptanceRecord, type CriterionResult } from "../pipeline/acceptance.js";
 import { CLEANUP_MARKER } from "../pipeline/cleanup.js";
 import { refutedFindings, runDirOf } from "../pipeline/driver.js";
+import { section } from "../pipeline/shared.js";
 import type { Project, Run, Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
 import { findRun } from "./runs.js";
@@ -127,6 +128,37 @@ export interface RunOverview {
   issueClosed?: { pr: number };
   /** A finished run whose worktree and branch were not cleaned up yet (see leftoverOf). */
   leftover?: Leftover;
+  /** What a run waiting for its author (`needs_info`) asked them. Agent text derived from the issue: show it as text only. */
+  questions?: string[];
+}
+
+/**
+ * The items of a markdown list, bulleted or numbered. A line that starts no item continues the one
+ * before, as an agent wraps a long question.
+ */
+export function listItems(text: string): string[] {
+  const items: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const item = /^(?:[-*]|\d+[.)])\s+(.+)$/.exec(line)?.[1];
+    if (item !== undefined) items.push(item);
+    else if (items.length) items[items.length - 1] += ` ${line}`;
+  }
+  return items;
+}
+
+/**
+ * The questions of the stage that parked the run in `needs_info`: triage's, or the spec critic's
+ * latest round. Undefined while the run waits for anything else, or the file has none.
+ */
+function questionsOf(store: Store, run: Run, runDir: string, files: string[]): string[] | undefined {
+  if (run.state !== "needs_info") return undefined;
+  const asked = store.listEvents(run.id).findLast((e) => e.to_state === "needs_info");
+  const path = asked?.from_state === "critic" ? latestRoundFile(files, "spec", "critic.md") : "triage.md";
+  if (!path || !files.includes(path)) return undefined;
+  const items = listItems(section(readFileSync(join(runDir, path), "utf8"), "questions") ?? "");
+  return items.length ? items : undefined;
 }
 
 /** What a finished run still has, and, when cleanup kept it on purpose, why. */
@@ -226,6 +258,7 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
   const hasRunDir = existsSync(runDir);
   const { failure, issueClosed } = waitingOn(store, project, run);
   const leftover = leftoverOf(run, runDir);
+  const questions = questionsOf(store, run, runDir, files);
   return {
     run,
     issueTitle,
@@ -236,6 +269,7 @@ export function runOverview(store: Store, project: Project, ref: string): RunOve
     ...(failure?.kind === "feedback" ? { openFeedback: failure.items } : {}),
     ...(issueClosed ? { issueClosed } : {}),
     ...(leftover ? { leftover } : {}),
+    ...(questions ? { questions } : {}),
   };
 }
 
