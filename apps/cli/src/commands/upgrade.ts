@@ -92,10 +92,9 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
     print(available);
     print("Note: each project's database is migrated forward when this version first opens it, and an older factory can't read it afterwards.");
     print(`Installing ${PACKAGE}@${latest} with ${manager}...`);
-    const [cmd, args] = packageManagerCommand(manager, installArgs(manager, latest), platform);
     // Its output goes to the terminal, and it gets no timeout: killing cmd on Windows would leave
     // the package manager running, halfway through replacing the package.
-    const result = run(cmd, args, { cwd: homedir(), inherit: true });
+    const result = run(manager, installArgs(manager, latest), { cwd: homedir(), inherit: true, ...script(platform) });
     if (result.code !== 0) {
       throw new CliError(`${manager} could not install ${PACKAGE}@${latest} (exit code ${result.code}; its output is above).\nInstall it by hand: ${installHint(manager, latest)}`);
     }
@@ -134,8 +133,7 @@ export function runListLeases(): string {
 
 /** The newest published version, from the npm registry. */
 export function latestVersion(run: CommandRunner, platform: NodeJS.Platform = process.platform): string {
-  const [cmd, args] = packageManagerCommand("npm", ["view", PACKAGE, "version"], platform);
-  const result = run(cmd, args, { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS });
+  const result = run("npm", ["view", PACKAGE, "version"], { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS, ...script(platform) });
   const version = result.stdout.trim();
   if (result.code !== 0) {
     throw new CliError(`Could not look up the latest version of ${PACKAGE} (\`npm view\` failed): ${(result.stderr || result.stdout).trim() || `exit code ${result.code}`}`);
@@ -179,8 +177,7 @@ export function compareVersions(a: string, b: string): number {
  */
 export function detectPackageManager(run: CommandRunner, pkgDir: string, platform: NodeJS.Platform = process.platform): Installer | undefined {
   for (const manager of MANAGERS) {
-    const [cmd, args] = packageManagerCommand(manager, manager === "yarn" ? ["global", "dir"] : ["root", "-g"], platform);
-    const result = run(cmd, args, { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS });
+    const result = run(manager, manager === "yarn" ? ["global", "dir"] : ["root", "-g"], { cwd: homedir(), timeoutMs: LOOKUP_TIMEOUT_MS, ...script(platform) });
     const root = result.stdout.trim().split(/\r?\n/).pop()?.trim();
     // Not installed, or no global folder yet.
     if (result.code !== 0 || !root) continue;
@@ -195,8 +192,8 @@ export function detectPackageManager(run: CommandRunner, pkgDir: string, platfor
  * npm, pnpm and yarn are `.cmd` scripts on Windows, which Node only starts through a shell. The
  * arguments are fixed words and a checked version, so cmd has nothing to interpret.
  */
-export function packageManagerCommand(manager: PackageManager, args: string[], platform: NodeJS.Platform = process.platform): [string, string[]] {
-  return platform === "win32" ? ["cmd", ["/d", "/c", manager, ...args]] : [manager, args];
+function script(platform: NodeJS.Platform): { windowsScript?: true } {
+  return platform === "win32" ? { windowsScript: true } : {};
 }
 
 function installArgs(manager: PackageManager, version: string): string[] {
