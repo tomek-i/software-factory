@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../test/helpers.js";
-import { runCommand } from "./exec.js";
+import { runCommand, runPackageManager } from "./exec.js";
 
 describe("runCommand", () => {
   it("kills a tool that runs past its timeout and says so", () => {
@@ -21,10 +21,10 @@ describe("runCommand", () => {
   });
 
   // Windows runs .cmd scripts (npm, pnpm, yarn) only through cmd; Node refuses to start one directly.
-  it.runIf(process.platform === "win32")("with windowsScript, starts a .cmd script through cmd", () => {
+  it.runIf(process.platform === "win32")("starts a package manager's .cmd script through cmd, which runCommand never uses", () => {
     const dir = tempDir();
     writeFileSync(join(dir, "greet.cmd"), "@echo off\r\necho hello %1\r\n");
-    expect(runCommand(join(dir, "greet.cmd"), ["there"], { cwd: dir, windowsScript: true })).toEqual({ code: 0, stdout: "hello there", stderr: "" });
-    expect(runCommand(join(dir, "greet.cmd"), ["there"], { cwd: dir }).code).not.toBe(0);
+    expect(runPackageManager(join(dir, "greet.cmd"), ["there"], { cwd: dir, windowsScript: true })).toEqual({ code: 0, stdout: "hello there", stderr: "" });
+    expect(runCommand(join(dir, "greet.cmd"), ["there"], { cwd: dir, windowsScript: true }).code).not.toBe(0);
   });
 });

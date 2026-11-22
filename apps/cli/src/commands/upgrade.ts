@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { liveLeases, liveWorkers, runCommand, ServiceError, takeUpgradeLock, type CommandRunner, type LiveLease, type LiveWorker } from "@factory/core";
+import { liveLeases, liveWorkers, runCommand, runPackageManager, ServiceError, takeUpgradeLock, type CommandRunner, type LiveLease, type LiveWorker } from "@factory/core";
 import { CliError } from "../context.js";
 import { CLI_FILE } from "../self.js";
 import { plain, type Style } from "../style.js";
@@ -50,6 +50,7 @@ const FROM_CHECKOUT = "Update it in the checkout instead: `git pull`, then `pnpm
  */
 export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): string {
   const run = deps.run ?? runCommand;
+  const tools = deps.run ?? runPackageManager;
   const print = deps.print ?? console.log;
   const platform = deps.platform ?? process.platform;
   const cliFile = deps.cliFile ?? CLI_FILE;
@@ -62,7 +63,7 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
     throw new CliError(["This factory runs from a source checkout (or a global link to one), not the published npm package.", FROM_CHECKOUT].join("\n"));
   }
 
-  const latest = latestVersion(run, platform);
+  const latest = latestVersion(tools, platform);
   if (compareVersions(latest, deps.installed) <= 0) return style.success(`factory ${deps.installed} is up to date.`);
   const available = `${style.attention(`${latest} is available`)} (you have ${deps.installed}). Release notes: ${RELEASES_URL}`;
   if (options.check) {
@@ -71,7 +72,7 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
   }
 
   const pkgDir = packageDir(cliFile);
-  const installer = detectPackageManager(run, pkgDir, platform);
+  const installer = detectPackageManager(tools, pkgDir, platform);
   if (!installer) {
     // Installing with a guess would leave two copies, and the old one might stay first on PATH.
     throw new CliError(
@@ -94,7 +95,7 @@ export function runUpgrade(options: { check?: boolean }, deps: UpgradeDeps): str
     print(`Installing ${PACKAGE}@${latest} with ${manager}...`);
     // Its output goes to the terminal, and it gets no timeout: killing cmd on Windows would leave
     // the package manager running, halfway through replacing the package.
-    const result = run(manager, installArgs(manager, latest), { cwd: homedir(), inherit: true, ...script(platform) });
+    const result = tools(manager, installArgs(manager, latest), { cwd: homedir(), inherit: true, ...script(platform) });
     if (result.code !== 0) {
       throw new CliError(`${manager} could not install ${PACKAGE}@${latest} (exit code ${result.code}; its output is above).\nInstall it by hand: ${installHint(manager, latest)}`);
     }
