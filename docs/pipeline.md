@@ -107,6 +107,8 @@ The issue writer runs only for `factory new`, and refine only for an issue triag
 - A READY one skips refine and goes to the spec critic.
 - After the author answers, `factory run` triages the issue again.
 - Run `factory sync` first so it sees an edited issue.
+- Triage reads the issue's description, not its comments: answers belong in the description.
+- `factory show <run>` lists the questions; in [web mode](web-mode.md#run-details) you can answer them on the run's page, which adds the answers to the description and triages again.
 
 ### Triage again after a restart
 
