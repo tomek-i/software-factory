@@ -141,7 +141,8 @@ export function listItems(text: string): string[] {
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    const item = /^(?:[-*]|\d+[.)])\s+(.+)$/.exec(line)?.[1];
+    // \S after \s+: the two can't share characters, so a run of spaces never backtracks.
+    const item = /^(?:[-*]|\d+[.)])\s+(\S.*)$/.exec(line)?.[1];
     if (item !== undefined) items.push(item);
     else if (items.length) items[items.length - 1] += ` ${line}`;
   }
