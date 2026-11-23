@@ -23,10 +23,18 @@ export interface BacklogIssue {
   run: { id: string; state: RunState; waitingGate: Gate | null } | null;
 }
 
+/** The project's `github.max_starts_per_day` holding its queued issues back; `nextStartAt` is unset when it is 0. */
+export interface StartLimit {
+  started: number;
+  max: number;
+  nextStartAt?: string;
+}
+
 export interface Backlog {
   github: string | null;
   syncedAt: string | null;
   issues: BacklogIssue[];
+  startLimit?: StartLimit;
 }
 
 export interface SyncResult {
@@ -144,7 +152,15 @@ export interface RunDetail {
   sections: OverviewSection[];
   /** A finished run's worktree (relative to the repo) and branch cleanup has not removed, and why it kept them. */
   leftover?: { worktree: string; branch: string; kept?: string };
+  /** What a run waiting for its author asked them. */
+  questions?: string[];
 }
+
+/**
+ * What becomes of a run once it can go on: the worker continues it, or would once its issue is
+ * queued; one started with --unsafe only `factory run` continues.
+ */
+export type Continuation = "ready" | "not_queued" | "unsafe" | "ended";
 
 /** What a cleanup removed and kept (`lines`), and the runs it left alone with why. */
 export interface CleanupResult {
@@ -174,6 +190,7 @@ export interface RunFile {
 export interface SchedulerStatus {
   running: { project: string; issue: number; runId?: string }[];
   pausedUntil?: string;
+  limited?: { project: string; started: number; max: number; until?: string }[];
   stopping?: "drain" | "now";
 }
 
@@ -264,6 +281,8 @@ export type ServerEvent =
   | { type: "error"; message: string }
   | { type: "paused"; until: string }
   | { type: "resumed" }
+  | { type: "limited"; project: string; started: number; max: number; until?: string }
+  | { type: "unlimited"; project: string }
   | { type: "stopping"; now: boolean; interrupted: number };
 
 /** An error the server explained, or no session. */
@@ -363,6 +382,7 @@ export const api = {
   dismiss: (run: RunRow, alert: number, reason: DismissReason, comment: string) =>
     request<Dismissed>("POST", runPath(run, "dismiss"), { ...shown(run), alert, reason, comment }),
   cancel: (run: RunRow, message?: string) => request<object>("POST", runPath(run, "cancel"), { ...shown(run), message }),
+  answer: (run: RunRow, answer?: string) => request<{ continuation: Continuation }>("POST", runPath(run, "answer"), { ...shown(run), answer }),
   cleanupRun: (run: RunRow) => request<{ lines: string[] }>("POST", runPath(run, "cleanup"), shown(run)),
   cleanup: (project: string, now: boolean) => request<CleanupResult>("POST", `/api/projects/${project}/cleanup`, { now }),
   drafts: (project?: string) => request<DraftView[]>("GET", `/api/drafts${project ? `?project=${encodeURIComponent(project)}` : ""}`),

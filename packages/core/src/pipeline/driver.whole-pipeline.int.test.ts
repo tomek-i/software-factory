@@ -101,7 +101,10 @@ describe("PipelineDriver: the whole pipeline", () => {
       "merge>learn",
       "learn>done",
     ]);
-    expect(fake.calls().map((c) => c.role)).toEqual(["triage", "refine", "critic", "builder", "builder", "reviewer-code", "reviewer-acceptance", "capture", "learner"]);
+    const roles = fake.calls().map((c) => c.role);
+    // The review lenses run in parallel, so either may start first.
+    const lenses = roles.slice(5, 7).sort();
+    expect([...roles.slice(0, 5), ...lenses, ...roles.slice(7)]).toEqual(["triage", "refine", "critic", "builder", "builder", "reviewer-acceptance", "reviewer-code", "capture", "learner"]);
 
     // Refine posted the spec on the issue; the PR shows the screenshots; exactly the approved commit merged.
     expect(comments.filter((c) => c.body.startsWith(REFINE_MARKER))).toHaveLength(1);

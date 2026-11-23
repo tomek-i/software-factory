@@ -1,9 +1,10 @@
-import { readdirSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
-import { Store, workersDir, type DriveFn, type ProjectContext, type StopRequest } from "@factory/core";
-import { tempDir } from "../../../../packages/core/test/helpers.js";
+import { findRepoRoot, Store, workersDir, type DriveFn, type ProjectContext, type StopRequest } from "@factory/core";
+import { git, tempDir } from "../../../../packages/core/test/helpers.js";
 import { CliError } from "../context.js";
 import { parsePort, runServe } from "./serve.js";
 
@@ -29,6 +30,8 @@ function setup() {
   };
   const deps = {
     print: (line: string) => lines.push(line),
+    // Not a repo, so no hint about an unlisted one, wherever the tests run.
+    cwd: tempDir(),
     projects: () => [{ path: row.repo_path, name: "shop", added_at: "t" }],
     openProject: () => {
       opened.push(row.repo_path);
@@ -50,6 +53,15 @@ function setup() {
   return { deps, lines, opened, browser, store, url, requestStop: (now = false) => (stop = { at: Date.now() + 1, now }) };
 }
 
+/** A git repo with a factory database, as one set up before the project list existed. */
+function unlistedRepo(): string {
+  const dir = tempDir("factory-unlisted-");
+  git(dir, "init", "-q");
+  mkdirSync(join(dir, ".factory"));
+  writeFileSync(join(dir, ".factory", "factory.db"), "");
+  return resolve(findRepoRoot(dir)!);
+}
+
 const api = (base: string, path: string) => fetch(new URL(path, base), { headers: { "x-factory-token": TOKEN } });
 
 describe("parsePort", () => {
@@ -61,7 +73,22 @@ describe("parsePort", () => {
 
 describe("runServe", () => {
   it("says to register a project when there is none", async () => {
-    await expect(runServe({ port: 0 }, { projects: () => [] })).rejects.toThrow(new CliError("No projects registered. Run `factory init` in a repository first."));
+    await expect(runServe({ port: 0 }, { cwd: tempDir(), projects: () => [] })).rejects.toThrow(new CliError("No projects registered. Run `factory init` in a repository first."));
+  });
+
+  it("names the repo it is started in when that has a database but is not in the list", async () => {
+    const repo = unlistedRepo();
+    const hint = `This repository (${repo}) has a factory database but is not in your project list. Run \`factory init\` here to add it (your config is kept).`;
+
+    await expect(runServe({ port: 0 }, { cwd: repo, projects: () => [] })).rejects.toThrow(new CliError(hint));
+
+    const s = setup();
+    const served = runServe({ port: 0, open: false }, { ...s.deps, cwd: repo });
+    await s.url;
+    s.requestStop();
+    await served;
+    expect(s.lines).toContain(`Warning: ${hint}`);
+    expect(s.opened).toEqual(["/repos/shop"]);
   });
 
   it("serves the API on the printed link, shares one context with the scheduler, and drains on `factory stop`", async () => {

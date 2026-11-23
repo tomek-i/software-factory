@@ -121,6 +121,21 @@ export const SETTINGS: readonly Setting[] = [
     kind: { type: "list" },
     sensitive: "Threads from these apps go to the builder without you.",
   },
+  {
+    path: "merge.followup_issues",
+    section: "merge",
+    label: "Follow-up issues",
+    help: "Open an issue for each review note the builder defers before the merge. Off, its thread only says it was deferred.",
+    kind: { type: "boolean" },
+  },
+  {
+    path: "merge.queue_followups",
+    section: "merge",
+    label: "Queue follow-ups",
+    help: "Queue those follow-up issues for the factory to work on, rather than leave them for you to pick.",
+    kind: { type: "boolean" },
+    sensitive: "Each deferred note starts a run of its own without you choosing it, trusted if your account is in the trusted authors.",
+  },
 
   { path: "loops.max_critic_rounds", section: "loops", label: "Critic rounds", help: "The spec critic sending the spec back to refine.", kind: { type: "integer", min: 1 } },
   { path: "loops.max_build_iterations", section: "loops", label: "Build iterations", help: "Failed checks sending the build back.", kind: { type: "integer", min: 1 } },
@@ -157,7 +172,7 @@ export const SETTINGS: readonly Setting[] = [
 
   { path: "github.status_labels", section: "github", label: "Status labels", help: "Mirror a run's status onto its issue as labels. Run factory init again to create them.", kind: { type: "boolean" } },
   { path: "github.label_prefix", section: "github", label: "Label prefix", help: "The prefix of the status labels.", kind: { type: "string" } },
-  { path: "github.max_starts_per_day", section: "github", label: "Starts per day", help: "How many new runs the worker starts per project in 24 hours.", kind: { type: "integer", min: 0 } },
+  { path: "github.max_starts_per_day", section: "github", label: "Starts per day", help: "How many new runs the worker starts per project in a rolling 24 hours. Every started run counts, cancelled and rejected ones included.", kind: { type: "integer", min: 0 } },
   { path: "github.poll_interval_sec", section: "github", label: "Poll interval (seconds)", help: "Accepted, but not used yet.", kind: { type: "integer", min: 30 } },
 ];
 

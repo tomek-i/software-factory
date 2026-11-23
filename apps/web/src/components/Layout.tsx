@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Inbox, ListTodo, Settings, SquarePen } from "lucide-react";
+import { Activity, Clock, Inbox, ListTodo, Settings, SquarePen } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router";
 import { api, ApiError } from "../lib/api";
 import { useLive } from "../lib/events";
 import { useProject } from "../lib/project";
+import { startLimitNote } from "../lib/start-limit";
 import { cn } from "../lib/utils";
 import { Select } from "./ui/input";
 
@@ -15,10 +16,20 @@ function SchedulerState() {
   if (data?.stopping) text = data.stopping === "now" ? "stopping now" : "stopping after these runs";
   else if (data?.pausedUntil) text = `usage limit: paused until ${new Date(data.pausedUntil).toLocaleTimeString()}`;
   else if (data) text = `${data.running.length} running`;
+  // Beside the running count: the queue is held back even though the scheduler is working.
+  const limit = startLimitNote(data?.limited ?? []);
   return (
-    <span className="flex items-center gap-2 text-xs text-muted-foreground" title={connected ? "Live" : "Reconnecting to the event stream"}>
-      <span className={cn("size-2 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden />
-      {text}
+    <span className="flex items-center gap-3 text-xs text-muted-foreground">
+      <span className="flex items-center gap-2" title={connected ? "Live" : "Reconnecting to the event stream"}>
+        <span className={cn("size-2 rounded-full", connected ? "bg-emerald-500" : "bg-amber-500")} aria-hidden />
+        {text}
+      </span>
+      {limit && (
+        <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400" title={limit.label} aria-label={limit.label}>
+          <Clock aria-hidden className="size-3.5" />
+          {limit.text}
+        </span>
+      )}
     </span>
   );
 }

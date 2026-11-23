@@ -168,7 +168,7 @@ function builderFollowUp(ctx: StageContext, run: Run, outputFile: string): strin
 }
 
 /** The hand-over must be the checked-out commit, fully committed, with no secrets in any new commit. */
-function handOverProblems(ctx: StageContext, worktree: Worktree, git: GitEvidence, commit: string, reportDir: string): string[] {
+export function handOverProblems(ctx: StageContext, worktree: Worktree, git: GitEvidence, commit: string, reportDir: string): string[] {
   const problems: string[] = [];
   const head = git.head();
   if (commit !== head) problems.push(`COMMIT ${commit.slice(0, 7)} is not HEAD (${head.slice(0, 7)})`);

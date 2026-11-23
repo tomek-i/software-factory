@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Clock } from "lucide-react";
 import { Link } from "react-router";
 import { OpenFeedback } from "../components/OpenFeedback";
 import { RunActions } from "../components/RunActions";
@@ -6,6 +7,7 @@ import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { api, type DraftView, type MergeGateDetails, type RunRow } from "../lib/api";
 import { useProject } from "../lib/project";
+import { limitOf, startLimitText } from "../lib/start-limit";
 import { ago, cn, money } from "../lib/utils";
 import { draftPath } from "./Draft";
 import { runPath } from "./RunDetail";
@@ -225,10 +227,27 @@ export function Inbox() {
   const drafts = useQuery({ queryKey: ["drafts", project], queryFn: () => api.drafts(project) });
   const human = runs.data?.filter((r) => r.state === "needs_human") ?? [];
   const author = runs.data?.filter((r) => r.state === "needs_info") ?? [];
+  // Shared with the header's note; the scheduler names projects, the project picker keys them.
+  const scheduler = useQuery({ queryKey: ["scheduler"], queryFn: api.scheduler, refetchInterval: 15_000 });
+  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const picked = project ? projects.data?.find((p) => p.key === project)?.name : undefined;
+  const limited = (scheduler.data?.limited ?? []).filter((l) => !project || l.project === picked);
 
   return (
     <section className="space-y-4">
       <h1 className="text-xl font-semibold">Inbox</h1>
+      {limited.length > 0 && (
+        <ul className="space-y-1" aria-label="Start limits">
+          {limited.map((l) => (
+            <li key={l.project} className="flex items-start gap-1.5 text-sm text-amber-700 dark:text-amber-400">
+              <Clock aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <span>
+                {l.project}: {startLimitText(limitOf(l))}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {runs.error && <p className="text-sm text-destructive">{runs.error.message}</p>}
       {runs.data && human.length === 0 && <p className="text-sm text-muted-foreground">Nothing waits for you.</p>}
       <div className="space-y-3">

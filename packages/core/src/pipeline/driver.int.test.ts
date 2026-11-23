@@ -321,7 +321,7 @@ describe("verifier helpers", () => {
       { lens: "security", verdict: review([f("security-1", "critical", { file: "./src/c.ts", line: 10 }), f("security-2", "major", { file: "a.ts", line: 99 })]) },
     ];
     const verified = verify("CONFIRMED", [f("security-1", "critical", { file: "src/c.ts", line: 10 }), f("verifier-1", "critical")], ["code-1: a.ts:2 guards it", "security-2: unreachable"]);
-    expect(reviewNotes(reviews, verified, inDiff)).toEqual({
+    expect(reviewNotes(reviews, verified, inDiff, 2)).toEqual({
       body: [
         "Review notes, left for you to judge. A note about a line of the change is on that line.",
         "",
@@ -339,9 +339,17 @@ describe("verifier helpers", () => {
         "  Refuted: unreachable",
       ].join("\n"),
       comments: [
-        { path: "src/c.ts", line: 10, body: "**security** · critical (confirmed by the verifier, not fixed): claim security-1" },
-        { path: "a.ts", line: 4, body: "**code** · minor: claim code-2" },
-        { path: "a.ts", line: 3, body: "**code** · major (refuted by the verifier): claim code-1\n\nRefuted: a.ts:2 guards it" },
+        {
+          path: "src/c.ts",
+          line: 10,
+          body: "**security** · critical (confirmed by the verifier, not fixed): claim security-1\n\n<!-- factory:note kind=confirmed round=2 finding=security-1 -->",
+        },
+        { path: "a.ts", line: 4, body: "**code** · minor: claim code-2\n\n<!-- factory:note kind=note round=2 finding=code-2 -->" },
+        {
+          path: "a.ts",
+          line: 3,
+          body: "**code** · major (refuted by the verifier): claim code-1\n\nRefuted: a.ts:2 guards it\n\n<!-- factory:note kind=refuted round=2 finding=code-1 -->",
+        },
       ],
     });
   });

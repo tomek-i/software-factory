@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { findRepoRoot, listRegistered, ServiceError, unregisterProject, type CommandRunner, type ProjectStatus, type RegistryOptions } from "@factory/core";
+import { findRepoRoot, listRegistered, ServiceError, unregisteredHint, unregisteredRepo, unregisterProject, type CommandRunner, type ProjectStatus, type RegistryOptions } from "@factory/core";
 import { CliError } from "../context.js";
 import { plain, type Style } from "../style.js";
 
@@ -10,15 +10,18 @@ const PROBLEM: Record<Exclude<ProjectStatus, "ok">, string> = {
 };
 
 /** Returns the text to print, so the command can be tested without capturing stdout. */
-export function runProjects(options: RegistryOptions = {}, style: Style = plain): string {
+export function runProjects(cwd: string, options: RegistryOptions = {}, style: Style = plain, run?: CommandRunner): string {
   const projects = cli(() => listRegistered(options));
-  if (projects.length === 0) return `No projects registered. Run ${style.hint("`factory init`")} in a repository.`;
-  return projects
+  const missing = unregisteredRepo(cwd, projects, run);
+  const hint = missing ? style.attention(unregisteredHint(missing)) : undefined;
+  if (projects.length === 0) return hint ?? `No projects registered. Run ${style.hint("`factory init`")} in a repository.`;
+  const list = projects
     .map((p) => {
       const line = `${p.name}  ${style.detail(p.path)}`;
       return p.status === "ok" ? line : `${line}  ${style.attention(PROBLEM[p.status])}`;
     })
     .join("\n");
+  return hint ? `${list}\n\n${hint}` : list;
 }
 
 export function runProjectsRemove(cwd: string, path: string, options: RegistryOptions = {}, run?: CommandRunner): string {
