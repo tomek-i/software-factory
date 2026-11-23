@@ -13,7 +13,7 @@ export function parsePort(value: string): number {
 
 /**
  * `factory serve`: the web app, with the scheduler working through every project's queue as
- * `factory work` does. Resolves with the last line to print once stopped.
+ * `factory work --all` does. Resolves with the last line to print once stopped.
  */
 export async function runServe(options: ServeOptions, deps: ServeDeps & { style?: Style } = {}): Promise<{ message: string; interrupted: boolean }> {
   const style = deps.style ?? plain;

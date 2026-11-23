@@ -8,6 +8,7 @@ import { fetchIssue } from "../github/issues.js";
 import { deleteMedia, MEDIA_MARKER, mediaTag } from "../github/media.js";
 import { ghPort, type GithubPort } from "../github/port.js";
 import { approveTarget, nextAfterTriage, PipelineDriver, runDirOf, waitingCommit, type DriveOutcome } from "../pipeline/driver.js";
+import { quietMentions, withoutMarkers } from "../pipeline/shared.js";
 import { resumeTargets, RunMachine } from "../pipeline/transitions.js";
 import { fetchedFromGithub, type Issue, type Project, type Run, type Store } from "../store/store.js";
 import type { CommandRunner } from "../util/exec.js";
@@ -190,12 +191,13 @@ export async function driveIssue(ctx: ServiceContext, number: number, options: D
 /**
  * Whether a run a human just sent on to `to` can be driven further now: not when it ended or has
  * no issue, and not when its issue is no longer queued. Not re-queued here: the issue may have
- * been unqueued on purpose, or closed on GitHub since.
+ * been unqueued on purpose, or closed on GitHub since. A run started with --unsafe is never carried
+ * on by the worker (`unsafe`): someone watching drives it with `factory run`.
  */
-export function continuation(store: Store, project: Project, run: Run, to: RunState): "ended" | "not_queued" | "ready" {
+export function continuation(store: Store, project: Project, run: Run, to: RunState): "ended" | "not_queued" | "unsafe" | "ready" {
   if (isTerminal(to) || run.issue_number === null) return "ended";
   if (!store.getIssue(project.id, run.issue_number)?.queued_at) return "not_queued";
-  return "ready";
+  return run.unsafe ? "unsafe" : "ready";
 }
 
 export interface Approved {
@@ -245,6 +247,38 @@ export function resumeRun(
   const to = options.to as RunState;
   new RunMachine(store, trustedConfig(project, ctx.config, run)).resume(target.id, to, { comment: options.message, resetLoops: options.resetLoops });
   return { run: store.getRun(target.id)!, to };
+}
+
+/**
+ * Send a run waiting for its author's answers back to triage. Triage reads the issue's body, not its
+ * comments, so an answer given here is added to the body under `## Answers` first. The body is
+ * fetched from GitHub just before, so an edit the author made since the last sync is kept; one saved
+ * in the seconds between that fetch and the edit is lost, as GitHub has no conditional edit. If
+ * GitHub refuses the edit this throws, and the run keeps waiting. Nothing after the edit asks
+ * GitHub, so a failure can't leave the answer added while the run still waits for it.
+ */
+export function answerRun(ctx: ServiceContext, ref: string, options: { answer?: string }, deps: ServiceDeps = {}): { run: Run } {
+  const { store, project } = ctx;
+  const target = findRun(store, project, ref);
+  const waiting = (run: Run) => {
+    if (run.state !== "needs_info") throw new ServiceError(`Run ${run.id} is not waiting for its author's answers (it is ${run.state}).`);
+  };
+  waiting(target);
+  // The operator's text, but posted on GitHub all the same: no pings, and no spec section of its own.
+  const answer = options.answer && quietMentions(withoutMarkers(options.answer)).trim();
+  if (answer && target.issue_number !== null) {
+    fetchIssue(store, project, target.issue_number, deps.run);
+    // Asking GitHub takes seconds: a `factory run` elsewhere may have moved the run on meanwhile.
+    waiting(store.getRun(target.id)!);
+    const issue = store.getIssue(project.id, target.issue_number)!;
+    const body = `${issue.body.trimEnd()}\n\n## Answers\n\n${answer}\n`;
+    (deps.github ?? ghPort(project, deps.run)).editIssueBody(target.issue_number, body);
+    const { number, title, state, author, labels, url, gh_updated_at } = issue;
+    store.upsertIssue(project.id, { number, title, body, state, author, labels, url, gh_updated_at });
+  }
+  const reason = answer ? "triage again: answered from the web" : "triage again from the web";
+  new RunMachine(store, trustedConfig(project, ctx.config, deps.run)).transition(target.id, "triage", { reason });
+  return { run: store.getRun(target.id)! };
 }
 
 /** What happened to the screenshots release of a run that ended. */

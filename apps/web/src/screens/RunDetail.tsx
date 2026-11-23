@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
+import { AuthorActions } from "../components/AuthorActions";
 import { Leftover } from "../components/Cleanup";
 import { OpenFeedback } from "../components/OpenFeedback";
 import { RunActions } from "../components/RunActions";
@@ -191,8 +192,30 @@ function RunPage({ project, id }: { project: string; id: string }) {
             </CardHeader>
             <CardContent className="space-y-3">
               {run.reason ? <p className="whitespace-pre-wrap break-words text-sm">{run.reason}</p> : <p className="text-sm text-muted-foreground">No reason recorded.</p>}
+              {data.questions && data.questions.length > 0 && (
+                <div className="space-y-1">
+                  <h3 className="text-sm font-medium">Questions for the issue's author</h3>
+                  <ol className="list-decimal space-y-1 pl-5 text-sm" aria-label="Questions for the issue's author">
+                    {data.questions.map((q, i) => (
+                      <li key={i} className="whitespace-pre-wrap break-words">
+                        {q}
+                      </li>
+                    ))}
+                  </ol>
+                  {url && (
+                    <p className="text-xs text-muted-foreground">
+                      Also asked{" "}
+                      <a href={url} target="_blank" rel="noreferrer noopener" className="underline">
+                        on the issue
+                      </a>
+                      .
+                    </p>
+                  )}
+                </div>
+              )}
               <OpenFeedback run={run} />
               <RunActions key={`${run.state}/${run.waitingGate ?? ""}`} run={run} onDone={(text) => setDone({ text, at: `${run.state}/${run.waitingGate ?? ""}` })} />
+              <AuthorActions key={`author/${run.state}`} run={run} onDone={(text) => setDone({ text, at: `${run.state}/${run.waitingGate ?? ""}` })} />
               {/* Outside RunActions, which goes away once the run is no longer waiting for you. */}
               {/* Shown until the run waits for you again somewhere else, where it would describe an old decision. */}
               <p role="status" aria-label="Decision result" className="text-sm">

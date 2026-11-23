@@ -1,9 +1,19 @@
+import { dirname } from "node:path";
 import { runCommand, type CommandRunner } from "./exec.js";
 
 /** Absolute path of the repository containing cwd, or undefined when cwd is not in a git repo. */
 export function findRepoRoot(cwd: string, run: CommandRunner = runCommand): string | undefined {
   const result = run("git", ["rev-parse", "--show-toplevel"], { cwd });
   return result.code === 0 ? result.stdout : undefined;
+}
+
+/**
+ * The main checkout of the repository containing cwd, so a folder inside one of its worktrees (a
+ * run's, under `.worktrees`) counts as that project rather than as a repo of its own.
+ */
+export function mainCheckout(cwd: string, run: CommandRunner = runCommand): string | undefined {
+  const result = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd });
+  return result.code === 0 ? dirname(result.stdout) : undefined;
 }
 
 /** Turn a GitHub remote URL (https or ssh) into "owner/repo". */

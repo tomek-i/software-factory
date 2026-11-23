@@ -166,6 +166,24 @@ describe("factory show <run>", () => {
     );
   });
 
+  it("lists the questions a run waiting for its author asked, and how to go on", () => {
+    const triage = TRIAGE.replace("APPROVE", "NEEDS_INFO").replace("READY", "INCOMPLETE");
+    const { dir, root, runId } = setup({ "triage.md": `${triage}\n## Questions\n1. Which format?\n2. Keep the ids?\n` });
+    const store = new Store(join(root, ".factory", "factory.db"));
+    store.writeState(runId, "needs_info");
+    store.appendEvent(runId, "triage", "needs_info", "triage needs more information");
+    store.close();
+
+    expect(runShow(dir, "16")).toContain(
+      [
+        "Questions for the author of #16",
+        "  1. Which format?",
+        "  2. Keep the ids?",
+        "Triage reads the issue's description, not its comments. Once the answers are there, `factory run 16` triages it again.",
+      ].join("\n"),
+    );
+  });
+
   it("says when the run's issue was closed on GitHub while its PR is open, and what cancelling does", () => {
     const { dir, root, runId } = setup({ "triage.md": TRIAGE }, { pr_number: 7 });
     const store = new Store(join(root, ".factory", "factory.db"));

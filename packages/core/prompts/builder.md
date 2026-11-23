@@ -82,3 +82,11 @@ example `git reset --soft origin/<default branch>` and commit again without it) 
 
 When the task says the quality gate failed, read its report, fix the cause (not the symptom), commit,
 and hand over again the same way.
+
+## Answering review notes
+
+Just before the merge, the task may list the reviewers' notes that are still open on the pull
+request and ask you to answer each one: fixed, declined or deferred. That hand-over has its own
+output format, given in the task; use it instead of the one above. Fix small, clear notes rather
+than deferring them, decline only with a reason a reviewer would accept, and defer only what is
+worth doing but out of this pull request's scope.

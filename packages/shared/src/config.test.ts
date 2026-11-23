@@ -152,12 +152,14 @@ describe("resolveModel", () => {
 });
 
 describe("merge config", () => {
-  it("merges with a merge commit, waits 30 minutes for required checks and asks about open feedback by default", () => {
+  it("merges with a merge commit, waits 30 minutes for required checks, asks about open feedback and opens unqueued follow-ups by default", () => {
     expect(factoryConfigSchema.parse({ version: 1 }).merge).toEqual({
       method: "merge",
       checks_timeout_min: 30,
       open_feedback: "ask",
       comment_bots: ["github-advanced-security[bot]"],
+      followup_issues: true,
+      queue_followups: false,
     });
     expect(factoryConfigSchema.parse({ version: 1, merge: { method: "squash" } }).merge.method).toBe("squash");
   });

@@ -2,12 +2,16 @@ import {
   asWorker,
   DEFAULT_MAX_RUNS,
   listRegistered,
+  mainCheckout,
   openRegisteredProject,
   reconcileAndSweep,
   reportLines,
   requestStop,
+  sameProjectPath,
   Scheduler,
   ServiceError,
+  unregisteredHint,
+  unregisteredRepo,
   type CommandRunner,
   type GithubPort,
   type Project,
@@ -20,6 +24,7 @@ import { CliError } from "../context.js";
 import { refuseRunningOnItself } from "../self.js";
 import { plain, type Style } from "../style.js";
 import { describeOutcome, formatEvent } from "./runs.js";
+import { startLimitLine } from "./start-limit.js";
 
 export interface WorkDeps {
   run?: CommandRunner;
@@ -30,6 +35,8 @@ export interface WorkDeps {
   /** Aborted on Ctrl+C: interrupts the runs, like `factory stop --now`. */
   signal?: AbortSignal;
   projects?: () => RegistryEntry[];
+  /** The folder it was started in: without `all`, only the registered project containing it is worked on. */
+  cwd?: string;
   /** What finishing runs whose PR was merged or closed reports, per project, before work starts. */
   reconcile?: (ctx: ProjectContext) => string[];
   /** For tests: the scheduler's other dependencies. */
@@ -50,11 +57,18 @@ export function refuseRunningOnAnyProject(projects: () => RegistryEntry[] = list
   for (const project of projects()) refuseRunningOnItself(project.path);
 }
 
+export interface WorkOptions {
+  maxRuns?: number;
+  /** Work on every project in the project list, not only the one it was started in. */
+  all?: boolean;
+}
+
 /**
- * `factory work`: work through the queues of every project in the project list until stopped.
+ * `factory work`: work through the queue of the project it was started in (of every project in the
+ * project list with `all`) until stopped.
  * Resolves with the last line to print; `interrupted` says the runs were stopped mid-way.
  */
-export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
+export async function runWork(options: WorkOptions, deps: WorkDeps = {}): Promise<{ message: string; interrupted: boolean }> {
   try {
     return await asWorker(() => work(options, deps));
   } catch (err) {
@@ -63,20 +77,44 @@ export async function runWork(options: { maxRuns?: number }, deps: WorkDeps = {}
   }
 }
 
-async function work(options: { maxRuns?: number }, deps: WorkDeps): Promise<{ message: string; interrupted: boolean }> {
+/**
+ * The projects to work on, read again on every tick, and the ones they are at the start: the whole
+ * list with `all`, otherwise the registered project containing cwd, so a worker started in one repo
+ * leaves the other queues alone. `warning` is for a repo here that the list misses.
+ */
+function chosenProjects(options: WorkOptions, deps: WorkDeps): { projects: () => RegistryEntry[]; entries: RegistryEntry[]; warning?: string } {
+  const registered = deps.projects ?? listRegistered;
+  const cwd = deps.cwd ?? process.cwd();
+  if (options.all) {
+    const entries = registered();
+    const missing = unregisteredRepo(cwd, entries, deps.run);
+    if (entries.length === 0) throw new CliError(missing ? unregisteredHint(missing) : "No projects registered. Run `factory init` in a repository first.");
+    return { projects: registered, entries, warning: missing && unregisteredHint(missing) };
+  }
+  const root = mainCheckout(cwd, deps.run);
+  const projects = () => (root === undefined ? [] : registered().filter((entry) => sameProjectPath(entry.path, root)));
+  const entries = projects();
+  if (entries.length === 0) {
+    const missing = unregisteredRepo(cwd, registered(), deps.run);
+    throw new CliError(missing ? unregisteredHint(missing) : "This folder is not in a registered project. Run `factory init` here, or `factory work --all` to work on every registered project.");
+  }
+  return { projects, entries };
+}
+
+async function work(options: WorkOptions, deps: WorkDeps): Promise<{ message: string; interrupted: boolean }> {
   // A `factory stop` sent while it is still starting up (reconciling below) counts.
   const startedAt = Date.now();
   const print = deps.print ?? console.log;
   const style = deps.style ?? plain;
-  const projects = deps.projects ?? listRegistered;
+  const { projects, entries, warning } = chosenProjects(options, deps);
+  refuseRunningOnAnyProject(() => entries);
+  if (warning) print(style.attention(`Warning: ${warning}`));
   const openProject = deps.scheduler?.open ?? openRegisteredProject;
   // Checked on every open, not only at start: a project can be registered while the worker runs.
   const open = (entry: RegistryEntry): ProjectContext => {
     refuseRunningOnItself(entry.path);
     return openProject(entry);
   };
-  const entries = projects();
-  if (entries.length === 0) throw new CliError("No projects registered. Run `factory init` in a repository first.");
 
   const reconcile = deps.reconcile ?? ((ctx) => reportLines(reconcileAndSweep(ctx.store, ctx.project, ctx.config, { run: deps.run, github: deps.github?.(ctx.project) })));
   for (const entry of entries) {
@@ -95,7 +133,8 @@ async function work(options: { maxRuns?: number }, deps: WorkDeps): Promise<{ me
   }
 
   const maxRuns = options.maxRuns ?? DEFAULT_MAX_RUNS;
-  print(`Working through the queues of ${entries.length} project${entries.length === 1 ? "" : "s"}, up to ${maxRuns} run${maxRuns === 1 ? "" : "s"} at once.`);
+  const which = options.all ? `the queues of ${entries.length} project${entries.length === 1 ? "" : "s"}` : `the queue of ${entries[0]!.name}`;
+  print(`Working through ${which}, up to ${maxRuns} run${maxRuns === 1 ? "" : "s"} at once.`);
   print(style.hint("Stop with `factory stop` (finishes the runs going on) or `factory stop --now`; Ctrl+C interrupts."));
   const scheduler = new Scheduler({
     maxRuns,
@@ -150,6 +189,10 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
       return style.attention(`Usage limit reached: starting and continuing nothing until ${event.until}.`);
     case "resumed":
       return "Usage limit reset: carrying on.";
+    case "limited":
+      return prefix(event.project)(style.attention(startLimitLine({ started: event.started, max: event.max, nextStartAt: event.until })));
+    case "unlimited":
+      return prefix(event.project)("Start limit lifted: queued issues can start again.");
     case "stopping":
       return event.now
         ? style.attention(`Stopping now: interrupted ${event.interrupted} run${event.interrupted === 1 ? "" : "s"}.`)

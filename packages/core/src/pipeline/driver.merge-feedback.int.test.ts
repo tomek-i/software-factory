@@ -18,6 +18,8 @@ const thread = (id: string, author: string, body: string, extra: Partial<ReviewT
   line: 1,
   body,
   url: `https://github.com/o/r/pull/7#discussion_${id}`,
+  outdated: false,
+  replies: [],
   ...extra,
 });
 const BOT = thread("T1", "github-advanced-security[bot]", "Polynomial regular expression used on uncontrolled data");
@@ -71,8 +73,9 @@ describe("PipelineDriver merge stage: open review threads and failed optional ch
   it("reads the open feedback again right before merging, so a thread posted after the approval is caught", async () => {
     const { driver, store, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS], { config: mergeConfig("merge: human") });
     const carol = thread("T3", "carol", "One more thing.", { path: "README.md", line: 2 });
-    // The gate's look, then after the approval: the stage's look, and its last look right before the merge.
-    pr.threads = [[BOB], [BOB], [BOB, carol]];
+    // The thread pass's look and the gate's, then after the approval: the thread pass's, the stage's, and
+    // its last look right before the merge.
+    pr.threads = [[BOB], [BOB], [BOB], [BOB, carol]];
     const run = driver.startRun(12);
     expect(await driver.drive(run.id)).toMatchObject({ reason: expect.stringContaining("waiting at merge gate: unresolved review thread by bob") });
 
@@ -121,8 +124,8 @@ describe("PipelineDriver merge stage: open review threads and failed optional ch
     const { driver, store, pr, merges, fake, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, fixStep(1), CODE_PASS], {
       config: feedbackConfig("fix"),
     });
-    // The merge after the fix: the stage's look and the last look find nothing open.
-    pr.threads = [[BOT], []];
+    // The first merge: the thread pass's look and the stage's. After the fix, every look finds nothing open.
+    pr.threads = [[BOT], [BOT], []];
     const run = driver.startRun(12);
 
     expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
@@ -138,6 +141,20 @@ describe("PipelineDriver merge stage: open review threads and failed optional ch
     expect(rebuilt.stdin).toMatch(/<<<FEEDBACK [0-9a-f]{12}>>>\n### Review thread by github-advanced-security\[bot\] at feature.txt:1\n/);
     expect(rebuilt.stdin).toContain("Polynomial regular expression used on uncontrolled data");
     expect(existsSync(join(runDirOf(root, run.id), "round-1", "resync", "feedback.md"))).toBe(true);
+  });
+
+  it("with fix, merges once a trusted author's thread is outdated by the builder's change, as nobody resolved it", async () => {
+    const { driver, store, pr, merges } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, fixStep(1), CODE_PASS], {
+      config: feedbackConfig("fix"),
+    });
+    const alice = thread("T4", "alice", "Rename this to total.");
+    // The first merge: the thread pass's look and the stage's. After the fix, the thread is outdated.
+    pr.threads = [[alice], [alice], [{ ...alice, outdated: true }]];
+    const run = driver.startRun(12);
+
+    expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "done" });
+    expect(merges).toHaveLength(1);
+    expect(store.getRun(run.id)).toMatchObject({ resync_rounds: 1 });
   });
 
   it("with fix, still asks a human about a thread by someone it does not trust", async () => {
@@ -175,7 +192,8 @@ describe("PipelineDriver merge stage: open review threads and failed optional ch
     const { driver, store, pr, merges, fake } = setup([{ output: TRIAGE() }, buildStep("fixed"), CODE_PASS, fixStep(1), CODE_PASS], {
       config: mergeConfig("merge: always"),
     });
-    pr.threads = [[BOB], []];
+    // The thread pass's look and the gate's; nothing is open once the builder fixed it.
+    pr.threads = [[BOB], [BOB], []];
     const run = driver.startRun(12);
     expect(await driver.drive(run.id)).toMatchObject({ kind: "parked" });
 

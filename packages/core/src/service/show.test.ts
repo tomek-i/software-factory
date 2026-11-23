@@ -5,7 +5,7 @@ import { tempDir } from "../../test/helpers.js";
 import { runDirOf } from "../pipeline/driver.js";
 import { Store } from "../store/store.js";
 import { ServiceError } from "./errors.js";
-import { isBinary, latestChecks, latestReviews, latestRoundFile, leftoverOf, listRunFiles, resolveInRunDir, runFile, runOverview, unshownFile } from "./show.js";
+import { isBinary, latestChecks, latestReviews, latestRoundFile, leftoverOf, listItems, listRunFiles, resolveInRunDir, runFile, runOverview, unshownFile } from "./show.js";
 
 const SHA = "a".repeat(40);
 const TRIAGE = "DECISION: APPROVE\nREADINESS: READY\nRISK: LOW\nSURFACES: cli\n\n## Summary\n- adds a show command\n";
@@ -105,6 +105,30 @@ describe("runOverview", () => {
     writeFileSync(join(runDir, "cleanup.json"), JSON.stringify({ removed: ["worktree", "local branch factory/16-show"], kept: "the remote branch factory/16-show is not what was merged, so it is kept" }));
     expect(leftoverOf(done, runDir)).toBeUndefined();
   });
+
+  it("gives the questions triage asks the author, numbered or not, only while the run waits for them", () => {
+    const triage = TRIAGE.replace("APPROVE", "NEEDS_INFO").replace("READY", "INCOMPLETE");
+    const { store, project, run } = setup({
+      "triage.md": `${triage}\n## Questions\n1. **Which broker** comes first?\n   Stake or IBKR.\n2. Keep the ids?\n\n## Risks\n- none\n`,
+    });
+    expect(runOverview(store, project, run.id).questions).toBeUndefined();
+
+    store.writeState(run.id, "needs_info");
+    store.appendEvent(run.id, "triage", "needs_info", "triage needs more information");
+    expect(runOverview(store, project, run.id).questions).toEqual(["**Which broker** comes first? Stake or IBKR.", "Keep the ids?"]);
+  });
+
+  it("gives the spec critic's questions from its latest round when the critic asked", () => {
+    const critic = (q: string) => `VERDICT: REVISE\n\n## Summary\n- unclear\n\n## Questions\n- ${q}\n`;
+    const { store, project, run } = setup({
+      "triage.md": `${TRIAGE}\n## Questions\n- not this one\n`,
+      "spec-1/critic.md": critic("an old question"),
+      "spec-2/critic.md": critic("Which format?"),
+    });
+    store.writeState(run.id, "needs_info");
+    store.appendEvent(run.id, "critic", "needs_info", "the spec critic has questions only the author can answer: Which format?", { specRound: 2 });
+    expect(runOverview(store, project, run.id).questions).toEqual(["Which format?"]);
+  });
 });
 
 describe("latestReviews", () => {
@@ -195,5 +219,18 @@ describe("runFile and resolveInRunDir", () => {
     expect(latestChecks(files)).toBe("round-10/checks.md");
     expect(latestRoundFile(files, "spec", "critic.md")).toBe("spec-2/critic.md");
     expect(listRunFiles(join(tempDir(), "missing"))).toEqual([]);
+  });
+});
+
+describe("listItems", () => {
+  it("reads bulleted and numbered items, joining wrapped lines", () => {
+    expect(listItems("- one\n  wrapped\n2) two\n* three")).toEqual(["one wrapped", "two", "three"]);
+  });
+
+  it("reads a bullet followed by a long run of spaces in linear time", () => {
+    const line = `* ${" ".repeat(50_000)}x`;
+    const started = performance.now();
+    expect(listItems(line)).toEqual(["x"]);
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
