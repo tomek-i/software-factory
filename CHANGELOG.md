@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.8.0](https://github.com/tomek-i/software-factory/compare/v0.7.0...v0.8.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **work:** work on the current project only unless --all ([#279](https://github.com/tomek-i/software-factory/issues/279))
+
+### Features
+
+* **merge:** answer and resolve the factory's review threads before merging ([#282](https://github.com/tomek-i/software-factory/issues/282)) ([1863db0](https://github.com/tomek-i/software-factory/commit/1863db002ddb5fe23c02351e1f8b95ca3083a26a)), closes [#250](https://github.com/tomek-i/software-factory/issues/250)
+* **scheduler:** say when the daily start limit holds the queue back ([#281](https://github.com/tomek-i/software-factory/issues/281)) ([790a029](https://github.com/tomek-i/software-factory/commit/790a02997b2f6ff63a545ff0425d12a555e6d4c3)), closes [#249](https://github.com/tomek-i/software-factory/issues/249)
+* **server:** read and save a project's settings over the API ([#243](https://github.com/tomek-i/software-factory/issues/243)) ([cb6ffea](https://github.com/tomek-i/software-factory/commit/cb6ffeab3fd198242720085239d16663d64b783e))
+* **web:** see and change a project's settings on a Settings screen ([#244](https://github.com/tomek-i/software-factory/issues/244)) ([73adc1d](https://github.com/tomek-i/software-factory/commit/73adc1d4513ca86bc07752d684c78c9c523aad66))
+* **web:** show and answer the questions of a run waiting for its author ([#283](https://github.com/tomek-i/software-factory/issues/283)) ([ee788e4](https://github.com/tomek-i/software-factory/commit/ee788e49ea156d5e1761c3a9d33ffe630bf8fcaf))
+* **web:** warn in the header and Inbox while the start limit holds the queue ([#284](https://github.com/tomek-i/software-factory/issues/284)) ([c94fc8e](https://github.com/tomek-i/software-factory/commit/c94fc8e32e3e75f4ad9275c9da38d3894a8306dd))
+* **work:** work on the current project only unless --all ([#279](https://github.com/tomek-i/software-factory/issues/279)) ([0d40588](https://github.com/tomek-i/software-factory/commit/0d40588ad9cd1d05b02e9abe9f9fb1a0d46ea129))
+
+
+### Bug Fixes
+
+* **cleanup:** clean up hand-merged runs on sync and say what cleanup leaves ([#238](https://github.com/tomek-i/software-factory/issues/238)) ([0048404](https://github.com/tomek-i/software-factory/commit/00484045125198970fce15f6072348cbde41994d)), closes [#217](https://github.com/tomek-i/software-factory/issues/217)
+* **cli:** name a repo with a factory database that the project list misses ([#280](https://github.com/tomek-i/software-factory/issues/280)) ([75c68e7](https://github.com/tomek-i/software-factory/commit/75c68e75cedf0a3f59ebc0f7c3ed6b910a8e0751)), closes [#142](https://github.com/tomek-i/software-factory/issues/142)
+* **core:** start only package manager scripts through cmd ([#285](https://github.com/tomek-i/software-factory/issues/285)) ([d282010](https://github.com/tomek-i/software-factory/commit/d2820107a612a587d6d04a21a9427eda9f369400))
+* **new:** keep --queue in the retry hints ([#240](https://github.com/tomek-i/software-factory/issues/240)) ([e393b9e](https://github.com/tomek-i/software-factory/commit/e393b9efa93c6d8d52d6338bc6550bbfd426b4f3))
+* **snapshot:** address the snapshot review notes ([#239](https://github.com/tomek-i/software-factory/issues/239)) ([cad3afe](https://github.com/tomek-i/software-factory/commit/cad3afe5fed150c40bb947d1aa9948cc5dc041b5))
+* **web:** address the run details review notes ([#241](https://github.com/tomek-i/software-factory/issues/241)) ([3ae463e](https://github.com/tomek-i/software-factory/commit/3ae463e2565e2fab6ed506586229417aaa2bb4aa)), closes [#179](https://github.com/tomek-i/software-factory/issues/179)
+
 ## [0.7.0](https://github.com/tomek-i/software-factory/compare/v0.6.0...v0.7.0) (2026-11-17)
 
 
