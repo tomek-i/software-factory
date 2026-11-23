@@ -30,16 +30,16 @@
     "prepack": "node scripts/bundle.mjs"
   },
   "dependencies": {
-    "@fastify/static": "10.1.9",
+    "@fastify/static": "10.1.11",
     "better-sqlite3": "^13.2.0",
     "commander": "^15.1.0",
     "execa": "^10.2.1",
-    "fastify": "5.12.7",
+    "fastify": "5.12.8",
     "yaml": "^2.6.1",
     "zod": "^4.6.7"
   },
   "optionalDependencies": {
-    "playwright": "^1.65.0"
+    "playwright": "^1.65.1"
   },
   "devDependencies": {
     "@factory/core": "workspace:*",
