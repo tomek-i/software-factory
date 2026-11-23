@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { tempDir } from "../test/helpers.js";
+import { git, tempDir } from "../test/helpers.js";
 import { factoryDataDir } from "./github/attachments.js";
-import { listRegistered, registerProject, registryPath, sameProjectPath, unregisterProject } from "./registry.js";
+import { listRegistered, registerProject, registryPath, sameProjectPath, unregisteredHint, unregisteredRepo, unregisterProject } from "./registry.js";
+import { findRepoRoot } from "./util/git.js";
 import { ServiceError } from "./service/errors.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -162,4 +163,46 @@ describe("registry", () => {
     expect(listRegistered(opts).map((p) => p.path).sort()).toEqual(expected.sort());
     expect(existsSync(`${file}.lock`)).toBe(false);
   }, 120_000);
+});
+
+describe("unregisteredRepo", () => {
+  /** A real repo with a factory database and one commit, so it can have worktrees. */
+  function repo(): string {
+    const root = initialisedRepo();
+    git(root, "init", "-q");
+    git(root, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init");
+    return resolve(findRepoRoot(root)!);
+  }
+
+  it("names a repo with a factory database that the list misses, from any folder in it", () => {
+    const root = repo();
+    mkdirSync(join(root, "src"));
+
+    expect(unregisteredRepo(root, [])).toBe(root);
+    expect(unregisteredRepo(join(root, "src"), [{ path: "/elsewhere" }])).toBe(root);
+  });
+
+  it("names the project, not the worktree, from inside one of its run worktrees", () => {
+    const root = repo();
+    git(root, "worktree", "add", "-q", join(root, ".worktrees", "12-run"));
+
+    expect(unregisteredRepo(join(root, ".worktrees", "12-run"), [])).toBe(root);
+    expect(unregisteredRepo(join(root, ".worktrees", "12-run"), [{ path: root }])).toBeUndefined();
+  });
+
+  it("says nothing for a listed repo, a repo without a database, or a folder outside any repo", () => {
+    const root = repo();
+    const bare = tempDir("factory-bare-");
+    git(bare, "init", "-q");
+
+    expect(unregisteredRepo(root, [{ path: root }])).toBeUndefined();
+    expect(unregisteredRepo(bare, [])).toBeUndefined();
+    expect(unregisteredRepo(tempDir("factory-none-"), [])).toBeUndefined();
+  });
+
+  it("tells you to run factory init there and that the config is kept", () => {
+    expect(unregisteredHint("/repos/shop")).toBe(
+      "This repository (/repos/shop) has a factory database but is not in your project list. Run `factory init` here to add it (your config is kept).",
+    );
+  });
 });

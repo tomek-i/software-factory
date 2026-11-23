@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { Clock, ExternalLink, RefreshCw } from "lucide-react";
 import { StateBadge } from "../components/StateBadge";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -9,6 +9,7 @@ import { Select } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { api, type BacklogIssue, type ProjectInfo } from "../lib/api";
 import { useProject } from "../lib/project";
+import { startLimitText } from "../lib/start-limit";
 import { ago } from "../lib/utils";
 import { githubUrl } from "./RunDetail";
 
@@ -147,6 +148,12 @@ function ProjectBacklog({ project }: { project: ProjectInfo }) {
         </p>
       )}
       {backlog.error && <p className="text-sm text-destructive">{backlog.error.message}</p>}
+      {backlog.data?.startLimit && (
+        <p role="status" className="flex items-start gap-1.5 text-sm text-amber-700 dark:text-amber-400">
+          <Clock aria-hidden className="mt-0.5 size-4 shrink-0" />
+          {startLimitText(backlog.data.startLimit)}
+        </p>
+      )}
       {backlog.data?.issues.length === 0 && <p className="text-sm text-muted-foreground">No open issues synced. Sync to pull them from GitHub.</p>}
       {backlog.data && backlog.data.issues.length > 0 && <BacklogTable project={project.key} issues={backlog.data.issues} label={label} />}
     </section>

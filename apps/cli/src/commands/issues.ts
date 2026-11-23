@@ -1,7 +1,8 @@
-import { fetchIssue, reconcileAndSweep, reportLines, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
+import { fetchIssue, heldStartLimit, reconcileAndSweep, reportLines, syncIssues, type CommandRunner, type GithubPort, type Issue } from "@factory/core";
 import { isTrustedIssue, type FactoryConfig } from "@factory/shared";
 import { CliError, withProject } from "../context.js";
 import { plain, type Style } from "../style.js";
+import { startLimitLine } from "./start-limit.js";
 
 /**
  * `factory sync`: pull issues from GitHub, finish runs whose PR was merged or closed there, and clean
@@ -55,7 +56,9 @@ export function runIssues(
         queued: options.queued ? true : undefined,
       });
       const footer = options.queued ? "" : "\n\nQ = queued for the factory. Queue with `factory queue <number...>`.";
-      return table(issues, config, style) +(issues.length ? footer : "");
+      const held = heldStartLimit(store, project.id, config.github.max_starts_per_day, Date.now());
+      const limit = held ? `\n\n${style.attention(startLimitLine(held))}` : "";
+      return table(issues, config, style) + (issues.length ? footer : "") + limit;
     },
     run,
   );

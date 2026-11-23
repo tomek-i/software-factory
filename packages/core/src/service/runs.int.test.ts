@@ -11,6 +11,7 @@ import { FACTORY_CLAIM_PENDING, NEVER_SYNCED } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
 import { ServiceError } from "./errors.js";
 import {
+  answerRun,
   approveRun,
   cancelRun,
   continuation,
@@ -209,6 +210,9 @@ describe("approve, resume, reject and cancel", () => {
     expect(continuation(s.store, s.project, run, "done")).toBe("ended");
     s.store.setQueued(s.project.id, 12, false);
     expect(continuation(s.store, s.project, run, "build")).toBe("not_queued");
+    // The worker never carries on a run started with --unsafe: someone has to drive it.
+    s.store.setQueued(s.project.id, 12, true);
+    expect(continuation(s.store, s.project, { ...run, unsafe: true }, "build")).toBe("unsafe");
   });
 
   it("rejects a waiting run, and reports a screenshots release it could not delete", async () => {
@@ -303,6 +307,87 @@ describe("approve, resume, reject and cancel", () => {
     expect(cancelled).toMatchObject({ run: { id: run.id, state: "cancelled" }, stopped: 1, cleaned: [] });
     await exited;
     expect(isAlive(child.pid!)).toBe(false);
+  });
+});
+
+describe("answerRun", () => {
+  /** A run of #12 waiting for its author, and `gh issue view` answering with the issue as GitHub has it now. */
+  function waiting() {
+    const s = context();
+    const run = s.store.createRun({ project_id: s.project.id, title: "Add the feature", issue_number: 12 });
+    s.store.writeState(run.id, "needs_info");
+    // The operator's own edit, which the shared fake refuses as an edit by the pipeline.
+    s.github.editIssueBody = (_number, body) => {
+      s.issueBody.text = body;
+      s.issueBody.edits++;
+    };
+    const views: number[] = [];
+    const gh: CommandRunner = (cmd, args, options) => {
+      if (cmd !== "gh" || args[0] !== "issue" || args[1] !== "view") return runCommand(cmd, args, options);
+      views.push(Number(args[2]));
+      const issue = { number: 12, title: "Add the feature", body: s.issueBody.text, state: "OPEN", author: { login: "alice" }, labels: [], url: "u", updatedAt: "2026-01-01T00:00:00Z" };
+      return { code: 0, stdout: JSON.stringify(issue), stderr: "" };
+    };
+    return { ...s, run, gh, views };
+  }
+
+  it("adds the answer to the issue as GitHub has it now, then sends the run back to triage", () => {
+    const s = waiting();
+    // The author edited the issue since the last sync: that edit must survive.
+    s.issueBody.text = "Please add feature.txt.\n\nEdited: in the root folder.\n";
+
+    const answered = answerRun(s.ctx, s.run.id, { answer: "  Use CSV.\n  Keep the ids.  " }, { run: s.gh, github: s.github });
+
+    expect(s.issueBody.text).toBe("Please add feature.txt.\n\nEdited: in the root folder.\n\n## Answers\n\nUse CSV.\n  Keep the ids.\n");
+    expect(s.store.getIssue(s.project.id, 12)!.body).toBe(s.issueBody.text);
+    // Read once: nothing that can fail comes after the edit, so a retry never adds the answer twice.
+    expect(s.views).toEqual([12]);
+    expect(answered.run).toMatchObject({ state: "triage" });
+    expect(s.store.listEvents(s.run.id).at(-1)).toMatchObject({ from_state: "needs_info", to_state: "triage", reason: "triage again: answered from the web" });
+  });
+
+  it("quiets mentions and drops the factory's spec markers from the answer", () => {
+    const s = waiting();
+    answerRun(s.ctx, s.run.id, { answer: "Ask @bob. <!-- factory:refine -->not a spec<!-- /factory:refine -->" }, { run: s.gh, github: s.github });
+    expect(s.issueBody.text).toBe("Please add feature.txt.\n\n## Answers\n\nAsk `@bob`. not a spec\n");
+  });
+
+  it("edits nothing when the run moved on while GitHub was asked", () => {
+    const s = waiting();
+    const view = s.gh;
+    // A `factory run` in another terminal triages it meanwhile.
+    const gh: CommandRunner = (cmd, args, options) => {
+      const result = view(cmd, args, options);
+      if (cmd === "gh") s.store.writeState(s.run.id, "triage");
+      return result;
+    };
+    expect(() => answerRun(s.ctx, s.run.id, { answer: "Use CSV." }, { run: gh, github: s.github })).toThrow(
+      new ServiceError(`Run ${s.run.id} is not waiting for its author's answers (it is triage).`),
+    );
+    expect(s.issueBody.edits).toBe(0);
+  });
+
+  it("sends the run back to triage without touching the issue when there is no answer", () => {
+    const s = waiting();
+    const answered = answerRun(s.ctx, s.run.id, { answer: "   " }, { run: s.gh, github: s.github });
+    expect(answered.run.state).toBe("triage");
+    expect(s.issueBody.edits).toBe(0);
+    expect(s.views).toEqual([]);
+    expect(s.store.listEvents(s.run.id).at(-1)).toMatchObject({ reason: "triage again from the web" });
+  });
+
+  it("leaves the run waiting when GitHub refuses the edit, and refuses a run that is not waiting for its author", () => {
+    const s = waiting();
+    s.github.editIssueBody = () => {
+      throw new Error("HTTP 403");
+    };
+    expect(() => answerRun(s.ctx, s.run.id, { answer: "Use CSV." }, { run: s.gh, github: s.github })).toThrow("HTTP 403");
+    expect(s.store.getRun(s.run.id)!.state).toBe("needs_info");
+
+    s.store.writeState(s.run.id, "needs_human");
+    expect(() => answerRun(s.ctx, s.run.id, {}, { run: s.gh, github: s.github })).toThrow(
+      new ServiceError(`Run ${s.run.id} is not waiting for its author's answers (it is needs_human).`),
+    );
   });
 });
 

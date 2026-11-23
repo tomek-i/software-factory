@@ -234,6 +234,11 @@ export const factoryConfigSchema = z.object({
       open_feedback: z.enum(OPEN_FEEDBACK_MODES).default("ask"),
       // Apps whose review threads `fix` may hand to the builder without a human, as GitHub shows them.
       comment_bots: z.array(z.string().min(1)).default(["github-advanced-security[bot]"]),
+      // A review note the builder defers before the merge becomes a follow-up issue; off, its thread
+      // just says it was deferred.
+      followup_issues: z.boolean().default(true),
+      // Queue those follow-up issues for the scheduler as well, rather than leave them for a human to pick.
+      queue_followups: z.boolean().default(false),
     })
     .prefault({}),
   github: z

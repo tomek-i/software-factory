@@ -18,7 +18,8 @@ Every run keeps its files in `.factory/runs/<run>/`.
 - `round-N/capture-report.md`, the capture report;
 - `round-N/capture/`, the screenshots, video and app logs;
 - `round-N/capture/narrate/`, the narrated walkthrough's scene and logs;
-- `round-N/resync/`, re-sync conflicts (`conflicts.md`) and re-checks (`checks.md`);
+- `round-N/resync/`, re-sync conflicts (`conflicts.md`), re-checks (`checks.md`), open feedback (`feedback.md`) and the builder's answers to the review notes (`threads.md`);
+- `threads.json`, how each of the factory's review threads was answered, and whether the reply was posted and the thread resolved;
 - `approval.md` and `approval.diff`, the approver's decision and the final diff it read;
 - `learn.md`, the learner's proposed lessons;
 - the agent prompts, permission profiles and full stream logs (`agent/`).

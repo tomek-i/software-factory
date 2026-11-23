@@ -26,6 +26,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `pipeline/acceptance.ts`: the acceptance lens's criteria (`extractCriteria`), its result file, the PR checklist, and `tickMetCriteria`, which ticks the met ones on GitHub after the merge
 - `pipeline/gates.ts`: `resolveGate`, which turns gate mode, agent decision and hard rules into proceed or wait
 - `pipeline/feedback.ts`: the PR's open review threads and failed optional checks the merge stage reads (`readOpenFeedback`), who `fix` may act on alone (`actionable`), and the report the builder gets (`feedbackReport`)
+- `pipeline/threads.ts`: the merge stage's answers to the factory's own review notes (`answerThreads`, then `postThreadAnswers` after the push), recorded in the run folder; the notes carry a `noteMarker` (`pipeline/reviews.ts`)
 - `pipeline/hard-rules.ts`: protected paths, dependency and lockfile rules that always escalate
 - `pipeline/reconcile.ts`: finishes runs whose PR was merged or closed on GitHub
 - `pipeline/cleanup.ts`: removes finished runs' worktrees and branches
@@ -48,7 +49,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `service/waiting.ts`: `waitingOn`, what a run waiting for a human is stuck on (a loop cap, failed checks, a failed gate, confirmed findings); `service/checks.ts`: `runChecks` and `dismissAlert`, the human-only dismissal of a code scanning alert
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
-- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `stop.ts` for `factory stop`; `workers.ts`: the running workers and live leases `factory upgrade` refuses to replace the factory under
+- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `start-limit.ts`: `startLimit`, the rolling 24 hours behind `github.max_starts_per_day`, shared with the front ends that say it holds the queue; `stop.ts` for `factory stop`; `workers.ts`: the running workers and live leases `factory upgrade` refuses to replace the factory under
 - `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
