@@ -2,12 +2,12 @@ import { randomBytes } from "node:crypto";
 import { isTrustedAuthor, type FactoryConfig } from "@factory/shared";
 import type { GithubPort, PullRequestCheck, ReviewThread } from "../github/port.js";
 import type { RunEvent } from "../store/store.js";
+import { isFactoryNote } from "./reviews.js";
 
 /**
- * What is still open on a PR besides its required checks: review threads that are neither
- * resolved nor outdated (other than the factory's own review notes), and failed or cancelled checks
- * that branch protection does not require. The merge stage reads it right before merging and acts
- * on it per `merge.open_feedback`.
+ * What is still open on a PR besides its required checks: unresolved review threads (outdated ones
+ * and the factory's own included), and failed or cancelled checks that branch protection does not
+ * require. The merge stage reads it right before merging and acts on it per `merge.open_feedback`.
  */
 export interface OpenFeedback {
   threads: ReviewThread[];
@@ -22,7 +22,8 @@ export interface Acknowledged {
 
 /** The open feedback as a run event stores it: no full comment bodies, only a line of each. */
 export interface FeedbackData {
-  threads: { id: string; author: string; path?: string; line?: number; url: string; excerpt: string }[];
+  /** `factory`: one of the factory's own notes then, which an approval never covers. */
+  threads: { id: string; author: string; path?: string; line?: number; url: string; excerpt: string; factory?: true }[];
   checks: { name: string; bucket: string; summary?: string; link?: string }[];
 }
 
@@ -32,9 +33,22 @@ export const feedbackFile = (round: number) => `round-${round}/resync/feedback.m
 /**
  * The PR's open feedback, minus what `acknowledged` covers. `required` are the names of the checks
  * branch protection requires: those are the required-checks wait's business, whatever their state.
+ * The factory's own notes count even when outdated, and are never acknowledged away: each must be
+ * answered and resolved. Anyone else's thread stops counting once the change makes it outdated (it
+ * did, unless someone re-opens it); `reopened` are factory notes a human opened again, theirs now.
+ * `threadsOnly` skips the checks (`merge.open_feedback: ignore`).
  */
-export function readOpenFeedback(github: GithubPort, number: number, required: string[], acknowledged: Acknowledged = { threads: [], checks: [] }): OpenFeedback {
-  const threads = github.unresolvedReviewThreads(number).filter((t) => !t.own && !acknowledged.threads.includes(t.id));
+export function readOpenFeedback(
+  github: GithubPort,
+  number: number,
+  required: string[],
+  acknowledged: Acknowledged = { threads: [], checks: [] },
+  { reopened = [], threadsOnly = false }: { reopened?: string[]; threadsOnly?: boolean } = {},
+): OpenFeedback {
+  const threads = github
+    .unresolvedReviewThreads(number)
+    .filter((t) => isFactoryNote(t, reopened) || ((!t.outdated || reopened.includes(t.id)) && !acknowledged.threads.includes(t.id)));
+  if (threadsOnly) return { threads, checks: [] };
   const checks = github
     .pullRequestChecks(number)
     .filter((c) => (c.bucket === "fail" || c.bucket === "cancel") && !required.includes(c.name) && !acknowledged.checks.includes(c.name));
@@ -65,9 +79,9 @@ const where = (t: { path?: string; line?: number }) => (t.path ? ` at ${t.path}$
 const failedWord = (c: Pick<PullRequestCheck, "bucket">) => (c.bucket === "cancel" ? "was cancelled" : "failed");
 
 /** One reason per thread and check, for the merge gate; who wrote a thread, never what. */
-export function feedbackReasons(feedback: OpenFeedback): string[] {
+export function feedbackReasons(feedback: OpenFeedback, reopened: string[] = []): string[] {
   return [
-    ...feedback.threads.map((t) => `unresolved review thread by ${t.author}${where(t)} (${t.url})`),
+    ...feedback.threads.map((t) => `unresolved review thread by ${isFactoryNote(t, reopened) ? "the factory" : t.author}${where(t)} (${t.url})`),
     ...feedback.checks.map((c) => `check ${c.name} ${failedWord(c)}${c.summary ? `: ${oneLine(c.summary)}` : ""}${c.link ? ` (${c.link})` : ""}`),
   ];
 }
@@ -79,7 +93,7 @@ export function untrustedReason(config: Pick<FactoryConfig, "trust" | "merge">, 
   return `merge.open_feedback is fix, but ${authors.join(", ")} ${authors.length > 1 ? "are" : "is"} neither a trusted author nor in merge.comment_bots`;
 }
 
-export function feedbackData(feedback: OpenFeedback): FeedbackData {
+export function feedbackData(feedback: OpenFeedback, reopened: string[] = []): FeedbackData {
   return {
     threads: feedback.threads.map((t) => ({
       id: t.id,
@@ -88,6 +102,7 @@ export function feedbackData(feedback: OpenFeedback): FeedbackData {
       ...(t.line ? { line: t.line } : {}),
       url: t.url,
       excerpt: oneLine(t.body),
+      ...(isFactoryNote(t, reopened) ? { factory: true as const } : {}),
     })),
     checks: feedback.checks.map((c) => ({ name: c.name, bucket: c.bucket, ...(c.summary ? { summary: oneLine(c.summary) } : {}), ...(c.link ? { link: c.link } : {}) })),
   };
@@ -107,14 +122,16 @@ export function feedbackDataOf(data: unknown): FeedbackData | undefined {
 
 /**
  * What the human approval of the merge gate that `approval` points at saw: the open feedback the
- * run was parked with just before it. Nothing when it was parked for anything else.
+ * run was parked with just before it. Nothing when it was parked for anything else. A thread that
+ * was the factory's own note then is left out: should someone reply to it later, the human never
+ * saw that reply.
  */
 export function acknowledgedBy(events: RunEvent[], approval: number): Acknowledged {
   const parked = events.slice(0, approval).findLast((e) => e.to_state === "needs_human");
   const data = feedbackDataOf(parked?.data);
   if (!data) return { threads: [], checks: [] };
   return {
-    threads: data.threads.flatMap((t) => (typeof t?.id === "string" ? [t.id] : [])),
+    threads: data.threads.flatMap((t) => (typeof t?.id === "string" && t.factory !== true ? [t.id] : [])),
     checks: data.checks.flatMap((c) => (typeof c?.name === "string" ? [c.name] : [])),
   };
 }
@@ -141,6 +158,8 @@ export function feedbackReport(config: Pick<FactoryConfig, "trust" | "merge">, n
   for (const t of feedback.threads) {
     const who = actionable(config, t) ? t.author : `${t.author} (NOT a trusted author)`;
     parts.push(`### Review thread by ${who}${where(t)}`, t.url, "", clean(t.body.trim() || "(empty)"), "");
+    // A reply can be the point: a human objecting to how the factory answered its note, say.
+    for (const r of t.replies) parts.push("Reply:", "", clean(r.body.trim() || "(empty)"), "");
   }
   for (const c of feedback.checks) {
     parts.push(`### Check ${clean(c.name)} ${failedWord(c)}`, ...(c.link ? [c.link] : []), "", clean(c.summary ?? "(no summary)"), "");

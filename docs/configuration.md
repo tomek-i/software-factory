@@ -97,8 +97,11 @@ Only a per-run `factory run --unsafe` lifts them; it can never be set in this fi
   - `fix`: send them to the builder;
   - `ignore`: don't look at them.
 - `comment_bots` (default `["github-advanced-security[bot]"]`): apps whose threads `fix` may act on without you.
+- `followup_issues` (default `true`): open an issue for each review note the builder defers before the merge; off, its thread only says it was deferred.
+- `queue_followups` (default `false`): queue those follow-up issues for the factory, rather than leave them for you to pick.
+  They are opened by your account, so they run trusted if that account is in `trust.authors`.
 
-More: [Open review threads and failed checks](pipeline.md#open-review-threads-and-failed-checks).
+More: [The factory's own review notes](pipeline.md#the-factorys-own-review-notes) and [Open review threads and failed checks](pipeline.md#open-review-threads-and-failed-checks).
 
 ## loops
 
@@ -139,7 +142,10 @@ Whose issues and comments count as the spec. See [Trust](trust.md).
 ## github
 
 - `status_labels` (default off) and `label_prefix` (default `factory`): see [Status labels](#status-labels).
-- `max_starts_per_day` (default 10): how many new runs the worker starts per project in 24 hours.
+- `max_starts_per_day` (default 10): how many new runs the worker starts per project in a rolling 24 hours.
+  Every started run counts, cancelled and rejected ones included.
+  When it holds queued issues back, `factory status`, `factory issues`, `factory work` and the web app (header, Inbox and Backlog) say so, and when the next one can start.
+  See [Its limits](runs.md#its-limits).
 - `poll_interval_sec` is accepted but not used yet.
 
 ### Status labels

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import {
+  answerRun,
   approveRun,
   cancelRun,
   cleanupRunNow,
@@ -15,6 +16,7 @@ import {
   ensureQueued,
   ghPort,
   GithubError,
+  heldStartLimit,
   reconcileAndSweep,
   redactPaths,
   rejectRun,
@@ -30,6 +32,7 @@ import {
   ServiceError,
   syncIssues,
   waitingOn,
+  waitingToStart,
   type CodeScanningAlert,
   type CommandRunner,
   type GithubPort,
@@ -137,7 +140,12 @@ export interface RunDetail {
   sections: OverviewSection[];
   /** A finished run's worktree (relative to the repo) and branch that cleanup has not removed, and why it kept them. */
   leftover?: { worktree: string; branch: string; kept?: string };
+  /** What a run waiting for its author asked them; agent text derived from the issue. */
+  questions?: string[];
 }
+
+/** An answer goes into the issue's description, which GitHub caps at 65536 characters. */
+const MAX_ANSWER_CHARS = 20_000;
 
 const WAITING: Run["state"][] = ["needs_human", "needs_info"];
 // Routes anyone may fetch: the app's page and its static files, which hold nothing of the user's.
@@ -333,13 +341,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const ctx = projects.byKey(req.params.key);
     const { store, project, config } = ctx;
     const runs = store.listRuns({ project_id: project.id });
-    // Numbered in the order new runs start, as the scheduler picks them: an issue whose run is going
-    // on, or that already had its run since it was queued, isn't waiting to start.
-    const queue = store
-      .listIssues({ project_id: project.id, state: "open", queued: true })
-      .filter((i) => !runs.some((r) => r.issue_number === i.number && (r.created_at >= i.queued_at! || !isTerminal(r.state))))
-      .sort((a, b) => (a.queued_at! < b.queued_at! ? -1 : a.queued_at! > b.queued_at! ? 1 : (a.queue_seq ?? 0) - (b.queue_seq ?? 0)))
-      .map((i) => i.number);
+    // Numbered in the order new runs start, as the scheduler picks them.
+    const queue = waitingToStart(store, project.id).map((i) => i.number);
     const issues = store.listIssues({ project_id: project.id, state: "open" }).map((issue) => {
       // Newest first, so the first is the latest.
       const latest = runs.find((r) => r.issue_number === issue.number);
@@ -357,7 +360,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
       };
     });
     const synced = store.listIssues({ project_id: project.id }).reduce<string | null>((last, i) => (last === null || i.synced_at > last ? i.synced_at : last), null);
-    return { github: project.github_repo, syncedAt: synced, issues };
+    const startLimit = heldStartLimit(store, project.id, config.github.max_starts_per_day, Date.now());
+    return { github: project.github_repo, syncedAt: synced, issues, ...(startLimit && { startLimit }) };
   });
 
   app.post<{ Params: { key: string } }>("/api/projects/:key/sync", async (req) => {
@@ -422,6 +426,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
         }),
       ),
       sections: overview.sections.map((s) => redactSection(s, redact)),
+      ...(overview.questions ? { questions: overview.questions.map(redact) } : {}),
       ...(overview.leftover
         ? {
             leftover: {
@@ -486,6 +491,13 @@ export function createServer(options: ServerOptions): FastifyInstance {
   runAction("resume", (ctx, run, body) => {
     const resumed = resumeRun(ctx, run.id, { to: text(body, "to") ?? "", message: text(body, "message") ?? "", resetLoops: flag(body, "resetLoops") }, options.run);
     return { run: resumed.run, to: resumed.to, continuation: continuation(ctx.store, ctx.project, resumed.run, resumed.to) };
+  });
+  // The author's answers, or word that they are in the issue or the repo now: triage runs again.
+  runAction("answer", (ctx, run, body) => {
+    const answer = text(body, "answer");
+    if (answer && answer.length > MAX_ANSWER_CHARS) throw new BadRequest(`The answer is too long: keep it under ${MAX_ANSWER_CHARS} characters, or edit the issue on GitHub.`);
+    const answered = answerRun(ctx, run.id, { answer }, { run: options.run, github: options.github?.(ctx.project) });
+    return { run: answered.run, continuation: continuation(ctx.store, ctx.project, answered.run, "triage") };
   });
   // A human's decision about a false positive; GitHub may then pass the check, and the run goes back to merge.
   runAction("dismiss", (ctx, run, body) => {

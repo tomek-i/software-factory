@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow } from "./lib/api";
+import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow, SchedulerStatus } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -53,6 +53,8 @@ class FakeServer {
   mergeGate: Record<string, MergeGateDetails> = {};
   /** Run files by path, served for every run. */
   files: Record<string, string> = {};
+  /** What `factory serve`'s scheduler is doing. */
+  scheduler: SchedulerStatus = { running: [] };
   /** The failed checks of each run's PR, by run id. */
   checks: Record<string, RunChecks> = {};
   /** The detail of a run is built from its row in runs. */
@@ -109,7 +111,7 @@ data: ${JSON.stringify(event)}
       return json(200, {});
     }
     if (url.pathname === "/api/projects") return this.projectsStatus === 200 ? json(200, this.projects) : json(this.projectsStatus, { error: "Open the link `factory serve` printed." });
-    if (url.pathname === "/api/scheduler") return json(200, { running: [] });
+    if (url.pathname === "/api/scheduler") return json(200, this.scheduler);
     if (url.pathname === "/api/runs") {
       const view = url.searchParams.get("view");
       return json(200, this.runs.filter((r) => view !== "waiting" || r.state === "needs_human" || r.state === "needs_info"));
@@ -205,9 +207,57 @@ describe("layout", () => {
 
     expect(await screen.findByText("No session")).toBeTruthy();
   });
+
+  it("warns on every screen while the start limit holds a queue back, with when it lifts", async () => {
+    const at = new Date(new Date().setHours(13, 53, 0, 0));
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    server.scheduler = { running: [], limited: [{ project: "shop", started: 10, max: 10, until: at.toISOString() }] };
+    renderAt("/runs");
+
+    const note = await screen.findByLabelText(/^Start limit/);
+    expect(note.textContent).toBe(`start limit until ${time}`);
+    expect(note.getAttribute("aria-label")).toBe(`Start limit reached for shop: the next queued issue can start at ${time}.`);
+  });
+
+  it("says no time when a limit of 0 holds a queue back, and nothing without a limit", async () => {
+    server.scheduler = { running: [], limited: [{ project: "shop", started: 0, max: 0 }] };
+    renderAt("/runs");
+    expect((await screen.findByLabelText(/^Start limit/)).textContent).toBe("start limit: none start");
+
+    cleanup();
+    server.scheduler = { running: [] };
+    renderAt("/runs");
+    await screen.findByText("0 running");
+    expect(screen.queryByLabelText(/^Start limit/)).toBeNull();
+  });
 });
 
 describe("inbox", () => {
+  it("says which projects the start limit holds back and when each can start again, for the project picked", async () => {
+    const at = new Date(new Date().setHours(13, 53, 0, 0));
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    server.projects = [PROJECT, { key: "p2", name: "cafe", path: "/repos/cafe", status: "ok" }];
+    server.scheduler = {
+      running: [],
+      limited: [
+        { project: "shop", started: 10, max: 10, until: at.toISOString() },
+        { project: "cafe", started: 0, max: 0 },
+      ],
+    };
+    renderAt("/inbox");
+    const user = userEvent.setup();
+
+    const notes = await screen.findByRole("list", { name: "Start limits" });
+    expect(within(notes).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      `shop: Start limit reached: 10 runs started in the last 24 h (github.max_starts_per_day). The next queued issue can start at ${time}.`,
+      "cafe: Start limit: github.max_starts_per_day is 0, so no queued issue starts until it is raised.",
+    ]);
+
+    await user.selectOptions(screen.getByLabelText("Project"), "p2");
+    await waitFor(() => expect(within(screen.getByRole("list", { name: "Start limits" })).getAllByRole("listitem")).toHaveLength(1));
+    expect(screen.getByRole("list", { name: "Start limits" }).textContent).toMatch(/^cafe: /);
+  });
+
   it("approves a gate with an optional note", async () => {
     server.runs = [runRow()];
     renderAt("/inbox");
@@ -654,6 +704,39 @@ describe("run details", () => {
     await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-2/cancel", body: { state: "needs_human" } }));
   });
 
+  it("shows what a run waiting for its author asked, and answers, triages again or cancels from there", async () => {
+    server.runs = [runRow({ id: "run-3", issue: 13, state: "needs_info", waitingGate: null, reason: "triage needs more information" })];
+    const detail = server.detail;
+    server.detail = (run) => ({ ...detail(run), questions: ["Which broker comes first?", "Keep the ids?"] });
+    server.answers.set("/answer", { continuation: "not_queued" });
+    renderAt("/runs/p1/run-3");
+    const user = userEvent.setup();
+
+    const questions = await screen.findByRole("list", { name: "Questions for the issue's author" });
+    expect(within(questions).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Which broker comes first?", "Keep the ids?"]);
+    expect(screen.getByRole("link", { name: "on the issue" }).getAttribute("href")).toBe("https://github.com/acme/shop/issues/13");
+    expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /Answer/ }));
+    const add = screen.getByRole("button", { name: "Add to the issue and triage again" });
+    expect((add as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Answers"), "Stake first. Keep them.");
+    await user.click(add);
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-3/answer", body: { state: "needs_info", answer: "Stake first. Keep them." } }]));
+    expect(await screen.findByText("Added your answers to the issue. Triage runs again once the issue is queued.")).toBeTruthy();
+
+    server.posts = [];
+    server.answers.set("/answer", { continuation: "unsafe" });
+    await user.click(screen.getByRole("button", { name: /Triage again/ }));
+    await user.click(within(screen.getByRole("form", { name: "Triage again" })).getByRole("button", { name: "Triage again" }));
+    await waitFor(() => expect(server.posts).toEqual([{ path: "/api/projects/p1/runs/run-3/answer", body: { state: "needs_info" } }]));
+    expect(await screen.findByText("Sent back to triage. It was started with --unsafe, so the worker leaves it: continue it with `factory run 13`.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Cancel run/ }));
+    await user.click(within(screen.getByRole("form", { name: "Cancel run" })).getByRole("button", { name: "Cancel run" }));
+    await waitFor(() => expect(server.posts.at(-1)).toEqual({ path: "/api/projects/p1/runs/run-3/cancel", body: { state: "needs_info" } }));
+  });
+
   it("sends a run at a gate to the builder with its failure from the detail view", async () => {
     server.runs = [
       runRow({
@@ -884,6 +967,25 @@ describe("backlog", () => {
       ...patch,
     };
   }
+
+  it("says when the start limit holds the queue back, and when the next issue can start", async () => {
+    const at = new Date(new Date().setHours(13, 53, 0, 0));
+    const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    server.backlog = { ...server.backlog, issues: [issue({ number: 1, title: "Waiting one", queued: true, position: 1, run: null })], startLimit: { started: 10, max: 10, nextStartAt: at.toISOString() } };
+    renderAt("/backlog");
+
+    expect((await screen.findByRole("status")).textContent).toBe(
+      `Start limit reached: 10 runs started in the last 24 h (github.max_starts_per_day). The next queued issue can start at ${time}.`,
+    );
+  });
+
+  it("says nothing about the start limit when it isn't holding anything back", async () => {
+    server.backlog = { ...server.backlog, issues: [issue({ number: 1, title: "Waiting one", queued: true, position: 1, run: null })] };
+    renderAt("/backlog");
+
+    await screen.findByText("Waiting one");
+    expect(screen.queryByText(/Start limit/)).toBeNull();
+  });
 
   it("shows each issue's labels and filters by one label without asking the server", async () => {
     server.backlog.issues = [

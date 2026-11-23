@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { registerWorker, takeUpgradeLock, upgradeLockPath, type CommandRunner, type ExecResult } from "@factory/core";
 import { CliError } from "../context.js";
 import { createStyle } from "../style.js";
-import { compareVersions, detectPackageManager, packageManagerCommand, PACKAGE, RELEASES_URL, runUpgrade, type UpgradeDeps } from "./upgrade.js";
+import { compareVersions, detectPackageManager, PACKAGE, RELEASES_URL, runUpgrade, type UpgradeDeps } from "./upgrade.js";
 
 /** Global folders of npm, pnpm and yarn, each holding the package at version 0.5.0 like a real install. */
 function globalFolders() {
@@ -32,8 +32,9 @@ function globalFolders() {
 /** A fake for npm, pnpm and yarn: answers by the command line, records every call. */
 function fakeTools(answers: Answers) {
   const calls: string[] = [];
-  const run: CommandRunner = (cmd, args) => {
-    const line = [cmd, ...args].join(" ");
+  const run: CommandRunner = (cmd, args, opts) => {
+    // As runCommand starts it: through cmd when asked.
+    const line = [...(opts.windowsScript ? ["cmd", "/d", "/c"] : []), cmd, ...args].join(" ");
     calls.push(line);
     const answer = answers[line] ?? (line.startsWith(process.execPath) ? answers["leases"] : undefined);
     const result = typeof answer === "function" ? answer() : answer;
@@ -298,8 +299,12 @@ describe("detectPackageManager", () => {
   });
 
   it("runs the tools through cmd on Windows only", () => {
-    expect(packageManagerCommand("pnpm", ["root", "-g"], "win32")).toEqual(["cmd", ["/d", "/c", "pnpm", "root", "-g"]]);
-    expect(packageManagerCommand("pnpm", ["root", "-g"], "linux")).toEqual(["pnpm", ["root", "-g"]]);
+    const win = fakeTools({});
+    detectPackageManager(win.run, join("/opt/factory"), "win32");
+    expect(win.calls).toEqual(["cmd /d /c pnpm root -g", "cmd /d /c yarn global dir", "cmd /d /c npm root -g"]);
+    const linux = fakeTools({});
+    detectPackageManager(linux.run, join("/opt/factory"), "linux");
+    expect(linux.calls).toEqual(["pnpm root -g", "yarn global dir", "npm root -g"]);
   });
 });
 

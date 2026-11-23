@@ -216,7 +216,7 @@ function publishReviewNotes(ctx: StageContext, run: Run, reviews: LensReview[], 
   const { round, commit, worktree, changeFile } = reviewed;
   const pr = run.pr_number;
   try {
-    const notes = reviewNotes(reviews, verified, diffLines(readFileSync(changeFile, "utf8")));
+    const notes = reviewNotes(reviews, verified, diffLines(readFileSync(changeFile, "utf8")), round);
     if (!notes) return;
     const kind = `review-round-${round}-${commit.slice(0, 12)}`;
     const marker = factoryComment(run.id, kind, "").split("\n")[0]!;

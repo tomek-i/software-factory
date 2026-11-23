@@ -80,7 +80,7 @@ It is safe to run again:
 
 ### The project list
 
-The project list holds every repo you ran `factory init` in, so `factory work` and `factory serve` can find them.
+The project list holds every repo you ran `factory init` in, so `factory work --all` and `factory serve` can find them.
 
 - It is one file per user:
   - on Windows, `%LOCALAPPDATA%\software-factory\projects.json`;
@@ -90,6 +90,8 @@ The project list holds every repo you ran `factory init` in, so `factory work` a
 - `factory projects` lists the repos and flags one whose folder has gone, or that has no `.factory/factory.db`.
 - `factory projects remove <path>` drops a repo from the list. The repo and its database are not touched.
 - A repo set up before the list existed joins it when you run `factory init` there again.
+- Run in a repo that has a `.factory/factory.db` but is not in the list, `factory work`, `factory serve` and `factory projects` name it and say to run `factory init` there.
+  Nothing joins the list until you do.
 
 ### Screenshots and videos on PRs
 
@@ -174,11 +176,15 @@ factory lessons reject 5 -m "why"   # never apply this lesson; -m is optional
 ## Work through the queue
 
 ```sh
-factory work               # work through every registered project's queue until stopped; --max-runs <n> (default 3)
+factory work               # work through this project's queue until stopped; --max-runs <n> (default 3)
+factory work --all         # work through every registered project's queue
 factory stop               # tell running workers to start nothing new, finish their runs and exit
 factory stop --now         # tell them to interrupt their runs and exit; the runs can be continued later
 ```
 
+- `factory work` works only on the project of the folder it is started in, which must be registered (`factory init`).
+  `--all` works on every project in the [project list](#the-project-list).
+- `factory stop` stops every running worker, whichever projects it works on.
 - The worker continues stopped runs first, then starts queued issues in queue order.
 - It keeps to `concurrency.max_runs`, `--max-runs` and `github.max_starts_per_day`, and pauses on the usage limit.
 - How it picks, its limits and stopping: [Working through the queue](runs.md#working-through-the-queue).
@@ -186,11 +192,11 @@ factory stop --now         # tell them to interrupt their runs and exit; the run
 ## Web mode
 
 ```sh
-factory serve              # the web app on http://127.0.0.1:4180, plus the worker of `factory work`
+factory serve              # the web app on http://127.0.0.1:4180, plus the worker of `factory work --all`
 factory serve --port 4181 --max-runs 2 --no-open
 ```
 
-- It does what `factory work` does, and serves a web app for every project in the project list.
+- It does what `factory work --all` does, and serves a web app for every project in the project list.
 - It prints a link with a session token and opens it in your browser (`--no-open` only prints it).
 - Its screens are Inbox, Runs, Run details, Backlog and New issue.
 - From the Inbox or a run's details you can approve, reject, send a run back, dismiss a code scanning alert or cancel.

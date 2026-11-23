@@ -2,15 +2,24 @@ import { describe, expect, it } from "vitest";
 import { factoryConfigSchema } from "@factory/shared";
 import type { GithubPort, ReviewThread } from "../github/port.js";
 import type { RunEvent } from "../store/store.js";
-import { acknowledgedBy, actionable, feedbackKeys, feedbackReasons, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
+import { acknowledgedBy, actionable, feedbackData, feedbackKeys, feedbackReasons, feedbackReport, oneLine, readOpenFeedback, untrustedReason } from "./feedback.js";
 
 const config = factoryConfigSchema.parse({ version: 1, trust: { authors: ["@Alice"] } });
-const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, ...extra });
+const thread = (id: string, author: string, extra: Partial<ReviewThread> = {}): ReviewThread => ({ id, author, own: false, body: "a comment", url: `https://x/${id}`, outdated: false, replies: [], ...extra });
 
 describe("open feedback", () => {
-  it("reads open threads and failed checks that are not required, leaving out its own threads and what was acknowledged", () => {
+  it("reads open threads and failed checks that are not required, leaving out what was acknowledged and other people's outdated threads", () => {
+    const note = (id: string, extra: Partial<ReviewThread> = {}) => thread(id, "factory", { own: true, body: "**code** · nit: a note", ...extra });
     const github = {
-      unresolvedReviewThreads: () => [thread("T1", "bob"), thread("T2", "factory", { own: true }), thread("T3", "carol")],
+      unresolvedReviewThreads: () => [
+        thread("T1", "bob"),
+        note("T2", { outdated: true }),
+        thread("T3", "carol"),
+        note("T4"),
+        thread("T5", "bob", { outdated: true }),
+        thread("T6", "factory", { own: true, body: "Can we rename this?" }),
+        note("T7", { outdated: true }),
+      ],
       pullRequestChecks: () => [
         { name: "test", bucket: "fail" as const },
         { name: "CodeQL", bucket: "fail" as const },
@@ -19,10 +28,17 @@ describe("open feedback", () => {
         { name: "docs", bucket: "fail" as const },
       ],
     } as unknown as GithubPort;
-    const open = readOpenFeedback(github, 7, ["test"], { threads: ["T3"], checks: ["docs"] });
-    expect(open.threads.map((t) => t.id)).toEqual(["T1"]);
+    // An approval never acknowledges the factory's note away (T4), even outdated (T2); the operator's own
+    // comment (T6) and a note a human re-opened (T7) are human feedback, acknowledged like any other.
+    const open = readOpenFeedback(github, 7, ["test"], { threads: ["T3", "T4", "T6"], checks: ["docs"] }, { reopened: ["T7"] });
+    expect(open.threads.map((t) => t.id)).toEqual(["T1", "T2", "T4", "T7"]);
     expect(open.checks.map((c) => c.name)).toEqual(["CodeQL", "e2e"]);
-    expect(feedbackKeys(open)).toEqual(["check:CodeQL", "check:e2e", "thread:T1"]);
+    expect(feedbackKeys(open)).toEqual(["check:CodeQL", "check:e2e", "thread:T1", "thread:T2", "thread:T4", "thread:T7"]);
+    expect(readOpenFeedback(github, 7, ["test"], undefined, { threadsOnly: true }).checks).toEqual([]);
+    expect(feedbackReasons({ threads: [note("T2", { author: "factory-bot", path: "a.ts", line: 3 }), thread("T6", "factory-bot", { own: true, body: "Hm?" })], checks: [] })).toEqual([
+      "unresolved review thread by the factory at a.ts:3 (https://x/T2)",
+      "unresolved review thread by factory-bot (https://x/T6)",
+    ]);
   });
 
   it("lets fix act alone only on trusted authors and allowed bots, whatever the case", () => {
@@ -71,5 +87,16 @@ describe("open feedback", () => {
     ];
     expect(acknowledgedBy(events, 1)).toEqual({ threads: ["T1"], checks: ["CodeQL"] });
     expect(acknowledgedBy([event("merge", "needs_human", { commit: "c" }), events[1]!], 1)).toEqual({ threads: [], checks: [] });
+  });
+
+  it("never lets an approval cover a thread that was the factory's own note when the human saw it", () => {
+    const event = (from: string, to: string, data: unknown): RunEvent => ({ id: 0, run_id: "r", from_state: from, to_state: to, reason: "", data, created_at: "" }) as RunEvent;
+    const note = thread("T2", "factory", { own: true, body: "**code** · nit: a note" });
+    const data = feedbackData({ threads: [thread("T1", "bob"), note], checks: [] });
+    expect(data.threads.map((t) => t.factory)).toEqual([undefined, true]);
+    // Re-opened by a human, it is theirs, and an approval covers it like anyone's.
+    expect(feedbackData({ threads: [note], checks: [] }, ["T2"]).threads[0]!.factory).toBeUndefined();
+    const events = [event("merge", "needs_human", { commit: "c", openFeedback: data }), event("needs_human", "merge", { gate: "merge", commit: "c" })];
+    expect(acknowledgedBy(events, 1).threads).toEqual(["T1"]);
   });
 });

@@ -9,6 +9,7 @@ import {
   ensureQueued,
   FactoryEvents,
   findRun,
+  heldStartLimit,
   reconcileAndSweep,
   rejectRun,
   reportLines,
@@ -31,6 +32,7 @@ import { CliError, withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 import { UNTRUSTED_NOTE } from "./issues.js";
 import { lessonsNote } from "./lessons.js";
+import { startLimitLine } from "./start-limit.js";
 
 export interface RunDeps {
   run?: CommandRunner;
@@ -267,7 +269,9 @@ export function runStatus(cwd: string, options: { all?: boolean } = {}, deps: Pi
       const reconciled = reportLines(reconcileAndSweep(store, project, config, deps));
       const notes = reconciled.length ? `${reconciled.join("\n")}\n\n` : "";
       const lessons = lessonsNote(store, project);
-      const footer = lessons ? `\n\n${style.attention(lessons)}` : "";
+      // Said here because a queue held by the start limit otherwise looks like a factory that stopped.
+      const held = heldStartLimit(store, project.id, config.github.max_starts_per_day, Date.now());
+      const footer = [held && startLimitLine(held), lessons].filter(Boolean).map((note) => `\n\n${style.attention(note!)}`).join("");
       const runs = store.listRuns({ project_id: project.id }).filter((r) => options.all || !isTerminal(r.state));
       if (runs.length === 0) return notes + (options.all ? "No runs yet." : `No active runs. ${style.hint("`factory status --all` shows finished ones.")}`) + footer;
       const header = ["RUN", "ISSUE", "STATE", "ROUND", "COST", "WAITING"];
