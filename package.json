@@ -19,7 +19,7 @@
     "factory": "tsx --conditions=source apps/cli/src/main.ts"
   },
   "devDependencies": {
-    "@eslint/js": "^9.17.0",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.6",
     "eslint": "^10.15.0",
     "tsx": "^4.19.2",
