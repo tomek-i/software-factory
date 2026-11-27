@@ -205,7 +205,8 @@ export const factoryConfigSchema = z.object({
     })
     .prefault({}),
   // The claude-security plugin's scan of the change, as the `security-scan` review lens. It runs many
-  // agents, so it costs several times a lens: off unless asked for, or only on RISK: HIGH.
+  // agents, so it costs several times a lens: off unless asked for, or only on RISK: HIGH. The same
+  // plugin scans the whole default branch for `factory audit`.
   security: z
     .object({
       // `auto` looks for the plugin in Claude Code's plugin cache, `off` never runs it, anything else
@@ -214,6 +215,9 @@ export const factoryConfigSchema = z.object({
       scan_when: z.enum(SECURITY_SCAN_WHEN).default("off"),
       scan_effort: z.enum(SECURITY_SCAN_EFFORTS).default("low"),
       scan_timeout_min: z.number().positive().default(60),
+      // `factory audit`: a scan of the whole default branch, minutes to hours on a big repository.
+      audit_effort: z.enum(SECURITY_SCAN_EFFORTS).default("medium"),
+      audit_timeout_min: z.number().positive().default(240),
     })
     .prefault({}),
   models: z

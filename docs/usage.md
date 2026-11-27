@@ -153,6 +153,14 @@ factory dismiss <run> <alert> --reason false-positive -m "why"   # dismiss a cod
 factory cancel <run>                       # stop the run, its agent and its checks; -m "why" is optional
 ```
 
+Scan the whole default branch for vulnerabilities ([Security audits](security-audit.md)):
+
+```sh
+factory audit                  # scan now with the claude-security plugin
+factory audit list             # past audits; `factory audit show [audit]` for the findings
+factory audit file <finding>   # open an issue for a finding; refused on a public repository unless --public
+```
+
 Afterwards:
 
 ```sh

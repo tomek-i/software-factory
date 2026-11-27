@@ -22,7 +22,7 @@ The web app's [Settings screen](web-mode.md#settings) shows every setting and sa
 | [`merge`](#merge) | How and when the PR is merged |
 | [`loops`](#loops) | How often a run may go back to an earlier stage |
 | [`reviews`](#reviews) | Which review lenses run |
-| [`security`](#security) | The deep security scan of each change |
+| [`security`](#security) | The deep security scan of each change, and `factory audit` |
 | [`models`](#models) | Which model and effort each agent uses |
 | [`concurrency`](#concurrency) | How many runs go on at once |
 | [`trust`](#trust) | Whose issues and comments count as the spec |
@@ -133,7 +133,10 @@ See [Pipeline: Deep security scan](pipeline.md#deep-security-scan) for what it d
 | `scan_tool` | `auto` | `auto` finds the plugin in Claude Code's plugin cache; `off`; or a path to its `scripts/cli.py` |
 | `scan_effort` | `low` | `low`, `medium` or `high`, passed to the scan; higher costs more |
 | `scan_timeout_min` | 60 | a longer scan is stopped and the review goes on without it |
+| `audit_effort` | `medium` | the effort of [`factory audit`](security-audit.md), a scan of the whole default branch |
+| `audit_timeout_min` | 240 | a longer audit is stopped and recorded as failed; the plugin's partial output stays in its folder |
 
+- `scan_tool` applies to `factory audit` too: `off` turns audits off.
 - The scan runs many agents on your Claude Code login, so it costs several times a review lens.
 - Its model is `models.reviews.security-scan` (and `models.high_risk.security-scan`), else Opus.
   `default` and `roles.reviewer` don't reach it: the scan runs its agents in auto mode, which not every model supports.

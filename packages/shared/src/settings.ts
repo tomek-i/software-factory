@@ -11,7 +11,7 @@ export const SETTING_SECTIONS = [
   { key: "merge", title: "Merge", about: "How and when the PR is merged." },
   { key: "loops", title: "Loops", about: "How often a run may go back to an earlier stage. At the cap the run stops for you." },
   { key: "reviews", title: "Reviews", about: "Which review lenses run. The acceptance lens always runs." },
-  { key: "security", title: "Security", about: "The deep security scan of each change, with the claude-security Claude Code plugin." },
+  { key: "security", title: "Security", about: "Deep security scans with the claude-security Claude Code plugin: of each change, and of the whole default branch with factory audit." },
   { key: "models", title: "Models", about: "The model and effort for each agent. What you leave out uses the recommended model." },
   { key: "concurrency", title: "Concurrency", about: "How many runs go on at once." },
   { key: "trust", title: "Trust", about: "Whose issues and comments count as the spec." },
@@ -156,6 +156,8 @@ export const SETTINGS: readonly Setting[] = [
   { path: "security.scan_tool", section: "security", label: "Scan tool", help: "auto, off, or a path to the plugin's scripts/cli.py.", kind: { type: "string" } },
   { path: "security.scan_effort", section: "security", label: "Scan effort", help: "How hard the scan looks; higher costs more.", kind: { type: "enum", options: SECURITY_SCAN_EFFORTS } },
   { path: "security.scan_timeout_min", section: "security", label: "Scan timeout (minutes)", help: "A scan that takes longer is stopped and the review goes on without it.", kind: { type: "number" } },
+  { path: "security.audit_effort", section: "security", label: "Audit effort", help: "How hard factory audit looks at the whole default branch; higher costs more.", kind: { type: "enum", options: SECURITY_SCAN_EFFORTS } },
+  { path: "security.audit_timeout_min", section: "security", label: "Audit timeout (minutes)", help: "An audit that takes longer is stopped and recorded as failed; the plugin's partial output stays in the audit's folder.", kind: { type: "number" } },
 
   { path: "models.default", section: "models", label: "Default model", help: "For every agent the file doesn't name.", kind: { type: "string" } },
   { path: "models.effort", section: "models", label: "Default effort", help: "For every agent the file doesn't name.", kind: { type: "enum", options: EFFORT_LEVELS } },
