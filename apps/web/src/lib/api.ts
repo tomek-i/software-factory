@@ -377,6 +377,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The server's reason, when the page can act on it (such as `public_repo`). */
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -391,8 +393,8 @@ async function request<T>(method: "GET" | "POST" | "PUT", path: string, body?: o
     headers,
     body: sends ? JSON.stringify(body ?? {}) : undefined,
   });
-  const data = (await res.json().catch(() => ({}))) as { error?: string };
-  if (!res.ok) throw new ApiError(data.error ?? `${res.status} ${res.statusText}`, res.status);
+  const data = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+  if (!res.ok) throw new ApiError(data.error ?? `${res.status} ${res.statusText}`, res.status, data.code);
   return data as T;
 }
 
@@ -436,4 +438,9 @@ export const api = {
   stopDraft: (project: string, id: string) => request<object>("POST", draftPath(project, id, "stop")),
   settings: (project: string) => request<ProjectSettings>("GET", `${projectPath(project)}/settings`),
   saveSettings: (project: string, head: string, changes: SettingChange[]) => request<SavedSettings>("PUT", `${projectPath(project)}/settings`, { head, changes }),
+  audits: (project: string) => request<AuditList>("GET", `${projectPath(project)}/audits`),
+  audit: (project: string, id: string) => request<AuditDetail>("GET", `${projectPath(project)}/audits/${encodeURIComponent(id)}`),
+  requestAudit: (project: string) => request<{ state: "running" | "requested" }>("POST", `${projectPath(project)}/audits`),
+  fileFinding: (project: string, audit: string, finding: string, allowPublic: boolean) =>
+    request<{ issue: number }>("POST", `${projectPath(project)}/audits/${encodeURIComponent(audit)}/findings/${encodeURIComponent(finding)}/file`, { public: allowPublic }),
 };

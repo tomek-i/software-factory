@@ -51,7 +51,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `service/waiting.ts`: `waitingOn`, what a run waiting for a human is stuck on (a loop cap, failed checks, a failed gate, confirmed findings); `service/checks.ts`: `runChecks` and `dismissAlert`, the human-only dismissal of a code scanning alert
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
-- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `start-limit.ts`: `startLimit`, the rolling 24 hours behind `github.max_starts_per_day`, shared with the front ends that say it holds the queue; `stop.ts` for `factory stop`; `workers.ts`: the running workers and live leases `factory upgrade` refuses to replace the factory under
+- `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit, then runs due audits (`security.audit_schedule`, `auditDue`) in the slots left; `start-limit.ts`: `startLimit`, the rolling 24 hours behind `github.max_starts_per_day`, shared with the front ends that say it holds the queue; `stop.ts` for `factory stop`; `workers.ts`: the running workers and live leases `factory upgrade` refuses to replace the factory under
 - `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`, `spawn.ts` (`spawnAndWait`, for long commands such as narrate and the scan), `plugins.ts` (`newestPluginFile` in Claude Code's plugin cache)
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
@@ -70,10 +70,11 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `projects.ts`: `ProjectSet`, one context per project shared by the routes and the scheduler; `hub.ts`: `EventHub`
 - `drafts.ts`: the New issue screen's routes (`draftRoutes`) over the core draft service, and `DraftJobs`, the issue writers the server started (one per project at a time), with their progress; `rate-limit.ts`: `RateLimiter`, the per-route limit on the draft and settings routes
 - `settings.ts`: the Settings screen's routes (`settingsRoutes`) over `readSettings` and `saveSettings`
+- `audits.ts`: the Audits screen's routes (`auditRoutes`): list and show audits, ask the scheduler for one (`requestAudit`), file a finding
 - `serve.ts`: `startServe`, which reconciles, starts the `Scheduler` and listens on 127.0.0.1
 
 `apps/web/src`: the web app (React, Vite, Tailwind), built by Vite into its `dist` folder and served by the server
-- `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, RunDetail, Backlog, NewIssue, Draft (a draft's progress and editor) and Settings; `components/ui/`: shadcn-style parts
+- `lib/api.ts`: the client and the server's shapes; `lib/events.tsx`: the one event stream per page; `screens/`: Inbox, Runs, RunDetail, Backlog, NewIssue, Draft (a draft's progress and editor), Audits and Settings; `components/ui/`: shadcn-style parts
 
 ## Core invariants
 

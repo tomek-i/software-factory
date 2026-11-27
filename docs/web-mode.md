@@ -131,6 +131,16 @@ Differences from the CLI:
 - One issue writer runs per project at a time; starting another is refused until it ends or is stopped.
 - A draft that doesn't parse can only be discarded, or fixed by hand.
 
+### Audits
+
+Each project's [security audits](security-audit.md), newest first, with the schedule it is on.
+
+- Pick an audit to see its findings: severity, claim, file and line, and the evidence, which goes into the issue as written.
+- "File issue" opens a GitHub issue for a finding, as `factory audit file` does.
+  On a public repository it asks first, since the issue would show the vulnerability to everyone.
+  A filed finding links to its issue instead.
+- "Run audit now" asks the server's scheduler for an audit; it starts when a slot is free, whatever the schedule.
+
 ### Settings
 
 A project's `.factory/config.yaml` as a form, read from its default branch on GitHub, where runs read it (see [Configuration](configuration.md)).
@@ -177,5 +187,6 @@ Other limits:
   - That covers sending back, resetting loops and dismissing an alert too.
 - Settings, `--unsafe` and config can't be changed through it.
 - The draft routes that read or write draft files take at most 60 requests per 10 seconds each, then answer 429 with `Retry-After`.
+- Asking for an audit and filing a finding take at most 10 requests a minute each.
 
 [All docs](README.md)

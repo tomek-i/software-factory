@@ -15,6 +15,17 @@ factory audit file <finding>           # open a GitHub issue for one finding; --
 factory audit file <finding> --public  # file it even though the repository is public
 ```
 
+## On a schedule
+
+- Set [`security.audit_schedule`](configuration.md#security) to `weekly` or `monthly` on the default branch (it is `off` by default).
+- `factory work` and `factory serve` then audit the project when the newest audit is older than a week or a month.
+  - A failed or skipped audit counts, so a missing plugin waits for the next interval rather than retrying.
+  - A cancelled one doesn't, so an audit cut short by `factory stop` runs again.
+- An audit takes one of the worker's slots (`--max-runs`) and one of the project's (`concurrency.max_runs`), after the runs waiting for one.
+- `factory stop` and Ctrl+C stop an audit going on rather than waiting for it; the worker exits once its worktree is removed.
+- The scan doesn't recognise a usage limit, so an audit that hits one is recorded as failed and the worker doesn't pause for it.
+- The [Audits screen](web-mode.md#audits) shows them and can ask for one now.
+
 ## What an audit does
 
 - It fetches the default branch and scans it as merged on GitHub, in a temporary worktree outside the repo.
