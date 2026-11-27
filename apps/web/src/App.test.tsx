@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App, newQueryClient } from "./App";
-import type { Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow, SchedulerStatus } from "./lib/api";
+import type { AuditDetail, AuditList, Backlog, BacklogIssue, DraftDetail, DraftView, MergeGateDetails, ProjectInfo, ProjectSettings, RunChecks, RunDetail, RunRow, SchedulerStatus } from "./lib/api";
 import { BacklogTable } from "./screens/Backlog";
 
 const PROJECT: ProjectInfo = { key: "p1", name: "shop", path: "/repos/shop", status: "ok" };
@@ -81,6 +81,11 @@ class FakeServer {
   });
   /** The settings page of project p1. */
   settings?: ProjectSettings;
+  /** Project p1's audits, and each audit's page by id. */
+  audits: AuditList = { schedule: "off", github: "acme/shop", audits: [] };
+  auditDetails: Record<string, AuditDetail> = {};
+  /** Filing a finding is refused as on a public repository unless the page says public: true. */
+  publicRepo = false;
   /** The token each request carried. */
   tokens = new Set<string | null>();
   private stream?: ReadableStreamDefaultController<string>;
@@ -104,7 +109,9 @@ data: ${JSON.stringify(event)}
     if (!changes) this.gets.push(url.pathname);
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
     if (changes) {
-      this.posts.push({ path: url.pathname, body: JSON.parse(String(init.body)) });
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      this.posts.push({ path: url.pathname, body });
+      if (url.pathname.endsWith("/file") && this.publicRepo && body.public !== true) return json(409, { error: "acme/shop is public", code: "public_repo" });
       for (const [suffix, failure] of this.failures) if (url.pathname.endsWith(suffix)) return json(failure.status, { error: failure.error });
       if (url.pathname.endsWith("/sync")) return json(200, { open: 3, closed: 1, queued: 2, lines: [] });
       for (const [suffix, answer] of this.answers) if (url.pathname.endsWith(suffix)) return json(200, answer);
@@ -119,6 +126,12 @@ data: ${JSON.stringify(event)}
     if (url.pathname === "/api/projects/p1/issues") return json(200, this.backlog);
     if (url.pathname === "/api/projects/p1/settings") return this.settings ? json(200, this.settings) : json(404, { error: "Not found." });
     if (url.pathname === "/api/drafts") return json(200, this.drafts);
+    if (url.pathname === "/api/projects/p1/audits") return json(200, this.audits);
+    const audit = /^\/api\/projects\/p1\/audits\/([^/]+)$/.exec(url.pathname);
+    if (audit) {
+      const found = this.auditDetails[decodeURIComponent(audit[1]!)];
+      return found ? json(200, found) : json(400, { error: "No audit." });
+    }
     const draft = /^\/api\/projects\/p1\/drafts\/([^/]+)$/.exec(url.pathname);
     if (draft) {
       const found = this.draftDetails[decodeURIComponent(draft[1]!)];
@@ -1530,5 +1543,96 @@ describe("settings", () => {
     await user.click(screen.getByRole("button", { name: /Reload the settings/ }));
     await waitFor(() => expect(screen.queryByText(/changed since you opened them/)).toBeNull());
     expect((screen.getByLabelText("merge") as HTMLSelectElement).value).toBe("human");
+  });
+});
+
+describe("audits", () => {
+  const summary = { id: "20261127-103000", startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), commit: "abc123def456", effort: "medium", status: "complete" as const, notes: [] };
+  const finding = { id: "security-scan-1a2b3c4d", severity: "critical" as const, claim: "Command injection in ping", evidence: "host from the query goes to execSync", file: "server.js", line: 7 };
+
+  function withAudit() {
+    server.audits = { schedule: "weekly", github: "acme/shop", audits: [{ ...summary, findings: 1 }, { ...summary, id: "20261120-090000", status: "skipped", problem: "the claude-security Claude Code plugin is not installed", findings: 0 }] };
+    server.auditDetails[summary.id] = { ...summary, findings: [finding] };
+  }
+
+  it("lists the audits with the schedule, and the newest audit's findings with their evidence", async () => {
+    withAudit();
+    renderAt("/audits");
+
+    expect(await screen.findByText("Audited every week by factory serve and factory work.")).toBeTruthy();
+    expect(screen.getByText("1 finding")).toBeTruthy();
+    expect(screen.getByText("the claude-security Claude Code plugin is not installed")).toBeTruthy();
+    expect(await screen.findByText("Command injection in ping")).toBeTruthy();
+    expect(screen.getByText("server.js:7")).toBeTruthy();
+    expect(screen.getByText("host from the query goes to execSync")).toBeTruthy();
+  });
+
+  it("says when there are none, and asks for one now", async () => {
+    renderAt("/audits");
+    expect(await screen.findByText("No audits yet.")).toBeTruthy();
+    expect(screen.getByText("Scheduled audits are off. Turn them on in Settings, under Security.")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Run audit now" }));
+    await waitFor(() => expect(server.posts.map((p) => p.path)).toEqual(["/api/projects/p1/audits"]));
+  });
+
+  it("can't ask for another while one is going on", async () => {
+    server.audits = { ...server.audits, state: "running" };
+    renderAt("/audits");
+    expect(await screen.findByText("Audit going on")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Run audit now" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("files a finding, and on a public repository asks first", async () => {
+    withAudit();
+    server.publicRepo = true;
+    renderAt("/audits");
+
+    await userEvent.click(await screen.findByRole("button", { name: "File issue" }));
+    const warning = await screen.findByRole("alert");
+    expect(within(warning).getByText(/This repository is public/)).toBeTruthy();
+    expect(server.posts).toEqual([{ path: "/api/projects/p1/audits/20261127-103000/findings/security-scan-1a2b3c4d/file", body: { public: false } }]);
+
+    server.auditDetails[summary.id] = { ...summary, findings: [{ ...finding, issue: 31 }] };
+    await userEvent.click(within(warning).getByRole("button", { name: "File anyway" }));
+    expect(server.posts[1]!.body).toEqual({ public: true });
+    const link = await screen.findByRole("link", { name: /Issue #31/ });
+    expect(link.getAttribute("href")).toBe("https://github.com/acme/shop/issues/31");
+  });
+
+  it("says when filing anyway failed, and can't be cancelled while it files", async () => {
+    withAudit();
+    server.publicRepo = true;
+    server.failures.set("/file", { status: 502, error: "GitHub: gh issue create failed" });
+    renderAt("/audits");
+
+    await userEvent.click(await screen.findByRole("button", { name: "File issue" }));
+    const warning = await screen.findByRole("alert");
+    await userEvent.click(within(warning).getByRole("button", { name: "File anyway" }));
+    expect(await screen.findByText("GitHub: gh issue create failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "File issue" })).toBeTruthy();
+  });
+
+  it("says why the last audit couldn't start, and shows notes and the whole reason of the one picked", async () => {
+    const problem = `the scan failed: ${"a long reason ".repeat(20)}`.trim();
+    server.audits = {
+      schedule: "weekly",
+      github: "acme/shop",
+      failed: "git fetch failed: offline",
+      audits: [
+        { ...summary, notes: ["the temporary worktree could not be removed"], findings: 0 },
+        { ...summary, id: "20261120-090000", status: "failed", problem, findings: 0 },
+      ],
+    };
+    server.auditDetails[summary.id] = { ...summary, notes: ["the temporary worktree could not be removed"], findings: [] };
+    renderAt("/audits");
+
+    expect(await screen.findByText("The last audit could not start: git fetch failed: offline")).toBeTruthy();
+    expect(await screen.findByText("the temporary worktree could not be removed")).toBeTruthy();
+    expect(screen.getByText("This audit reported no findings.")).toBeTruthy();
+
+    await userEvent.click(screen.getAllByRole("row")[2]!);
+    // The table cell and the full text below it.
+    await waitFor(() => expect(screen.getAllByText(problem)).toHaveLength(2));
   });
 });

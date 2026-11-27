@@ -53,6 +53,29 @@ describe("runAudit", () => {
     expect(listAudits(project, dataDir)).toEqual([audit]);
   }, GIT_TEST_TIMEOUT);
 
+  it("shows a scan going on to other processes, and reads one whose process died as cancelled", async () => {
+    const { project, config, dataDir } = setup();
+    let during: ReturnType<typeof listAudits> = [];
+    let newest: ReturnType<typeof findAudit>;
+    const scan = fakeScan(() => {
+      during = listAudits(project, dataDir);
+      newest = findAudit(project, undefined, dataDir);
+      return Promise.resolve({ findings: [], notes: [] });
+    });
+    const audit = await runAudit({ project, config, scan: scan.port, dataDir });
+
+    expect(during).toMatchObject([{ id: audit.id, status: "running", pid: process.pid }]);
+    // The newest finished one: a running audit has nothing to show or file yet.
+    expect(newest).toBeUndefined();
+    expect(listAudits(project, dataDir)[0]).not.toHaveProperty("pid");
+
+    const dead = join(auditsDir(project, dataDir), "20200101-000000");
+    mkdirSync(dead);
+    const record = { id: "20200101-000000", started_at: "2020-01-01T00:00:00Z", finished_at: "", commit: "c", effort: "medium", status: "running", pid: 2 ** 22 + 7, findings: [], notes: [], filed: {} };
+    writeFileSync(join(dead, "audit.json"), JSON.stringify(record));
+    expect(findAudit(project, "20200101-000000", dataDir)).toMatchObject({ status: "cancelled", problem: "the process running it stopped before it finished" });
+  }, GIT_TEST_TIMEOUT);
+
   it("records a failed, skipped or cancelled scan with the reason, and removes the worktree every time", async () => {
     const { root, project, config, dataDir } = setup();
     let second = 0;

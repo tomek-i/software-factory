@@ -79,6 +79,7 @@ export function runAuditFile(cwd: string, finding: string, options: { audit?: st
 }
 
 function statusText(audit: AuditRecord, style: Style): string {
+  if (audit.status === "running") return style.detail("going on");
   if (audit.status !== "complete") return style.warning(`${audit.status}: ${audit.problem ?? ""}`.trim());
   const blocking = audit.findings.filter((f) => f.severity === "critical" || f.severity === "major").length;
   return audit.findings.length ? style.attention(`${audit.findings.length} finding${audit.findings.length === 1 ? "" : "s"}, ${blocking} critical or major`) : style.success("no findings");

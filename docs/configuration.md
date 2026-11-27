@@ -134,6 +134,7 @@ See [Pipeline: Deep security scan](pipeline.md#deep-security-scan) for what it d
 | `scan_effort` | `low` | `low`, `medium` or `high`, passed to the scan; higher costs more |
 | `scan_timeout_min` | 60 | a longer scan is stopped and the review goes on without it |
 | `audit_effort` | `medium` | the effort of [`factory audit`](security-audit.md), a scan of the whole default branch |
+| `audit_schedule` | `off` | `weekly` or `monthly`: `factory work` and `factory serve` audit the default branch when the newest audit is older than that |
 | `audit_timeout_min` | 240 | a longer audit is stopped and recorded as failed; the plugin's partial output stays in its folder |
 
 - `scan_tool` applies to `factory audit` too: `off` turns audits off.

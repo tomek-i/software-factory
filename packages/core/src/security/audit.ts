@@ -6,6 +6,7 @@ import { factoryDataDir } from "../github/attachments.js";
 import { slugify } from "../git/worktrees.js";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
+import { isAlive } from "../util/process.js";
 import { redactPaths } from "../util/redact.js";
 import type { SecurityScanPort } from "./scan.js";
 
@@ -25,7 +26,10 @@ export interface AuditRecord {
   /** The default branch's commit that was scanned. */
   commit: string;
   effort: string;
-  status: "complete" | "failed" | "cancelled" | "skipped";
+  /** `running` while the scan goes on, so another process sees it and doesn't start a second one. */
+  status: "running" | "complete" | "failed" | "cancelled" | "skipped";
+  /** The process running it, while `running`: a record whose process has gone reads as cancelled. */
+  pid?: number;
   findings: Finding[];
   notes: string[];
   /** Why there are no findings, when the status is not complete. */
@@ -94,6 +98,7 @@ export async function runAudit(options: AuditOptions): Promise<AuditRecord> {
   const started = now();
   const dir = newAuditDir(auditsDir(project, options.dataDir), started);
   const base = { id: dir.split(/[\\/]/).pop()!, started_at: started.toISOString(), commit, effort: config.security.audit_effort, filed: {} };
+  writeAudit(dir, { ...base, finished_at: "", status: "running", pid: process.pid, findings: [], notes: [] });
   let record: AuditRecord;
   try {
     const result = await options.scan({
@@ -151,7 +156,7 @@ function writeAudit(dir: string, record: AuditRecord): void {
   renameSync(`${file}.tmp`, file);
 }
 
-/** The project's audits, newest first. A folder without a readable record (one still running) is left out. */
+/** The project's audits, newest first, a running one included. A folder without a readable record is left out. */
 export function listAudits(project: ProjectRef, dataDir?: string): AuditRecord[] {
   const parent = auditsDir(project, dataDir);
   if (!existsSync(parent)) return [];
@@ -163,10 +168,10 @@ export function listAudits(project: ProjectRef, dataDir?: string): AuditRecord[]
     });
 }
 
-/** One audit by id, or the newest one. */
+/** One audit by id, or the newest finished one. */
 export function findAudit(project: ProjectRef, id: string | undefined, dataDir?: string): AuditRecord | undefined {
   const all = listAudits(project, dataDir);
-  return id === undefined ? all[0] : all.find((a) => a.id === id);
+  return id === undefined ? all.find((a) => a.status !== "running") : all.find((a) => a.id === id);
 }
 
 /** The issue a finding was filed as, by any of the project's audits: a later audit reports the same id. */
@@ -193,8 +198,30 @@ export function auditDir(project: ProjectRef, audit: Pick<AuditRecord, "id">, da
 function readAuditFile(dir: string): AuditRecord | undefined {
   try {
     const record = JSON.parse(readFileSync(join(dir, "audit.json"), "utf8")) as AuditRecord;
-    return typeof record.id === "string" && Array.isArray(record.findings) ? { ...record, filed: record.filed ?? {} } : undefined;
+    if (typeof record.id !== "string" || !Array.isArray(record.findings)) return undefined;
+    // The process died mid-scan (a crash, a kill): it never finished, so a scheduled one runs again.
+    if (record.status === "running" && !(record.pid !== undefined && isAlive(record.pid))) {
+      return { ...record, filed: record.filed ?? {}, status: "cancelled", problem: "the process running it stopped before it finished" };
+    }
+    return { ...record, filed: record.filed ?? {} };
   } catch {
     return undefined;
   }
+}
+
+const SCHEDULE_MS = { weekly: 7 * 24 * 60 * 60_000, monthly: 30 * 24 * 60 * 60_000 } as const;
+
+/**
+ * Whether a scheduled audit is due: none yet, or the newest that wasn't cancelled started longer ago
+ * than the schedule's interval. A failed or skipped audit counts, so a missing plugin waits for the
+ * next interval rather than retrying every tick; a cancelled one (cut short by `factory stop`) doesn't.
+ * One running in any process counts, so two workers don't both start one.
+ */
+export function auditDue(audits: Pick<AuditRecord, "status" | "started_at">[], schedule: FactoryConfig["security"]["audit_schedule"], now: number): boolean {
+  if (schedule === "off") return false;
+  const last = audits.filter((a) => a.status !== "cancelled").reduce<number | undefined>((newest, a) => {
+    const at = Date.parse(a.started_at);
+    return Number.isNaN(at) ? newest : Math.max(newest ?? at, at);
+  }, undefined);
+  return last === undefined || now - last >= SCHEDULE_MS[schedule];
 }

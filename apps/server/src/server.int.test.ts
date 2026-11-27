@@ -865,6 +865,7 @@ describe("runs", () => {
       running: [{ project: "demo", issue: 3 }],
       pausedUntil: "2026-11-16T12:00:00.000Z",
       limited: [{ project: "demo", started: 10, max: 10, until: "2026-11-17T09:00:00.000Z" }],
+      audits: [],
     };
     const { app } = server([memoryProject()], { scheduler: { status: () => status } });
     expect((await call(app, "GET", "/api/scheduler")).json()).toEqual(status);

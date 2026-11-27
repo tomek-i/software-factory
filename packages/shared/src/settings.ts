@@ -1,4 +1,4 @@
-import { AGENT_ROLES, EFFORT_LEVELS, factoryConfigSchema, OPEN_FEEDBACK_MODES, REVIEW_LENSES, REVIEWER_LENSES, SECURITY_SCAN_EFFORTS, SECURITY_SCAN_WHEN, type FactoryConfig } from "./config.js";
+import { AGENT_ROLES, EFFORT_LEVELS, factoryConfigSchema, OPEN_FEEDBACK_MODES, REVIEW_LENSES, REVIEWER_LENSES, AUDIT_SCHEDULES, SECURITY_SCAN_EFFORTS, SECURITY_SCAN_WHEN, type FactoryConfig } from "./config.js";
 import { GATE_MODES } from "./states.js";
 
 /** The sections of `.factory/config.yaml`, in the order docs/configuration.md describes them. */
@@ -158,6 +158,7 @@ export const SETTINGS: readonly Setting[] = [
   { path: "security.scan_timeout_min", section: "security", label: "Scan timeout (minutes)", help: "A scan that takes longer is stopped and the review goes on without it.", kind: { type: "number" } },
   { path: "security.audit_effort", section: "security", label: "Audit effort", help: "How hard factory audit looks at the whole default branch; higher costs more.", kind: { type: "enum", options: SECURITY_SCAN_EFFORTS } },
   { path: "security.audit_timeout_min", section: "security", label: "Audit timeout (minutes)", help: "An audit that takes longer is stopped and recorded as failed; the plugin's partial output stays in the audit's folder.", kind: { type: "number" } },
+  { path: "security.audit_schedule", section: "security", label: "Audit schedule", help: "factory work and factory serve audit the default branch when the last audit is older than a week or a month.", kind: { type: "enum", options: AUDIT_SCHEDULES } },
 
   { path: "models.default", section: "models", label: "Default model", help: "For every agent the file doesn't name.", kind: { type: "string" } },
   { path: "models.effort", section: "models", label: "Default effort", help: "For every agent the file doesn't name.", kind: { type: "enum", options: EFFORT_LEVELS } },

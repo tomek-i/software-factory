@@ -5,6 +5,8 @@ import { fetchIssue } from "../github/issues.js";
 import type { GithubPort } from "../github/port.js";
 import type { DriveOutcome } from "../pipeline/driver.js";
 import { listRegistered, type RegistryEntry } from "../registry.js";
+import { auditDue, listAudits, type AuditRecord } from "../security/audit.js";
+import { auditProject } from "../service/audit.js";
 import { openRegisteredProject, type ProjectContext } from "../service/project.js";
 import { driveIssue, trustedConfig, type DriveDeps, type Driven, type DriveOptions } from "../service/runs.js";
 import type { Project, Run } from "../store/store.js";
@@ -21,6 +23,9 @@ import { readStopRequest, type StopRequest } from "./stop.js";
 
 /** Drives one issue's run until it needs someone; `driveIssue` outside tests. */
 export type DriveFn = (ctx: ProjectContext, number: number, options: DriveOptions, deps: DriveDeps) => Promise<Driven>;
+
+/** Scans a project's default branch (`auditProject` outside tests); records a failed scan rather than throwing. */
+export type AuditFn = (ctx: ProjectContext, signal: AbortSignal) => Promise<AuditRecord>;
 
 export type SchedulerEvent =
   /** Progress of a run the scheduler drives. */
@@ -39,7 +44,12 @@ export type SchedulerEvent =
   | { type: "limited"; project: string; started: number; max: number; until?: string }
   /** A project held by its start limit starts queued issues again. */
   | { type: "unlimited"; project: string }
-  | { type: "stopping"; now: boolean; interrupted: number };
+  | { type: "stopping"; now: boolean; interrupted: number }
+  /** A scheduled or requested audit of a project's default branch. */
+  | { type: "audit_started"; project: string }
+  | { type: "audit_finished"; project: string; status: AuditRecord["status"]; findings: number }
+  /** git could not give the audit a checkout; tried again after a cooldown. */
+  | { type: "audit_failed"; project: string; error: string };
 
 export interface SchedulerStatus {
   running: { project: string; issue: number; runId?: string }[];
@@ -49,6 +59,11 @@ export interface SchedulerStatus {
   limited: { project: string; started: number; max: number; until?: string }[];
   /** `drain` finishes the runs it has and starts none; `now` interrupted them. */
   stopping?: "drain" | "now";
+  /**
+   * Audits going on, those asked for that wait for a slot, and the last one that could not start
+   * (until the next starts), by project path.
+   */
+  audits: { project: string; path: string; state: "running" | "requested" | "failed"; error?: string }[];
 }
 
 export interface SchedulerOptions {
@@ -70,6 +85,9 @@ export interface SchedulerOptions {
   run?: CommandRunner;
   env?: NodeJS.ProcessEnv;
   github?: (project: Project) => GithubPort | undefined;
+  audit?: AuditFn;
+  /** A project's past audits, for `security.audit_schedule`; `listAudits` by default. */
+  audits?: (ctx: ProjectContext) => Pick<AuditRecord, "status" | "started_at">[];
   onEvent?: (event: SchedulerEvent) => void;
   tickMs?: number;
 }
@@ -81,12 +99,23 @@ const CONFIG_TTL_MS = 5 * 60_000;
 const COOLDOWN_MS = 30 * 60_000;
 const RATE_LIMIT_BACKOFF_MS = 30 * 60_000;
 const MIN_PAUSE_MS = 60_000;
+// Audits are due weekly at most often, so an hourly look is plenty, and spares idle projects a fetch every tick.
+const AUDIT_CHECK_MS = 60 * 60_000;
 const WORKING: RunState[] = [...STAGES];
 
 interface Opened {
   entry: RegistryEntry;
   ctx: ProjectContext;
   config?: { value: FactoryConfig; at: number } | { error: string; at: number };
+  /** Its past audits, read again when one finishes or the cache runs out. */
+  audits?: { value: Pick<AuditRecord, "status" | "started_at">[]; at: number };
+  /** When to look again whether a scheduled audit is due: reading the schedule fetches the default branch. */
+  auditCheckAt?: number;
+}
+
+interface Auditing {
+  project: string;
+  controller: AbortController;
 }
 
 interface InFlight {
@@ -114,6 +143,12 @@ export class Scheduler {
   private readonly cooldown = new Map<string, number>();
   /** Projects held by their start limit, by path, with what was last said about it. */
   private readonly limited = new Map<string, { project: string; limit: StartLimit }>();
+  /** Audits going on, by project path. */
+  private readonly auditing = new Map<string, Auditing>();
+  /** Projects whose audit was asked for (`requestAudit`), by path, with their name. */
+  private readonly auditRequested = new Map<string, string>();
+  /** Why a project's last audit could not start, by path, until the next one does. */
+  private readonly auditFailed = new Map<string, { project: string; error: string }>();
   private pausedUntil?: number;
   private stopping?: "drain" | "now";
   private wake?: () => void;
@@ -132,13 +167,50 @@ export class Scheduler {
       pausedUntil: this.pausedUntil === undefined ? undefined : new Date(this.pausedUntil).toISOString(),
       limited: [...this.limited.values()].map(({ project, limit }) => ({ project, started: limit.started, max: limit.max, until: limit.nextStartAt })),
       stopping: this.stopping,
+      audits: [
+        ...[...this.auditing].map(([path, a]) => ({ project: a.project, path, state: "running" as const })),
+        ...[...this.auditRequested].filter(([path]) => !this.auditing.has(path)).map(([path, project]) => ({ project, path, state: "requested" as const })),
+        ...[...this.auditFailed]
+          .filter(([path]) => !this.auditing.has(path) && !this.auditRequested.has(path))
+          .map(([path, f]) => ({ project: f.project, path, state: "failed" as const, error: f.error })),
+      ],
     };
+  }
+
+  /**
+   * Audit the project at `repoPath` once a slot is free, whatever its schedule and any cooldown: the
+   * web app's "Run audit now". Returns why not, when it can't.
+   */
+  requestAudit(repoPath: string, name: string): string | undefined {
+    if (this.stopping) return "The worker is stopping, so it starts no audits.";
+    if (this.auditing.has(repoPath)) return "An audit of this project is already going on.";
+    if (this.auditRequested.has(repoPath)) return "An audit of this project is already waiting for a free slot.";
+    this.auditRequested.set(repoPath, name);
+    this.auditFailed.delete(repoPath);
+    const project = this.opened.get(repoPath);
+    if (project) this.cooldown.delete(keyOf(project, "audit"));
+    this.wake?.();
+    return undefined;
+  }
+
+  /** Runs and audits going on: an audit takes a slot like a run. */
+  private busy(): number {
+    return this.inFlight.size + this.auditing.size;
+  }
+
+  /** Stop the audits going on; each records itself as cancelled, so a scheduled one runs again later. */
+  private abortAudits(): number {
+    this.auditRequested.clear();
+    for (const audit of this.auditing.values()) audit.controller.abort();
+    return this.auditing.size;
   }
 
   /** Start nothing more; the runs going on finish. */
   drain(): void {
     if (this.stopping) return;
     this.stopping = "drain";
+    // An audit can take hours: draining stops it rather than waiting for it.
+    this.abortAudits();
     this.emit({ type: "stopping", now: false, interrupted: 0 });
   }
 
@@ -158,6 +230,8 @@ export class Scheduler {
       flight.stop();
       interrupted++;
     }
+    // Counted apart from the runs: "interrupted N runs" means runs that can be continued.
+    this.abortAudits();
     this.emit({ type: "stopping", now: true, interrupted });
     return interrupted;
   }
@@ -182,10 +256,10 @@ export class Scheduler {
     }
     const projects = this.openProjects();
     this.reviewStartLimits(projects, now);
-    if (this.inFlight.size >= this.maxRuns) return;
+    if (this.busy() >= this.maxRuns) return;
 
     for (const candidate of [...this.recoveries(projects, now), ...this.newStarts(projects, now)]) {
-      if (this.inFlight.size >= this.maxRuns || this.pausedUntil !== undefined) return;
+      if (this.busy() >= this.maxRuns || this.pausedUntil !== undefined) return;
       if (this.inFlight.has(keyOf(candidate.project, candidate.issue))) continue;
       const config = this.config(candidate.project, now);
       if (!config) continue;
@@ -194,6 +268,93 @@ export class Scheduler {
       if (!this.stillOpen(candidate, now)) continue;
       this.launch(candidate);
     }
+    // After the runs, which come first for the slots.
+    this.pickAudits(projects, now);
+  }
+
+  /**
+   * One audit at a time per worker, in a slot the runs left: an audit takes hours, so more would keep
+   * queued issues waiting that long. It doesn't count against the project's `concurrency.max_runs`,
+   * which is about runs on its worktrees.
+   */
+  private pickAudits(projects: Opened[], now: number): void {
+    for (const path of this.auditRequested.keys()) {
+      // A project taken off the list (or never opened) would otherwise stay "requested" for good.
+      if (!projects.some((p) => p.entry.path === path)) this.auditRequested.delete(path);
+    }
+    if (this.auditing.size > 0) return;
+    for (const project of projects) {
+      if (this.busy() >= this.maxRuns || this.pausedUntil !== undefined) return;
+      const path = project.entry.path;
+      const requested = this.auditRequested.has(path);
+      if (!requested) {
+        if (this.cooling(project, "audit", now) || now < (project.auditCheckAt ?? 0)) continue;
+        project.auditCheckAt = now + AUDIT_CHECK_MS;
+        // An audit in the last week means none is due whatever the schedule: no need to fetch it.
+        if (!auditDue(this.pastAudits(project, now), "weekly", now)) continue;
+      }
+      const config = this.config(project, now);
+      if (!config) {
+        if (requested) this.refuseAudit(project, project.config && "error" in project.config ? project.config.error : "could not read its config");
+        continue;
+      }
+      // Read again, not from the cache: another process may have started or finished one meanwhile.
+      project.audits = undefined;
+      const past = this.pastAudits(project, now);
+      if (past.some((a) => a.status === "running")) {
+        if (requested) this.refuseAudit(project, "another process is auditing it");
+        continue;
+      }
+      if (!requested && !auditDue(past, config.security.audit_schedule, now)) continue;
+      this.launchAudit(project);
+      return;
+    }
+  }
+
+  private refuseAudit(project: Opened, error: string): void {
+    const path = project.entry.path;
+    this.auditRequested.delete(path);
+    this.auditFailed.set(path, { project: project.ctx.project.name, error });
+    this.emit({ type: "audit_failed", project: project.ctx.project.name, error });
+  }
+
+  private pastAudits(project: Opened, now: number): Pick<AuditRecord, "status" | "started_at">[] {
+    if (!project.audits || now - project.audits.at >= CONFIG_TTL_MS) {
+      project.audits = { value: (this.options.audits ?? ((ctx: ProjectContext) => listAudits(ctx.project)))(project.ctx), at: now };
+    }
+    return project.audits.value;
+  }
+
+  private launchAudit(project: Opened): void {
+    const path = project.entry.path;
+    const name = project.ctx.project.name;
+    const controller = new AbortController();
+    this.auditing.set(path, { project: name, controller });
+    this.auditRequested.delete(path);
+    this.auditFailed.delete(path);
+    this.emit({ type: "audit_started", project: name });
+    const audit: AuditFn = this.options.audit ?? ((ctx, signal) => auditProject(ctx, { run: this.options.run, signal }));
+    let auditing: Promise<AuditRecord>;
+    try {
+      auditing = audit(project.ctx, controller.signal);
+    } catch (err) {
+      auditing = Promise.reject(err);
+    }
+    void auditing
+      .then((record) => this.emit({ type: "audit_finished", project: name, status: record.status, findings: record.findings.length }))
+      .catch((err: unknown) => {
+        const error = (err as Error).message ?? String(err);
+        this.auditFailed.set(path, { project: name, error });
+        this.emit({ type: "audit_failed", project: name, error });
+        this.coolDown(project, "audit", this.now());
+      })
+      .finally(() => {
+        this.auditing.delete(path);
+        project.audits = undefined;
+        // The cooldown, not the hourly look, decides when a failed one is tried again.
+        project.auditCheckAt = undefined;
+        this.wake?.();
+      });
   }
 
   /** Tick until stopped. Resolves `drained` once the runs it had are finished, or `interrupted` after `stopNow`. */
@@ -205,7 +366,8 @@ export class Scheduler {
         if (done) return;
         if (signal?.aborted) this.stopNow();
         this.tick();
-        if (this.stopping === "now" || (this.stopping === "drain" && this.inFlight.size === 0)) {
+        // Interrupted drives are left behind, but aborted audits are waited for: they remove their worktree.
+        if ((this.stopping === "now" && this.auditing.size === 0) || (this.stopping === "drain" && this.busy() === 0)) {
           done = true;
           this.wake = undefined;
           return resolve(this.stopping === "now" ? "interrupted" : "drained");
@@ -352,11 +514,11 @@ export class Scheduler {
   /** Runs in the project this worker drives, plus those other processes hold a live lease on. */
   private runningIn(project: Opened, now: number): number {
     const nowIso = new Date(now).toISOString();
-    const ours = [...this.inFlight.values()].filter((f) => f.project === project);
+    const ours = [...this.inFlight.values()].filter((f) => f.project === project).length;
     const others = project.ctx.store
       .listRuns({ project_id: project.ctx.project.id, states: WORKING })
       .filter((r) => r.lease_owner !== null && r.lease_owner !== this.owner && r.lease_expires_at !== null && r.lease_expires_at >= nowIso);
-    return ours.length + others.length;
+    return ours + others.length;
   }
 
   /**
@@ -444,11 +606,11 @@ export class Scheduler {
     this.emit({ type: "paused", until: new Date(until).toISOString() });
   }
 
-  private coolDown(project: Opened, issue: number, now: number): void {
+  private coolDown(project: Opened, issue: number | "audit", now: number): void {
     this.cooldown.set(keyOf(project, issue), now + COOLDOWN_MS);
   }
 
-  private cooling(project: Opened, issue: number, now: number): boolean {
+  private cooling(project: Opened, issue: number | "audit", now: number): boolean {
     const until = this.cooldown.get(keyOf(project, issue));
     return until !== undefined && now < until;
   }
@@ -458,7 +620,7 @@ export class Scheduler {
   }
 }
 
-function keyOf(project: Opened, issue: number): string {
+function keyOf(project: Opened, issue: number | "audit"): string {
   return `${project.entry.path}#${issue}`;
 }
 

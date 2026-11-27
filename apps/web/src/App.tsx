@@ -5,6 +5,7 @@ import { Layout } from "./components/Layout";
 import { ApiError } from "./lib/api";
 import { EventsProvider } from "./lib/events";
 import { ProjectProvider } from "./lib/project";
+import { Audits } from "./screens/Audits";
 import { Backlog } from "./screens/Backlog";
 import { Draft } from "./screens/Draft";
 import { Inbox } from "./screens/Inbox";
@@ -38,6 +39,7 @@ export function App({ client }: { client?: QueryClient }) {
               <Route path="backlog" element={<Backlog />} />
               <Route path="new" element={<NewIssue />} />
               <Route path="new/:project/:id" element={<Draft />} />
+              <Route path="audits" element={<Audits />} />
               <Route path="settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/inbox" replace />} />
             </Route>

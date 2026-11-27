@@ -24,6 +24,9 @@ export interface AuditDeps {
  * default branch, like a run's: the working copy can't change what an audit does.
  */
 export function auditProject(ctx: ServiceContext, deps: AuditDeps = {}): Promise<AuditRecord> {
+  // Hours of usage: never two of the same repository at once, from any process.
+  const running = listAudits(ctx.project, deps.dataDir).find((a) => a.status === "running");
+  if (running) return Promise.reject(new ServiceError(`Audit ${running.id} of this project is still going on (process ${running.pid}).`));
   const config = trustedConfig(ctx.project, ctx.config, deps.run);
   return runAudit({ project: ctx.project, config, scan: deps.scan ?? securityScanPort(config.security.scan_tool), run: deps.run, signal: deps.signal, dataDir: deps.dataDir });
 }
@@ -38,6 +41,9 @@ export function auditById(ctx: ServiceContext, id: string | undefined, deps: Pic
   if (!audit) throw new ServiceError(id === undefined ? "No audits yet. Run `factory audit`." : `No audit ${id}. \`factory audit list\` shows them.`);
   return audit;
 }
+
+/** Filing was refused because the repository is public; the caller may ask and try again with `allowPublic`. */
+export class PublicRepoError extends ServiceError {}
 
 export interface FiledFinding {
   audit: AuditRecord;
@@ -58,7 +64,7 @@ export function fileAuditFinding(ctx: ServiceContext, ref: { audit?: string; fin
   if (filed !== undefined) throw new ServiceError(`${finding.id} is already filed as issue #${filed}.`);
   const github = deps.github ?? ghPort(ctx.project, deps.run);
   if (!ref.allowPublic && github.repoVisibility() === "public") {
-    throw new ServiceError(
+    throw new PublicRepoError(
       `${ctx.project.github_repo ?? ctx.project.name} is public: an issue would disclose this vulnerability to everyone. Report it privately with a security advisory instead, or pass --public if it is safe to share.`,
     );
   }

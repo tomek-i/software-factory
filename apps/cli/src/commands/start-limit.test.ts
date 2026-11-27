@@ -43,3 +43,14 @@ describe("describeSchedulerEvent: the start limit", () => {
     expect(describeSchedulerEvent({ type: "unlimited", project: "shop" }, plain)).toBe("[shop] Start limit lifted: queued issues can start again.");
   });
 });
+
+describe("describeSchedulerEvent: audits", () => {
+  it("says where to look, since a worker serves projects outside the current folder", () => {
+    expect(describeSchedulerEvent({ type: "audit_finished", project: "shop", status: "complete", findings: 2 }, plain)).toBe(
+      "[shop] Audit finished: 2 findings. `factory audit show` in its folder lists them.",
+    );
+    expect(describeSchedulerEvent({ type: "audit_finished", project: "shop", status: "skipped", findings: 0 }, plain)).toBe(
+      "[shop] Audit skipped. `factory audit show` in its folder says why.",
+    );
+  });
+});

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Clock, Inbox, ListTodo, Settings, SquarePen } from "lucide-react";
+import { Activity, Clock, Inbox, ListTodo, Settings, ShieldCheck, SquarePen } from "lucide-react";
 import { useEffect } from "react";
 import { NavLink, Outlet } from "react-router";
 import { api, ApiError } from "../lib/api";
@@ -91,6 +91,10 @@ export function Layout() {
             <NavLink to="/new" className={tab}>
               <SquarePen aria-hidden />
               New issue
+            </NavLink>
+            <NavLink to="/audits" className={tab}>
+              <ShieldCheck aria-hidden />
+              Audits
             </NavLink>
             <NavLink to="/settings" className={tab}>
               <Settings aria-hidden />

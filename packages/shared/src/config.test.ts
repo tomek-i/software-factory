@@ -87,7 +87,7 @@ describe("securityScanModel", () => {
 
   it("keeps the deep scan out of the lenses you pick in reviews", () => {
     expect(factoryConfigSchema.safeParse({ version: 1, reviews: { always: ["security-scan"] } }).success).toBe(false);
-    expect(factoryConfigSchema.parse({ version: 1 }).security).toEqual({ scan_tool: "auto", scan_when: "off", scan_effort: "low", scan_timeout_min: 60, audit_effort: "medium", audit_timeout_min: 240 });
+    expect(factoryConfigSchema.parse({ version: 1 }).security).toEqual({ scan_tool: "auto", scan_when: "off", scan_effort: "low", scan_timeout_min: 60, audit_effort: "medium", audit_timeout_min: 240, audit_schedule: "off" });
   });
 });
 

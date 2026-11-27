@@ -193,6 +193,16 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
       return prefix(event.project)(style.attention(startLimitLine({ started: event.started, max: event.max, nextStartAt: event.until })));
     case "unlimited":
       return prefix(event.project)("Start limit lifted: queued issues can start again.");
+    case "audit_started":
+      return prefix(event.project)("Audit started: scanning the default branch with the claude-security plugin.");
+    case "audit_finished":
+      return prefix(event.project)(
+        event.status === "complete"
+          ? `Audit finished: ${event.findings} finding${event.findings === 1 ? "" : "s"}. ${style.hint("`factory audit show` in its folder lists them.")}`
+          : style.attention(`Audit ${event.status}. ${style.hint("`factory audit show` in its folder says why.")}`),
+      );
+    case "audit_failed":
+      return prefix(event.project)(style.attention(`Audit could not start: ${event.error}`));
     case "stopping":
       return event.now
         ? style.attention(`Stopping now: interrupted ${event.interrupted} run${event.interrupted === 1 ? "" : "s"}.`)
