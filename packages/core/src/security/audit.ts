@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { securityScanModel, type FactoryConfig, type Finding } from "@factory/shared";
@@ -6,6 +6,7 @@ import { factoryDataDir } from "../github/attachments.js";
 import { slugify } from "../git/worktrees.js";
 import type { Project } from "../store/store.js";
 import { runCommand, type CommandRunner } from "../util/exec.js";
+import { redactPaths } from "../util/redact.js";
 import type { SecurityScanPort } from "./scan.js";
 
 /**
@@ -33,9 +34,15 @@ export interface AuditRecord {
   filed: Record<string, number>;
 }
 
-/** Where a project's audits are kept, one folder each. */
-export function auditsDir(project: Pick<Project, "name" | "github_repo">, dataDir = factoryDataDir()): string {
-  return join(dataDir, "audits", slugify(project.github_repo ?? project.name, 80) || "project");
+type ProjectRef = Pick<Project, "name" | "github_repo">;
+
+/**
+ * Where a project's audits are kept, one folder each. Named after the GitHub repo with only the slash
+ * replaced (repo names are already safe file names), so two repos never share a folder.
+ */
+export function auditsDir(project: ProjectRef, dataDir = factoryDataDir()): string {
+  const key = project.github_repo ? project.github_repo.replace("/", "__") : `local-${slugify(project.name, 80) || "project"}`;
+  return join(dataDir, "audits", key);
 }
 
 export interface AuditOptions {
@@ -48,7 +55,10 @@ export interface AuditOptions {
   now?: () => Date;
 }
 
-/** Scan the default branch and record the result. Throws only when git cannot give it a checkout. */
+/**
+ * Scan the default branch and record the result. Throws only when git cannot fetch the branch or
+ * give it a checkout; a scan that fails, and a cleanup that fails, are recorded instead.
+ */
 export async function runAudit(options: AuditOptions): Promise<AuditRecord> {
   const { project, config } = options;
   const run = options.run ?? runCommand;
@@ -63,16 +73,29 @@ export async function runAudit(options: AuditOptions): Promise<AuditRecord> {
 
   git(["fetch", "--quiet", "--", "origin", branch]);
   const commit = git(["rev-parse", `origin/${branch}`]);
-  const started = now();
-  const dir = newAuditDir(auditsDir(project, options.dataDir), started);
   const temp = mkdtempSync(join(tmpdir(), "factory-audit-"));
   const worktree = join(temp, "worktree");
-  let added = false;
-  let record: AuditRecord;
+  const cleanup = () => {
+    try {
+      if (existsSync(worktree)) git(["worktree", "remove", "--force", worktree]);
+      git(["worktree", "prune"]);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  };
   try {
     // Detached at the fetched commit: no branch is left behind, and the user's checkout is untouched.
     git(["-c", "core.longpaths=true", "worktree", "add", "--quiet", "--detach", worktree, commit]);
-    added = true;
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+
+  const started = now();
+  const dir = newAuditDir(auditsDir(project, options.dataDir), started);
+  const base = { id: dir.split(/[\\/]/).pop()!, started_at: started.toISOString(), commit, effort: config.security.audit_effort, filed: {} };
+  let record: AuditRecord;
+  try {
     const result = await options.scan({
       worktree,
       effort: config.security.audit_effort,
@@ -81,46 +104,59 @@ export async function runAudit(options: AuditOptions): Promise<AuditRecord> {
       timeoutMs: config.security.audit_timeout_min * 60_000,
       signal: options.signal,
     });
-    const base = { id: dir.split(/[\\/]/).pop()!, started_at: started.toISOString(), finished_at: now().toISOString(), commit, effort: config.security.audit_effort, filed: {} };
-    record = options.signal?.aborted
-      ? { ...base, status: "cancelled", findings: [], notes: [], problem: "the audit was cancelled" }
-      : "skipped" in result
-        ? { ...base, status: "skipped", findings: [], notes: [], problem: result.skipped }
-        : "problem" in result
-          ? { ...base, status: "failed", findings: [], notes: [], problem: result.problem }
-          : { ...base, status: "complete", findings: result.findings, notes: result.notes };
-  } finally {
-    try {
-      if (added) git(["worktree", "remove", "--force", worktree]);
-      git(["worktree", "prune"]);
-    } finally {
-      rmSync(temp, { recursive: true, force: true });
-    }
+    const finished_at = now().toISOString();
+    // Findings that came back count even when Ctrl+C came just after.
+    record =
+      "findings" in result
+        ? { ...base, finished_at, status: "complete", findings: result.findings, notes: result.notes }
+        : options.signal?.aborted
+          ? { ...base, finished_at, status: "cancelled", findings: [], notes: [], problem: "the audit was cancelled" }
+          : "skipped" in result
+            ? { ...base, finished_at, status: "skipped", findings: [], notes: [], problem: result.skipped }
+            : { ...base, finished_at, status: "failed", findings: [], notes: [], problem: result.problem };
+  } catch (err) {
+    record = { ...base, finished_at: now().toISOString(), status: "failed", findings: [], notes: [], problem: `the scan failed: ${redactPaths((err as Error).message, { roots: [temp, root] })}` };
   }
+  // Recorded before the cleanup, so a worktree that can't be removed doesn't lose the scan.
   writeAudit(dir, record);
+  try {
+    cleanup();
+  } catch (err) {
+    record = { ...record, notes: [...record.notes, `the temporary worktree could not be removed: ${(err as Error).message}`] };
+    writeAudit(dir, record);
+  }
   return record;
 }
 
 /** A new folder named after the start time; a second audit in the same second gets a suffix. */
 function newAuditDir(parent: string, started: Date): string {
+  mkdirSync(parent, { recursive: true });
   const stamp = started.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-  let dir = join(parent, stamp);
-  for (let n = 2; existsSync(dir); n++) dir = join(parent, `${stamp}-${n}`);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  for (let n = 1; ; n++) {
+    const dir = join(parent, n === 1 ? stamp : `${stamp}-${n}`);
+    try {
+      // Not recursive: it fails when another audit took the name first, rather than sharing it.
+      mkdirSync(dir);
+      return dir;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
 }
 
+/** Through a temporary file, so a crash mid-write never leaves an unreadable record. */
 function writeAudit(dir: string, record: AuditRecord): void {
-  writeFileSync(join(dir, "audit.json"), `${JSON.stringify(record, null, 2)}\n`);
+  const file = join(dir, "audit.json");
+  writeFileSync(`${file}.tmp`, `${JSON.stringify(record, null, 2)}\n`);
+  renameSync(`${file}.tmp`, file);
 }
 
 /** The project's audits, newest first. A folder without a readable record (one still running) is left out. */
-export function listAudits(project: Pick<Project, "name" | "github_repo">, dataDir?: string): AuditRecord[] {
+export function listAudits(project: ProjectRef, dataDir?: string): AuditRecord[] {
   const parent = auditsDir(project, dataDir);
   if (!existsSync(parent)) return [];
   return readdirSync(parent)
-    .sort()
-    .reverse()
+    .sort((a, b) => b.localeCompare(a, "en", { numeric: true }))
     .flatMap((name) => {
       const record = readAuditFile(join(parent, name));
       return record ? [record] : [];
@@ -128,20 +164,29 @@ export function listAudits(project: Pick<Project, "name" | "github_repo">, dataD
 }
 
 /** One audit by id, or the newest one. */
-export function findAudit(project: Pick<Project, "name" | "github_repo">, id: string | undefined, dataDir?: string): AuditRecord | undefined {
+export function findAudit(project: ProjectRef, id: string | undefined, dataDir?: string): AuditRecord | undefined {
   const all = listAudits(project, dataDir);
   return id === undefined ? all[0] : all.find((a) => a.id === id);
 }
 
-/** Note that a finding was filed as an issue, so it is not filed twice. */
-export function recordFiled(project: Pick<Project, "name" | "github_repo">, audit: AuditRecord, findingId: string, issue: number, dataDir?: string): AuditRecord {
-  const updated = { ...audit, filed: { ...audit.filed, [findingId]: issue } };
-  writeAudit(join(auditsDir(project, dataDir), audit.id), updated);
+/** The issue a finding was filed as, by any of the project's audits: a later audit reports the same id. */
+export function filedIssue(project: ProjectRef, findingId: string, dataDir?: string): number | undefined {
+  for (const audit of listAudits(project, dataDir)) if (audit.filed[findingId] !== undefined) return audit.filed[findingId];
+  return undefined;
+}
+
+/** Note that a finding was filed as an issue, so it is not filed twice. Re-reads the record so a concurrent filing is kept. */
+export function recordFiled(project: ProjectRef, audit: Pick<AuditRecord, "id">, findingId: string, issue: number, dataDir?: string): AuditRecord {
+  const dir = join(auditsDir(project, dataDir), audit.id);
+  const current = readAuditFile(dir);
+  if (!current) throw new Error(`audit ${audit.id} has no readable record`);
+  const updated = { ...current, filed: { ...current.filed, [findingId]: issue } };
+  writeAudit(dir, updated);
   return updated;
 }
 
 /** The folder holding an audit's record and the plugin's report. */
-export function auditDir(project: Pick<Project, "name" | "github_repo">, audit: Pick<AuditRecord, "id">, dataDir?: string): string {
+export function auditDir(project: ProjectRef, audit: Pick<AuditRecord, "id">, dataDir?: string): string {
   return join(auditsDir(project, dataDir), audit.id);
 }
 

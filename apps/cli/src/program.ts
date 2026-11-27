@@ -295,12 +295,16 @@ export function buildProgram(): Command {
     .command("audit")
     .description("scan the whole default branch for vulnerabilities with the claude-security Claude Code plugin")
     .action(async () => {
-      // Ctrl+C stops the scan and removes its temporary worktree instead of leaving them behind.
+      // Ctrl+C stops the scan and removes its temporary worktree instead of leaving them behind. Kept
+      // for every Ctrl+C, not once: a second one during the scan's grace period would otherwise kill
+      // the process before that cleanup, leaving the scan's own processes running.
       const interrupt = new AbortController();
       const onSigint = () => interrupt.abort();
-      process.once("SIGINT", onSigint);
+      process.on("SIGINT", onSigint);
       try {
-        console.log(await runAuditNow(process.cwd(), { style: styleFor(process.stdout), signal: interrupt.signal }));
+        const { message, complete } = await runAuditNow(process.cwd(), { style: styleFor(process.stdout), signal: interrupt.signal });
+        console.log(message);
+        if (!complete) process.exitCode = interrupt.signal.aborted ? 130 : 1;
       } finally {
         process.off("SIGINT", onSigint);
       }

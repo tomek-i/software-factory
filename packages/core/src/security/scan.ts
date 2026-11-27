@@ -1,6 +1,6 @@
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { isBlocking, type Finding, type Severity } from "@factory/shared";
 import { agentEnv } from "../agents/runner.js";
 import { newestPluginFile } from "../util/plugins.js";
@@ -166,10 +166,10 @@ export async function runSecurityScan(request: ScanRequest): Promise<ScanResult>
   if (exit.code === null) return { problem: request.signal?.aborted ? "the scan was cancelled" : "the scan took too long and was stopped" };
   // The plugin also ends with 1 after an unfinished scan that still wrote a report: its findings count.
   const report = latestReport(request.outDir);
-  if (!report) return { problem: `the scan wrote no results (exit code ${exit.code}); see security-scan/cli-output.log` };
+  if (!report) return { problem: `the scan wrote no results (exit code ${exit.code}); see ${basename(request.outDir)}/cli-output.log` };
   const { findings, problems } = scanFindings(readFileSync(report.results, "utf8"));
   const notes = [
-    ...(exit.code !== 0 ? [`the scan ended with exit code ${exit.code}, so it may be incomplete; see security-scan/cli-output.log`] : []),
+    ...(exit.code !== 0 ? [`the scan ended with exit code ${exit.code}, so it may be incomplete; see ${basename(request.outDir)}/cli-output.log`] : []),
     ...(report.verification && report.verification !== "verified" ? [`the scan's verification is ${report.verification}`] : []),
     ...problems.slice(0, 3),
   ];

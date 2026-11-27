@@ -1,4 +1,15 @@
-import { auditById, auditDir, auditHistory, auditProject, fileAuditFinding, type AuditPort, type AuditRecord, type CommandRunner, type SecurityScanPort } from "@factory/core";
+import {
+  auditById,
+  auditDir,
+  auditHistory,
+  auditProject,
+  fileAuditFinding,
+  filedIssue,
+  type AuditPort,
+  type AuditRecord,
+  type CommandRunner,
+  type SecurityScanPort,
+} from "@factory/core";
 import { withProject, withProjectAsync } from "../context.js";
 import { plain, type Style } from "../style.js";
 
@@ -12,15 +23,16 @@ export interface AuditDeps {
   print?: (line: string) => void;
 }
 
-/** `factory audit`: scan the whole default branch with the claude-security plugin. */
-export async function runAuditNow(cwd: string, deps: AuditDeps = {}): Promise<string> {
+/** `factory audit`: scan the whole default branch with the claude-security plugin. `complete` is false when it couldn't scan. */
+export async function runAuditNow(cwd: string, deps: AuditDeps = {}): Promise<{ message: string; complete: boolean }> {
   const style = deps.style ?? plain;
-  (deps.print ?? console.log)(style.detail("Scanning the default branch with the claude-security plugin. This takes minutes, longer on a big repository."));
   return withProjectAsync(
     cwd,
     async (ctx) => {
+      (deps.print ?? console.log)(style.detail("Scanning the default branch with the claude-security plugin. This takes minutes, longer on a big repository."));
       const audit = await auditProject(ctx, deps);
-      return auditText(audit, style, auditDir(ctx.project, audit, deps.dataDir));
+      const message = auditText(audit, style, auditDir(ctx.project, audit, deps.dataDir), (f) => filedIssue(ctx.project, f, deps.dataDir), true);
+      return { message, complete: audit.status === "complete" };
     },
     deps.run,
   );
@@ -47,7 +59,8 @@ export function runAuditShow(cwd: string, id: string | undefined, deps: AuditDep
     cwd,
     (ctx) => {
       const audit = auditById(ctx, id, deps);
-      return auditText(audit, style, auditDir(ctx.project, audit, deps.dataDir));
+      const newest = auditHistory(ctx, deps)[0]?.id === audit.id;
+      return auditText(audit, style, auditDir(ctx.project, audit, deps.dataDir), (f) => filedIssue(ctx.project, f, deps.dataDir), newest);
     },
     deps.run,
   );
@@ -71,16 +84,21 @@ function statusText(audit: AuditRecord, style: Style): string {
   return audit.findings.length ? style.attention(`${audit.findings.length} finding${audit.findings.length === 1 ? "" : "s"}, ${blocking} critical or major`) : style.success("no findings");
 }
 
-function auditText(audit: AuditRecord, style: Style, dir: string): string {
+/** `newest` leaves `--audit` out of the hint, since `factory audit file` defaults to the newest audit. */
+function auditText(audit: AuditRecord, style: Style, dir: string, filedOf: (finding: string) => number | undefined, newest: boolean): string {
   const lines = [`Audit ${style.detail(audit.id)} of ${audit.commit.slice(0, 12)} (effort ${audit.effort}): ${statusText(audit, style)}`];
   for (const note of audit.notes) lines.push(style.warning(`note: ${note}`));
   for (const f of audit.findings) {
     const where = f.file ? ` ${style.detail(`${f.file}${f.line ? `:${f.line}` : ""}`)}` : "";
-    const filed = audit.filed[f.id] === undefined ? "" : style.detail(` (issue #${audit.filed[f.id]})`);
-    lines.push("", `${f.severity.toUpperCase()}  ${f.claim}${where}${filed}`, `  ${style.detail(f.id)}`);
+    const issue = filedOf(f.id);
+    const filed = issue === undefined ? "" : style.detail(` (issue #${issue})`);
+    // The evidence goes into the issue as written, so it is shown here before anyone files it.
+    const evidence = f.evidence.split(/\r?\n/).map((l) => `  ${l}`);
+    lines.push("", `${f.severity.toUpperCase()}  ${f.claim}${where}${filed}`, `  ${style.detail(f.id)}`, ...evidence);
   }
-  const open = audit.findings.filter((f) => audit.filed[f.id] === undefined);
-  if (open.length) lines.push("", style.hint(`File one as an issue: \`factory audit file ${open[0]!.id}\`. The full report: ${dir}`));
+  const open = audit.findings.filter((f) => filedOf(f.id) === undefined);
+  const from = newest ? "" : ` --audit ${audit.id}`;
+  if (open.length) lines.push("", style.hint(`File one as an issue: \`factory audit file ${open[0]!.id}${from}\`. The full report: ${dir}`));
   else if (audit.status === "complete") lines.push("", style.detail(`The full report: ${dir}`));
   return lines.join("\n");
 }
