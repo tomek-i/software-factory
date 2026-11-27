@@ -10,6 +10,7 @@ New to the factory? Start with the [README](../README.md), then [Using the facto
 - [Runs](runs.md): starting, the worker, when a run stops for you, merging on GitHub, cleanup.
 - [Web mode](web-mode.md): `factory serve` and its screens.
 - [Moving between machines](moving-between-machines.md): `factory export` and `factory import`.
+- [Security audits](security-audit.md): `factory audit`, a scan of the whole default branch.
 
 ## How it works
 

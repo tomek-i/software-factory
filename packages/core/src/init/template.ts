@@ -96,9 +96,11 @@ reviews:
 # whose findings the verifier checks. It runs many agents, so it costs several times a lens.
 # scan_when: off | high_risk (triage rated RISK: HIGH) | always. Install the plugin first:
 # /plugin install claude-security@claude-plugins-official
+# \`factory audit\` scans the whole default branch with the same plugin.
 security:
   scan_when: off
   scan_effort: low      # low | medium | high
+  audit_effort: medium
 
 # Model and effort per agent. Left out, every agent uses the recommended model below, and a better
 # recommendation reaches this project with the next factory update. To change one, uncomment

@@ -105,13 +105,13 @@ function findingId(record: ScanRecord, n: number): string {
 export interface ScanRequest {
   /** Path to the plugin's `cli.py`. */
   cli: string;
-  /** The run's worktree, at the commit under review. */
+  /** The checkout to scan: a run's worktree, at the commit under review, or the default branch for an audit. */
   worktree: string;
-  /** Where the branch left the default branch: the scan covers the changes since. */
-  base: string;
+  /** Where the branch left the default branch: the scan covers the changes since. Left out, the whole repository. */
+  base?: string;
   effort: string;
   model: string;
-  /** `round-N/security-scan/`: the plugin's report folder and its output land here. */
+  /** `round-N/security-scan/` (or an audit's folder): the plugin's report folder and its output land here. */
   outDir: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -138,8 +138,7 @@ export async function runSecurityScan(request: ScanRequest): Promise<ScanResult>
         ...pre,
         request.cli,
         request.worktree,
-        "--base",
-        request.base,
+        ...(request.base ? ["--base", request.base] : []),
         "--effort",
         request.effort,
         "--model",

@@ -28,6 +28,7 @@ The factory runs AI agents on issue text, and on a public repo anyone can write 
 - Agents run on your Claude subscription. `ANTHROPIC_API_KEY` is removed from their environment.
 - The engine, not an agent, starts the app, drives the browser and records videos, and only on the app's own origin.
 - The optional deep security scan ([Deep security scan](docs/pipeline.md#deep-security-scan)) runs the claude-security plugin's agents with no sandbox, in auto mode, as you. They get the agents' environment (no tokens, `gh` logged out) and your user settings, never the repo's; what they leave in the worktree is undone. The scan never runs on a change built from an untrusted author's issue.
+- `factory audit` ([Security audits](docs/security-audit.md)) runs the same plugin on the default branch as merged, in a temporary worktree. Its results stay in the factory's data folder, outside the repo; filing a finding as an issue is refused on a public repository unless you pass `--public`.
 
 **What a branch cannot change:**
 - Config, prompts, checks, the trust list, lessons and the `CLAUDE.md` given to agents are read from the default branch on GitHub, never from the run's own branch.

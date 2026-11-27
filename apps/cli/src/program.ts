@@ -1,6 +1,7 @@
 import { Command, Option, type HelpConfiguration } from "commander";
 import { DEFAULT_MAX_RUNS } from "@factory/core";
 import { DEFAULT_PORT } from "@factory/server";
+import { runAuditFile, runAuditList, runAuditNow, runAuditShow } from "./commands/audit.js";
 import { runChecksList, runDismiss } from "./commands/checks.js";
 import { runCleanup } from "./commands/cleanup.js";
 import { runConfigReset } from "./commands/config.js";
@@ -288,6 +289,43 @@ export function buildProgram(): Command {
     .requiredOption("-m, --message <text>", "why (required, sent to GitHub and stored with the decision)")
     .action((ref: string, alert: string, options: { reason: string; message: string }) => {
       console.log(runDismiss(process.cwd(), ref, alert, options));
+    });
+
+  const audit = program
+    .command("audit")
+    .description("scan the whole default branch for vulnerabilities with the claude-security Claude Code plugin")
+    .action(async () => {
+      // Ctrl+C stops the scan and removes its temporary worktree instead of leaving them behind.
+      const interrupt = new AbortController();
+      const onSigint = () => interrupt.abort();
+      process.once("SIGINT", onSigint);
+      try {
+        console.log(await runAuditNow(process.cwd(), { style: styleFor(process.stdout), signal: interrupt.signal }));
+      } finally {
+        process.off("SIGINT", onSigint);
+      }
+    });
+  audit
+    .command("list")
+    .description("list this project's audits, newest first")
+    .action(() => {
+      console.log(runAuditList(process.cwd(), { style: styleFor(process.stdout) }));
+    });
+  audit
+    .command("show")
+    .description("show an audit's findings (the newest by default)")
+    .argument("[audit]", "audit id, as `factory audit list` shows it")
+    .action((id: string | undefined) => {
+      console.log(runAuditShow(process.cwd(), id, { style: styleFor(process.stdout) }));
+    });
+  audit
+    .command("file")
+    .description("open a GitHub issue for an audit finding, so the factory can fix it; refused on a public repository unless --public")
+    .argument("<finding>", "finding id, as `factory audit show` lists it")
+    .option("--audit <id>", "the audit the finding is from (default: the newest)")
+    .option("--public", "file it even though the repository is public, disclosing the vulnerability")
+    .action((finding: string, options: { audit?: string; public?: boolean }) => {
+      console.log(runAuditFile(process.cwd(), finding, options));
     });
 
   const lessons = program

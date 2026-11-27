@@ -38,6 +38,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `github/port.ts`: `GithubPort` and its real `gh` implementation, `ghPort`
 - `github/issues.ts`: issue sync; `github/media.ts`, `github/attachments.ts`: videos and images on PRs; `github/labels.ts`: status labels
 - `capture/`: starts the app (`server.ts`), drives Chromium (`browser.ts`), renders narrated video (`narrate.ts`), writes the report (`report.ts`)
+- `security/audit.ts`: `factory audit` (`runAudit`), the plugin's whole-repo scan of the default branch in a temporary worktree, kept in `factoryDataDir`; `service/audit.ts`: `auditProject`, `fileAuditFinding` (refused on a public repo)
 - `security/scan.ts`: the `security-scan` review lens, the claude-security plugin's CLI (`findSecurityScan`, `runSecurityScan`) and its findings as a review (`securityScanReviewText`)
 - `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`; `config/reset.ts`: `resetConfigText`, behind `factory config reset`; `config/edit.ts`: `editConfigText`, which sets, adds or resets settings keeping comments
 - `gate/gate.ts`: the quality gate (`runQualityGate`); `gate/secrets.ts`: secret scan of the diff
@@ -59,7 +60,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 
 `apps/cli/src`: the `factory` command
 - `main.ts` and `program.ts`: entry point and commander wiring
-- `commands/`: one file per command group, such as `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`, `work.ts`, `serve.ts`: formatting over `packages/core/src/service/`
+- `commands/`: one file per command group, such as `audit.ts`, `runs.ts`, `show.ts`, `issues.ts`, `lessons.ts`, `new.ts`, `projects.ts`, `work.ts`, `serve.ts`: formatting over `packages/core/src/service/`
 - `context.ts`: `withProject` over the core `openProject`, turning a `ServiceError` into a `CliError`; `self.ts`: `refuseRunningOnItself` (see [Dogfooding](CONTRIBUTING.md#dogfooding))
 - `apps/cli/scripts/bundle.mjs`: builds the npm package (see [Releases](CONTRIBUTING.md#releases)). The bundle defines `__FACTORY_BUNDLE__`, which `SHIPPED_PROMPTS_DIR` and `defaultWebRoot` check to find the prompts and the web app next to the bundle's folder. A new runtime dependency of any package must also go in `apps/cli/package.json`
 
