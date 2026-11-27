@@ -41,8 +41,15 @@ const protectedPath = z
  * `acceptance` checks the issue's and the spec's acceptance criteria one by one. The engine runs it in
  * every review round whatever `reviews.always` and `reviews.ui` say (see `reviewLenses` in core).
  */
-export const REVIEW_LENSES = ["code", "security", "docs", "ux", "ui", "acceptance"] as const;
+export const REVIEWER_LENSES = ["code", "security", "docs", "ux", "ui", "acceptance"] as const;
+/**
+ * The lenses an agent reviews, plus `security-scan`: the engine runs the claude-security plugin's
+ * scan on the change instead of an agent turn, when `security.scan.when` asks for it.
+ */
+export const REVIEW_LENSES = [...REVIEWER_LENSES, "security-scan"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
+export const SECURITY_SCAN_WHEN = ["off", "high_risk", "always"] as const;
+export const SECURITY_SCAN_EFFORTS = ["low", "medium", "high"] as const;
 
 export const AGENT_ROLES = [
   "issue_writer",
@@ -107,6 +114,8 @@ export const DEFAULT_MODELS = {
     docs: { model: "haiku", effort: "low" },
     ux: { model: "sonnet", effort: "medium" },
     ui: { model: "haiku", effort: "low" },
+    // The scan runs its agents in auto mode, which needs a model that supports it.
+    "security-scan": { model: "opus" },
   },
   high_risk: {
     builder: { model: "opus", effort: "high" },
@@ -191,8 +200,20 @@ export const factoryConfigSchema = z.object({
     .prefault({}),
   reviews: z
     .object({
-      always: z.array(z.enum(REVIEW_LENSES)).default(["code", "security", "docs"]),
-      ui: z.array(z.enum(REVIEW_LENSES)).default(["ux", "ui"]),
+      always: z.array(z.enum(REVIEWER_LENSES)).default(["code", "security", "docs"]),
+      ui: z.array(z.enum(REVIEWER_LENSES)).default(["ux", "ui"]),
+    })
+    .prefault({}),
+  // The claude-security plugin's scan of the change, as the `security-scan` review lens. It runs many
+  // agents, so it costs several times a lens: off unless asked for, or only on RISK: HIGH.
+  security: z
+    .object({
+      // `auto` looks for the plugin in Claude Code's plugin cache, `off` never runs it, anything else
+      // is a path to the plugin's `scripts/cli.py`.
+      scan_tool: z.string().min(1).default("auto"),
+      scan_when: z.enum(SECURITY_SCAN_WHEN).default("off"),
+      scan_effort: z.enum(SECURITY_SCAN_EFFORTS).default("low"),
+      scan_timeout_min: z.number().positive().default(60),
     })
     .prefault({}),
   models: z
@@ -299,4 +320,14 @@ export function resolveModel(
   ];
   const all = [...chain(config.models), ...chain(DEFAULT_MODELS)];
   return { model: all.find((s) => s?.model)!.model!, effort: all.find((s) => s?.effort)!.effort! };
+}
+
+/**
+ * The deep security scan's model: only its own entries, then the recommendation. The scan runs its
+ * agents in auto mode, which not every model supports, so a cheaper `default` or `roles.reviewer`
+ * meant for the agent lenses must not reach it.
+ */
+export function securityScanModel(config: Pick<FactoryConfig, "models">, risk?: "LOW" | "MEDIUM" | "HIGH"): string {
+  const { high_risk, reviews } = config.models;
+  return (risk === "HIGH" ? high_risk["security-scan"]?.model : undefined) ?? reviews["security-scan"]?.model ?? DEFAULT_MODELS.reviews["security-scan"].model;
 }

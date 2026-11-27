@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { factoryConfigSchema, isTrustedAuthor, isTrustedIssue, resolveModel } from "./config.js";
+import { factoryConfigSchema, isTrustedAuthor, isTrustedIssue, resolveModel, securityScanModel } from "./config.js";
 
 describe("isTrustedAuthor", () => {
   it("trusts nobody by default", () => {
@@ -72,6 +72,22 @@ describe("factoryConfigSchema", () => {
   it("has no way to enable unsafe mode from config", () => {
     const config = factoryConfigSchema.parse({ version: 1, unsafe: true } as unknown);
     expect("unsafe" in config).toBe(false);
+  });
+});
+
+describe("securityScanModel", () => {
+  it("uses only the scan's own entries, so a cheaper default for the agent lenses never reaches it", () => {
+    const cheap = factoryConfigSchema.parse({ version: 1, models: { default: "haiku", roles: { reviewer: "haiku" }, high_risk: { reviewer: "haiku" } } });
+    expect(securityScanModel(cheap)).toBe("opus");
+    expect(securityScanModel(cheap, "HIGH")).toBe("opus");
+    const own = factoryConfigSchema.parse({ version: 1, models: { reviews: { "security-scan": "sonnet" }, high_risk: { "security-scan": "fable" } } });
+    expect(securityScanModel(own, "MEDIUM")).toBe("sonnet");
+    expect(securityScanModel(own, "HIGH")).toBe("fable");
+  });
+
+  it("keeps the deep scan out of the lenses you pick in reviews", () => {
+    expect(factoryConfigSchema.safeParse({ version: 1, reviews: { always: ["security-scan"] } }).success).toBe(false);
+    expect(factoryConfigSchema.parse({ version: 1 }).security).toEqual({ scan_tool: "auto", scan_when: "off", scan_effort: "low", scan_timeout_min: 60 });
   });
 });
 

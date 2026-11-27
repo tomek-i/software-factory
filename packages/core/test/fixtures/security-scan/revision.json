@@ -1,0 +1,94 @@
+{
+  "generated_at": "2026-11-26T23:58:34+00:00",
+  "duration_s": 50,
+  "scan_id": "0522398f-7932-4376-980d-1c0eb90c4860",
+  "mode": "scan.changes",
+  "plugin_version": "0.13.1",
+  "scan_prefix": "",
+  "scope": [],
+  "revision": {
+    "versioned": true,
+    "commit": "68f12ab5b65b428789c8431164fb6acbf470c6a7",
+    "branch": "feature",
+    "dirty": false,
+    "base": "main",
+    "merge_base": "ff5ccc6cb9c4c58f9379d533dad2412f1163023f"
+  },
+  "revision_source": "self-reported",
+  "model": null,
+  "effort": "low",
+  "run_shape": {
+    "requested_effort": "low",
+    "collapsed": null,
+    "source": "coverage.json",
+    "diff_files": 1,
+    "diff_lines": 7,
+    "pre_existing": 0,
+    "pre_existing_at": [],
+    "scope_files": null,
+    "empty_diff": false,
+    "empty_scope": false,
+    "researchers_dispatched": 1,
+    "verification_runs": 1,
+    "past_fix_researchers": null,
+    "past_fix_follow_up": null,
+    "skipped_components": [],
+    "pruned_buckets": [
+      {
+        "group": "change",
+        "lens": "memory-and-unsafe"
+      }
+    ],
+    "completeness_check_outcome": "not-applicable",
+    "unaccounted_top_level_dirs": [],
+    "inventory_fallback": null,
+    "top_level_dir_count": null,
+    "target_files": null,
+    "component_cap": null,
+    "research_coverage": null
+  },
+  "findings": {
+    "total": 1,
+    "critical": 1,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "by_confidence": {
+      "critical": {
+        "low": 0,
+        "medium": 0,
+        "high": 1
+      },
+      "high": {
+        "low": 0,
+        "medium": 0,
+        "high": 0
+      },
+      "medium": {
+        "low": 0,
+        "medium": 0,
+        "high": 0
+      },
+      "low": {
+        "low": 0,
+        "medium": 0,
+        "high": 0
+      }
+    }
+  },
+  "verification": {
+    "status": "verified",
+    "candidates": 1,
+    "candidates_deduped": 1,
+    "panel_votes": 2,
+    "panel_reviewed_findings": 1,
+    "panel_quorum_findings": 1,
+    "unreviewed_candidate_sites": 0,
+    "incomplete_panel_candidates": 0,
+    "attested_findings": 0,
+    "reason": null,
+    "reason_kind": null,
+    "researchers_dispatched": 1,
+    "researchers_returned": 1
+  }
+}

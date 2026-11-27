@@ -1,4 +1,4 @@
-import { AGENT_ROLES, EFFORT_LEVELS, factoryConfigSchema, OPEN_FEEDBACK_MODES, REVIEW_LENSES, type FactoryConfig } from "./config.js";
+import { AGENT_ROLES, EFFORT_LEVELS, factoryConfigSchema, OPEN_FEEDBACK_MODES, REVIEW_LENSES, REVIEWER_LENSES, SECURITY_SCAN_EFFORTS, SECURITY_SCAN_WHEN, type FactoryConfig } from "./config.js";
 import { GATE_MODES } from "./states.js";
 
 /** The sections of `.factory/config.yaml`, in the order docs/configuration.md describes them. */
@@ -11,6 +11,7 @@ export const SETTING_SECTIONS = [
   { key: "merge", title: "Merge", about: "How and when the PR is merged." },
   { key: "loops", title: "Loops", about: "How often a run may go back to an earlier stage. At the cap the run stops for you." },
   { key: "reviews", title: "Reviews", about: "Which review lenses run. The acceptance lens always runs." },
+  { key: "security", title: "Security", about: "The deep security scan of each change, with the claude-security Claude Code plugin." },
   { key: "models", title: "Models", about: "The model and effort for each agent. What you leave out uses the recommended model." },
   { key: "concurrency", title: "Concurrency", about: "How many runs go on at once." },
   { key: "trust", title: "Trust", about: "Whose issues and comments count as the spec." },
@@ -142,8 +143,19 @@ export const SETTINGS: readonly Setting[] = [
   { path: "loops.max_review_rounds", section: "loops", label: "Review rounds", help: "Confirmed review findings sending the build back.", kind: { type: "integer", min: 1 } },
   { path: "loops.max_resyncs", section: "loops", label: "Re-syncs", help: "The merge stage sending the build back: conflicts, failed re-checks, open feedback with fix.", kind: { type: "integer", min: 1 } },
 
-  { path: "reviews.always", section: "reviews", label: "Every change", help: "The lenses that look at every change.", kind: { type: "list", options: REVIEW_LENSES } },
-  { path: "reviews.ui", section: "reviews", label: "UI changes", help: "The lenses that only look at UI changes.", kind: { type: "list", options: REVIEW_LENSES } },
+  { path: "reviews.always", section: "reviews", label: "Every change", help: "The lenses that look at every change.", kind: { type: "list", options: REVIEWER_LENSES } },
+  { path: "reviews.ui", section: "reviews", label: "UI changes", help: "The lenses that only look at UI changes.", kind: { type: "list", options: REVIEWER_LENSES } },
+
+  {
+    path: "security.scan_when",
+    section: "security",
+    label: "Deep scan",
+    help: "When the claude-security plugin scans the change as an extra review lens: off, high_risk (triage rated the risk HIGH) or always. It costs several times a review lens.",
+    kind: { type: "enum", options: SECURITY_SCAN_WHEN },
+  },
+  { path: "security.scan_tool", section: "security", label: "Scan tool", help: "auto, off, or a path to the plugin's scripts/cli.py.", kind: { type: "string" } },
+  { path: "security.scan_effort", section: "security", label: "Scan effort", help: "How hard the scan looks; higher costs more.", kind: { type: "enum", options: SECURITY_SCAN_EFFORTS } },
+  { path: "security.scan_timeout_min", section: "security", label: "Scan timeout (minutes)", help: "A scan that takes longer is stopped and the review goes on without it.", kind: { type: "number" } },
 
   { path: "models.default", section: "models", label: "Default model", help: "For every agent the file doesn't name.", kind: { type: "string" } },
   { path: "models.effort", section: "models", label: "Default effort", help: "For every agent the file doesn't name.", kind: { type: "enum", options: EFFORT_LEVELS } },

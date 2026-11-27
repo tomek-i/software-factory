@@ -38,6 +38,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `github/port.ts`: `GithubPort` and its real `gh` implementation, `ghPort`
 - `github/issues.ts`: issue sync; `github/media.ts`, `github/attachments.ts`: videos and images on PRs; `github/labels.ts`: status labels
 - `capture/`: starts the app (`server.ts`), drives Chromium (`browser.ts`), renders narrated video (`narrate.ts`), writes the report (`report.ts`)
+- `security/scan.ts`: the `security-scan` review lens, the claude-security plugin's CLI (`findSecurityScan`, `runSecurityScan`) and its findings as a review (`securityScanReviewText`)
 - `config/load.ts`: parses config; `config/trusted.ts`: `trustedReader`, `loadTrustedConfig`; `config/reset.ts`: `resetConfigText`, behind `factory config reset`; `config/edit.ts`: `editConfigText`, which sets, adds or resets settings keeping comments
 - `gate/gate.ts`: the quality gate (`runQualityGate`); `gate/secrets.ts`: secret scan of the diff
 - `git/worktrees.ts`: creates and removes run worktrees in the repo's `.worktrees` folder; `git/commit-remote.ts`: `commitToRemote`, a commit pushed from a temporary worktree (lessons, settings)
@@ -50,7 +51,7 @@ A pnpm monorepo in TypeScript (ESM). The short layout is in [CONTRIBUTING: Layou
 - `service/project.ts`: `openProject` for the repo containing a folder, `openRegisteredProject` for an entry in the project list
 - `registry.ts`: the per-user project list (`registerProject`, `listRegistered`, `unregisterProject`), in `factoryDataDir` (`github/attachments.ts`); writes take a lock file
 - `scheduler/`: `Scheduler` (`scheduler.ts`), which continues stopped runs and starts queued issues across projects within the limits, pausing on the usage limit; `start-limit.ts`: `startLimit`, the rolling 24 hours behind `github.max_starts_per_day`, shared with the front ends that say it holds the queue; `stop.ts` for `factory stop`; `workers.ts`: the running workers and live leases `factory upgrade` refuses to replace the factory under
-- `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`
+- `util/`: `exec.ts` (`runCommand`), `process.ts` (`killTree`), `redact.ts` (`redactPaths`), `git.ts`, `spawn.ts` (`spawnAndWait`, for long commands such as narrate and the scan), `plugins.ts` (`newestPluginFile` in Claude Code's plugin cache)
 
 `packages/core/prompts/`: shipped role prompts. A repo overrides one with `.factory/prompts/<role>.md` on its default branch.
 
@@ -109,7 +110,7 @@ A `GithubPort` method:
 From the adversarial reviews of #58 to #61. The protections are summarised in [SECURITY.md](SECURITY.md).
 - Issue text, comments and agent output derived from them are untrusted data. Frame them as data (`issueBlock`), and never let them become a trusted spec without a human. See [Trusted authors](docs/trust.md#trusted-authors).
 - Never read trust, config or progress from files a branch can plant in the working tree. Use the trusted reader, the store or the run folder.
-- Know what each child process's environment holds. Only the app started for capture gets an allowlist (`APP_ENV_ALLOWLIST` in `packages/core/src/capture/server.ts`). Checks get the full environment minus `CHECK_ENV_DENYLIST`, so no tokens. Agents get the full environment minus `AGENT_ENV_DENYLIST`, with `gh` logged out and git's credential helpers, askpass and ssh keys off (`agentEnv`); they still run as the user, so an agent can undo this on purpose (a barrier, not a sandbox). A new child process whose output is published gets an allowlist.
+- Know what each child process's environment holds. Only the app started for capture gets an allowlist (`APP_ENV_ALLOWLIST` in `packages/core/src/capture/server.ts`). Checks get the full environment minus `CHECK_ENV_DENYLIST`, so no tokens. Agents get the full environment minus `AGENT_ENV_DENYLIST`, with `gh` logged out and git's credential helpers, askpass and ssh keys off (`agentEnv`); they still run as the user, so an agent can undo this on purpose (a barrier, not a sandbox). The deep security scan's agents get `agentEnv` too. A new child process whose output is published gets an allowlist.
 - Clean up processes, worktrees and temp dirs on every path: success, error, timeout, cancel and signal. Kill whole process trees with `killTree`.
 - Anything posted to GitHub: quote `@mentions` (`quietMentions`), and keep logs and local paths out of PR bodies and comments (`redactPaths`).
 - Commit hooks and signing are never skipped (no `--no-verify`, no `--no-gpg-sign`).

@@ -151,7 +151,7 @@ async function capturePlan(ctx: StageContext, run: Run, worktree: Worktree, roun
  * file): the tree was clean when capture began, and the PR and merge stages need it clean.
  * Ignored files (node_modules, caches) stay. Returns the paths that were undone.
  */
-function restoreWorktree(ctx: StageContext, worktree: Worktree): string[] {
+export function restoreWorktree(ctx: StageContext, worktree: Worktree): string[] {
   const changed = uncommitted(ctx, worktree);
   if (changed.length === 0) return [];
   const git = (args: string[]) => ctx.exec("git", args, { cwd: worktree.path });
@@ -164,7 +164,12 @@ function restoreWorktree(ctx: StageContext, worktree: Worktree): string[] {
 function uncommitted(ctx: StageContext, worktree: Worktree): string[] {
   const status = ctx.exec("git", ["status", "--porcelain"], { cwd: worktree.path });
   if (status.code !== 0) throw new Error(`git status failed: ${status.stderr}`);
-  return status.stdout.split(/\r?\n/).filter(Boolean).map((l) => l.slice(3));
+  // The runner trims its output, so the first line's status column may have lost its leading space
+  // (" M a.txt" arrives as "M a.txt"): a fixed slice would cut the path.
+  return status.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((l) => /^\s*\S{1,2} (.+)$/.exec(l)?.[1] ?? l);
 }
 
 /** Upload the screenshots and the video. A failure is noted in the outcome; it never stops the run. */

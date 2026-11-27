@@ -1,10 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { isBlocking, isTrustedIssue, parseCriteria, parseVerdict, type ParsedVerdict, type ReviewLens } from "@factory/shared";
+import { isBlocking, isTrustedIssue, parseCriteria, parseVerdict, securityScanModel, type ParsedVerdict, type ReviewLens } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn, type TurnResult } from "../../agents/turn.js";
 import { gitEvidence, snapshot, type Worktree } from "../../git/worktrees.js";
 import { factoryComment } from "../../github/port.js";
+import { securityScanReviewText } from "../../security/scan.js";
+import { restoreWorktree } from "./capture.js";
 import type { Issue, Run } from "../../store/store.js";
 import { redactPaths } from "../../util/redact.js";
 import { acceptanceCount, acceptanceReviewText, extractCriteria, matchAnswers, readAcceptanceRecord, writeAcceptanceRecord, type Criterion } from "../acceptance.js";
@@ -57,14 +59,24 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
     const answered = readValid("acceptance", verdictPath(dir, "acceptance", round), () => []);
     if (!criteria.length || answered) recordAcceptance(roundDir, criteria, answered);
   }
-  const agents = pending.filter((lens) => lens !== "acceptance" || !readReview(roundDir, lens));
-  const turns = await Promise.all(
-    agents.map((lens) =>
-      lens === "acceptance"
-        ? acceptanceTurn(ctx, run, issue, worktree, criteria, round, base, commit, changeFile)
-        : reviewTurn(ctx, run, issue, worktree, lens, round, base, commit, changeFile),
+  const agents = pending.filter((lens) => lens !== "security-scan" && (lens !== "acceptance" || !readReview(roundDir, lens)));
+  // The deep scan is a command, not an agent turn: it runs next to the lenses and writes its review itself.
+  const scanning = pending.includes("security-scan") ? securityScanLens(ctx, run, issue, worktree, roundDir, base) : Promise.resolve();
+  const [turns] = await Promise.all([
+    Promise.all(
+      agents.map((lens) =>
+        lens === "acceptance"
+          ? acceptanceTurn(ctx, run, issue, worktree, criteria, round, base, commit, changeFile)
+          : reviewTurn(ctx, run, issue, worktree, lens, round, base, commit, changeFile),
+      ),
     ),
-  );
+    scanning,
+  ]);
+  // Cancelled, or this worker lost the run, while the lenses or the scan ran (the scan wrote no review then).
+  if (ctx.signal?.aborted) {
+    if (ctx.load(run.id).state !== run.state) return undefined;
+    return { kind: "stopped", state: run.state, reason: "this worker lost the run during the review" };
+  }
   // A usage limit stops the run where it is; the reviews already written are kept for next time.
   const limited = turns.find((t) => t.turn.status === "failed" && t.turn.agent.outcome.kind === "rate_limited");
   if (limited && limited.turn.status !== "ok") return ctx.agentTrouble(run, `reviewer (${limited.lens})`, limited.turn);
@@ -294,6 +306,44 @@ async function reviewTurn(
     },
   });
   return { lens, turn };
+}
+
+/**
+ * The `security-scan` lens: the claude-security plugin scans the change since `base` and its findings
+ * become `review-security-scan.md`. It never blocks the review by failing: a scan that cannot run
+ * passes with the reason, as the security lens still looked at the change.
+ */
+async function securityScanLens(ctx: StageContext, run: Run, issue: Issue, worktree: Worktree, roundDir: string, base: string): Promise<void> {
+  const { security } = ctx.deps.config;
+  // The scan's agents run as the user with no sandbox and may run what they find, so only on a
+  // change built from a trusted author's issue.
+  const result = !isTrustedIssue(ctx.deps.config, issue)
+    ? { skipped: "the issue's author is not trusted, and the scan runs without a sandbox" }
+    : await ctx.securityScan({
+        worktree: worktree.path,
+        base,
+        effort: security.scan_effort,
+        model: securityScanModel(ctx.deps.config, ctx.triageRisk(run)),
+        outDir: join(roundDir, "security-scan"),
+        timeoutMs: security.scan_timeout_min * 60_000,
+        signal: ctx.signal,
+      }).catch((err: unknown) => ({ problem: `the scan failed: ${redactPaths((err as Error).message, { roots: [ctx.deps.project.repo_path, worktree.path] })}` }));
+  // Cancelled or stopped: no review, so the scan runs again when the run goes on.
+  if (ctx.signal?.aborted) return;
+  // The scan's Claude Code session works in the worktree in auto mode: anything it left there would
+  // block the push, and the tree was clean at the gated commit.
+  const undone = "skipped" in result ? [] : restoreWorktree(ctx, worktree);
+  const scanned = undone.length && "findings" in result ? { ...result, notes: [...result.notes, `the scan left changes in the worktree, undone: ${undone.slice(0, 5).join(", ")}`] } : result;
+  if ("skipped" in scanned) ctx.info(run, `security scan skipped: ${scanned.skipped}`);
+  else if ("problem" in scanned) ctx.info(run, `security scan did not finish: ${scanned.problem.split("\n")[0]}`);
+  let text = securityScanReviewText(scanned);
+  try {
+    parseVerdict("review", text);
+  } catch (err) {
+    // A record the review format rejects must not leave the lens without a review (and rerun the scan).
+    text = securityScanReviewText({ problem: `its findings could not be recorded: ${(err as Error).message}` });
+  }
+  writeFileSync(reviewPath(roundDir, "security-scan"), text);
 }
 
 /**
