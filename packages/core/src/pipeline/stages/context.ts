@@ -9,6 +9,7 @@ import type { TrustedReader } from "../../config/trusted.js";
 import type { FactoryEvents } from "../../events.js";
 import type { Worktree } from "../../git/worktrees.js";
 import { factoryComment, type GithubPort } from "../../github/port.js";
+import { securityScanPort, type SecurityScanPort } from "../../security/scan.js";
 import type { Issue, Project, Run, RunPatch, Store } from "../../store/store.js";
 import { runCommand, type CommandRunner } from "../../util/exec.js";
 import { diffHardRuleHits, freshBase } from "../hard-rules.js";
@@ -36,6 +37,8 @@ export interface DriverDeps {
   watchMs?: number;
   /** Screenshots, video and their upload; Playwright and GitHub release assets by default. */
   capture?: CapturePort;
+  /** The `security-scan` lens; the claude-security plugin's CLI by default. */
+  securityScan?: SecurityScanPort;
   /** How often the merge stage looks at required checks that are still running. */
   checksPollMs?: number;
   /** How long after its own push the merge stage keeps looking for required checks that are not reported yet. */
@@ -64,6 +67,7 @@ export class StageContext {
   /** Runs git and the checks. */
   readonly exec: CommandRunner;
   readonly capturer: CapturePort;
+  readonly securityScan: SecurityScanPort;
   /** The driver's ports, with `read` answering each file once per step (see `startStep`). */
   readonly deps: DriverDeps;
   /** What `once` has worked out during the current step. */
@@ -80,6 +84,7 @@ export class StageContext {
     this.machine = new RunMachine(deps.store, deps.config);
     this.exec = deps.run ?? runCommand;
     this.capturer = deps.capture ?? playwrightCapture(deps.project, this.exec, deps.config.app.narrate);
+    this.securityScan = deps.securityScan ?? securityScanPort(deps.config.security.scan_tool);
   }
 
   /**
@@ -232,13 +237,15 @@ export class StageContext {
 
   /**
    * `reviews.always`, plus `reviews.ui` when triage said the change touches the UI. The acceptance
-   * lens always runs: it is how the run's acceptance criteria get checked one by one.
+   * lens always runs: it is how the run's acceptance criteria get checked one by one. The deep
+   * security scan runs as `security.scan_when` says.
    */
   reviewLenses(run: Run): ReviewLens[] {
-    const { reviews } = this.deps.config;
+    const { reviews, security } = this.deps.config;
     const path = join(this.runDir(run), "triage.md");
     const surfaces = existsSync(path) ? parseVerdict("triage", readFileSync(path, "utf8")).header.SURFACES : [];
-    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : []), "acceptance"]);
+    const scan = security.scan_when === "always" || (security.scan_when === "high_risk" && this.triageRisk(run) === "HIGH");
+    const wanted = new Set<ReviewLens>([...reviews.always, ...(surfaces.includes("ui") ? reviews.ui : []), "acceptance", ...(scan ? (["security-scan"] as const) : [])]);
     return REVIEW_LENSES.filter((lens) => wanted.has(lens));
   }
 

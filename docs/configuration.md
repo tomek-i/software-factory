@@ -22,6 +22,7 @@ The web app's [Settings screen](web-mode.md#settings) shows every setting and sa
 | [`merge`](#merge) | How and when the PR is merged |
 | [`loops`](#loops) | How often a run may go back to an earlier stage |
 | [`reviews`](#reviews) | Which review lenses run |
+| [`security`](#security) | The deep security scan of each change |
 | [`models`](#models) | Which model and effort each agent uses |
 | [`concurrency`](#concurrency) | How many runs go on at once |
 | [`trust`](#trust) | Whose issues and comments count as the spec |
@@ -119,6 +120,22 @@ A loop sends a run back to an earlier stage. Each has a cap; at the cap the run 
 - `always` (default `code`, `security`, `docs`): the review lenses that look at every change.
 - `ui` (default `ux`, `ui`): the lenses that only look at UI changes.
 - The `acceptance` lens, which checks the issue's acceptance criteria, always runs.
+
+## security
+
+A deep scan of each change with Anthropic's [claude-security](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-security) Claude Code plugin, as one more review lens, `security-scan`.
+Install it first: `/plugin install claude-security@claude-plugins-official`.
+See [Pipeline: Deep security scan](pipeline.md#deep-security-scan) for what it does with the findings.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `scan_when` | `off` | `off`, `high_risk` (only when triage rated the risk HIGH) or `always` |
+| `scan_tool` | `auto` | `auto` finds the plugin in Claude Code's plugin cache; `off`; or a path to its `scripts/cli.py` |
+| `scan_effort` | `low` | `low`, `medium` or `high`, passed to the scan; higher costs more |
+| `scan_timeout_min` | 60 | a longer scan is stopped and the review goes on without it |
+
+- The scan runs many agents on your Claude Code login, so it costs several times a review lens.
+- Its model comes from [`models`](#models) like any lens's: `models.reviews.security-scan`, else the reviewer's.
 
 ## models
 

@@ -71,6 +71,7 @@ In words:
 3. **Reviewers** look at the change through several lenses at once (code, security, docs, and UI ones for UI changes).
    A **verifier** checks the findings they raise.
    The acceptance lens checks the issue's acceptance criteria one by one.
+   If you turn it on, a deep security scan with the claude-security plugin runs as one more lens.
 4. **Capture** shows a UI change in the PR with screenshots and a video.
 5. **Re-sync** merges the default branch into the PR, the PR's required checks must pass, and then the **merge gate** decides.
    Before that, the factory answers and resolves its own review notes (fixed, declined, wrong or deferred to a follow-up issue).
@@ -203,6 +204,7 @@ Intake is the step before triage: it fetches the issue and creates the run.
 - `reviews.always` (default code, security, docs) run every time.
 - `reviews.ui` (default ux, ui) also run when triage listed `ui` in SURFACES, its list of the areas the change touches.
 - Each lens has its own model and effort (`models.reviews`).
+- Optionally, a [deep security scan](#deep-security-scan) runs next to them as one more lens, `security-scan`.
 - They read the change from `round-N/change.diff` and the code around it.
 - Each writes `round-N/review-<lens>.md` with `VERDICT: PASS | CHANGES` and findings rated critical, major, minor or nit.
 - Only critical and major findings count against a change.
@@ -231,6 +233,24 @@ Intake is the step before triage: it fetches the issue and creates the run.
   - Each `NOT_MET` becomes a major finding (`acceptance-AC-n`), so the verifier, the round cap and the stall check treat it like any other.
   - `CANNOT_CHECK` and not-checked criteria never block; they are listed for you.
 - An issue without checkbox criteria skips the agent and passes with "no criteria".
+
+### Deep security scan
+
+- The `security-scan` lens runs Anthropic's claude-security Claude Code plugin on the change, next to the other lenses.
+- It runs when [`security.scan_when`](configuration.md#security) says: `always`, or `high_risk` when triage rated the risk HIGH. It is `off` by default.
+- The plugin must be installed: `/plugin install claude-security@claude-plugins-official`.
+- The engine runs the plugin's own CLI (`scripts/cli.py --base <where the branch left> --no-sandbox`), never inside a factory agent.
+  - The scan's agents use your Claude Code login and your user settings, never the repo's own `.claude/` settings.
+  - They get the same environment as the factory's agents: no tokens, `gh` logged out, git's credential helpers off.
+  - Its report lands in `round-N/security-scan/`, outside the worktree.
+- The plugin verifies each finding with its own agents before it reports it.
+  The engine writes them to `round-N/review-security-scan.md` like any lens's findings:
+  CRITICAL is critical, HIGH and MEDIUM are major, LOW is minor.
+- Blocking findings then go to the verifier like every other lens's, so a confirmed one sends the change back to the builder.
+- It never scans a change built from an untrusted author's issue: the scan runs without a sandbox, as you.
+- A scan that can't run (plugin missing, no Python, a crash, the timeout) passes with the reason in its review.
+  The security lens still looks at every change.
+- A cancelled scan leaves no review, so it runs again when the run goes on.
 
 ## Verifier
 

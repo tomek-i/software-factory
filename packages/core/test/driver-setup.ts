@@ -9,6 +9,7 @@ import { loadTrustedConfig, trustedReader } from "../src/config/trusted.js";
 import { FactoryEvents, type FactoryEvent } from "../src/events.js";
 import type { CodeScanningAlert, DismissReason, GithubPort, MergeMethod, PullRequestCheck, PullRequestReview, RequiredCheck, ReviewThread } from "../src/github/port.js";
 import { PipelineDriver } from "../src/pipeline/driver.js";
+import type { SecurityScanPort } from "../src/security/scan.js";
 import { fakeClaude, git, repoWithRemote, REVIEW_PASS, type FakeStep } from "./helpers.js";
 
 export const TRIAGE = (decision = "APPROVE", extra = "") =>
@@ -67,6 +68,8 @@ export function setup(
     author?: string;
     config?: string;
     capture?: CapturePort;
+    /** The `security-scan` lens's scan; the real plugin is never run in tests. */
+    securityScan?: SecurityScanPort;
     /** More files on the default branch, e.g. a `CLAUDE.md`. */
     files?: Record<string, string>;
     /** The issue's body (synced and on the fake GitHub); "Please add feature.txt." by default. */
@@ -261,6 +264,7 @@ export function setup(
     checksPollMs: 20,
     checksGraceMs: 200,
     capture: options.capture,
+    securityScan: options.securityScan ?? (() => Promise.reject(new Error("no security scan in this test"))),
   });
   return { root, remote, store, project, driver, fake, github, comments, issueBody, prs, readyPrs, closedReady, edits, reviews, reviewErrors, seen, pr, merges, dismissals, replies, resolved, issues };
 }

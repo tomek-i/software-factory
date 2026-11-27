@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "../../test/helpers.js";
-import { REVIEW_LENSES, type ReviewLens } from "@factory/shared";
+import { REVIEWER_LENSES, type ReviewLens } from "@factory/shared";
 import {
   absoluteRule,
   issueBlock,
@@ -48,7 +48,8 @@ describe("rolePrompt", () => {
 
   // Security weaknesses graded minor merged unfixed (#167), so every lens and the verifier hold them at major
   it("tells every reviewer lens that weakening a protection is at least major, never minor", () => {
-    for (const lens of REVIEW_LENSES) {
+    // The lenses an agent reviews; security-scan is the plugin's scan, with no prompt.
+    for (const lens of REVIEWER_LENSES) {
       const reviewer = rolePrompt("reviewer", () => undefined, lens);
       expect(reviewer).toContain("Anything that weakens a protection is at least **major**");
       expect(reviewer).toMatch(/a way to become trusted or to skip a human gate/);

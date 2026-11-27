@@ -31,6 +31,7 @@ flowchart LR
    If it can't get there in a few rounds, the run stops for you.
 4. **Reviewers** look at the change for code, security, docs and, for UI changes, UX and visual design.
    A verifier checks each finding before the builder has to act on it.
+   Optionally, the [claude-security plugin](docs/pipeline.md#deep-security-scan) runs a deep security scan of the change too.
 5. **The pull request** explains the change and, for a UI change, shows before and after screenshots and a walkthrough video, narrated when the narrate plugin is installed.
 6. **You merge**, or [let an agent decide](docs/configuration.md#gates). Afterwards a learner proposes lessons, which you approve.
 

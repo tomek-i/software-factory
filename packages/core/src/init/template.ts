@@ -92,6 +92,14 @@ reviews:
   ui: [ux, ui]          # only when the change touches the UI
   # The acceptance lens always runs: it checks the issue's acceptance criteria one by one.
 
+# A deep scan of each change with the claude-security Claude Code plugin, as one more review lens
+# whose findings the verifier checks. It runs many agents, so it costs several times a lens.
+# scan_when: off | high_risk (triage rated RISK: HIGH) | always. Install the plugin first:
+# /plugin install claude-security@claude-plugins-official
+security:
+  scan_when: off
+  scan_effort: low      # low | medium | high
+
 # Model and effort per agent. Left out, every agent uses the recommended model below, and a better
 # recommendation reaches this project with the next factory update. To change one, uncomment
 # \`models:\`, its group and the entry. Whatever you set wins over every recommendation (default
