@@ -205,6 +205,16 @@ export interface IssueWriterPort {
   addSubIssue(parent: number, child: number): void;
 }
 
+/**
+ * What `factory audit` needs to file a finding as an issue. Kept apart from GithubPort, like
+ * IssueWriterPort, so the pipeline's fakes need not grow it. Faked in tests.
+ */
+export interface AuditPort {
+  createIssue(issue: { title: string; body: string; labels?: string[] }): number;
+  /** Who can see the repository's issues: an issue about a live vulnerability on a public one discloses it. */
+  repoVisibility(): "public" | "private" | "internal";
+}
+
 const PR_REVIEWS = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviews(last:100){nodes{body viewerDidAuthor}}}}}";
 const REVIEW_THREADS =
   "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved isOutdated path line comments(first:50){nodes{author{__typename login} body url viewerDidAuthor}}}}}}}";
@@ -219,7 +229,7 @@ export function factoryComment(runId: string, kind: string, body: string): strin
   return `<!-- factory:${runId}:${kind} -->\n${body.trim()}\n`;
 }
 
-export function ghPort(project: Project, run: CommandRunner = runCommand): GithubPort & IssueWriterPort {
+export function ghPort(project: Project, run: CommandRunner = runCommand): GithubPort & IssueWriterPort & AuditPort {
   const repo = project.github_repo;
   if (!repo) throw new GithubError(`project ${project.name} has no GitHub repository`);
   const gh = (args: string[]) => {
@@ -291,6 +301,11 @@ export function ghPort(project: Project, run: CommandRunner = runCommand): Githu
     },
     addSubIssue(parent, child) {
       gh(["api", "graphql", "-f", `query=${ADD_SUB_ISSUE}`, "-f", `p=${nodeId(parent)}`, "-f", `c=${nodeId(child)}`]);
+    },
+    repoVisibility() {
+      const out = gh(["repo", "view", repo, "--json", "visibility", "-q", ".visibility"]).trim().toLowerCase();
+      if (out !== "public" && out !== "private" && out !== "internal") throw new GithubError(`gh repo view returned unexpected output: ${out.slice(0, 100) || "(empty)"}`);
+      return out;
     },
     listLabels() {
       const out = gh(["label", "list", "-R", repo, "--limit", "200", "--json", "name,description"]);

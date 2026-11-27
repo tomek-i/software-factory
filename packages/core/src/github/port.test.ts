@@ -313,6 +313,15 @@ describe("ghPort", () => {
     expect(() => ghPort(project, fakeGh("", 1).run).listLabels()).toThrow(/gh label list failed: boom/);
   });
 
+  it("reads the repository's visibility, and refuses anything unexpected", () => {
+    const view = fakeGh("PUBLIC");
+    expect(ghPort(project, view.run).repoVisibility()).toBe("public");
+    expect(view.calls[0]).toEqual(["repo", "view", "o/r", "--json", "visibility", "-q", ".visibility"]);
+    expect(ghPort(project, fakeGh("PRIVATE").run).repoVisibility()).toBe("private");
+    expect(() => ghPort(project, fakeGh("").run).repoVisibility()).toThrow("gh repo view returned unexpected output: (empty)");
+    expect(() => ghPort(project, fakeGh("", 1).run).repoVisibility()).toThrow(/gh repo view failed: boom/);
+  });
+
   it("links a sub-issue by the node ids of both issues", () => {
     const calls: string[][] = [];
     const run: CommandRunner = (_cmd, args) => {
