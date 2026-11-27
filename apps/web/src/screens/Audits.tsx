@@ -16,6 +16,7 @@ const SCHEDULE: Record<AuditList["schedule"], string> = {
 };
 
 const STATUS_STYLE: Record<AuditStatus, string> = {
+  running: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
   complete: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
   failed: "bg-destructive/15 text-destructive",
   cancelled: "bg-muted text-muted-foreground",
@@ -29,6 +30,7 @@ const SEVERITY_STYLE: Record<AuditFindingView["severity"], string> = {
 };
 
 function findingsText(audit: AuditSummary): string {
+  if (audit.status === "running") return "Scanning";
   if (audit.status !== "complete") return audit.problem ?? audit.status;
   return audit.findings === 0 ? "No findings" : `${audit.findings} finding${audit.findings === 1 ? "" : "s"}`;
 }
@@ -65,7 +67,7 @@ function FileButton({ project, audit, finding, github }: { project: string; audi
           <Button size="sm" variant="destructive" disabled={file.isPending} onClick={() => file.mutate(true)}>
             File anyway
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setConfirmPublic(false)}>
+          <Button size="sm" variant="outline" disabled={file.isPending} onClick={() => setConfirmPublic(false)}>
             Cancel
           </Button>
         </div>
@@ -73,7 +75,7 @@ function FileButton({ project, audit, finding, github }: { project: string; audi
     );
   }
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="flex flex-col items-start gap-1 sm:items-end">
       <Button size="sm" variant="secondary" disabled={file.isPending} onClick={() => file.mutate(false)}>
         File issue
       </Button>
@@ -148,6 +150,11 @@ function ProjectAudits({ project }: { project: ProjectInfo }) {
           <Play aria-hidden /> Run audit now
         </Button>
       </div>
+      {audits.data?.failed && (
+        <p className="text-sm text-destructive" role="alert">
+          The last audit could not start: {audits.data.failed}
+        </p>
+      )}
       {request.error && (
         <p className="text-sm text-destructive" role="alert">
           {request.error.message}
@@ -183,14 +190,20 @@ function ProjectAudits({ project }: { project: ProjectInfo }) {
                   <TableCell>
                     <Badge className={STATUS_STYLE[audit.status]}>{audit.status}</Badge>
                   </TableCell>
-                  <TableCell className="max-w-md truncate">{findingsText(audit)}</TableCell>
+                  <TableCell className="max-w-md truncate" title={findingsText(audit)}>
+                    {findingsText(audit)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </Card>
       )}
-      {selected && selected.findings > 0 && <AuditFindings project={project.key} id={selected.id} github={audits.data?.github ?? null} />}
+      {/* The table cuts a long reason short. */}
+      {selected?.problem && selected.status !== "running" && <p className="text-sm whitespace-pre-wrap text-muted-foreground">{selected.problem}</p>}
+      {selected?.status === "complete" && (selected.findings > 0 || selected.notes.length > 0) && (
+        <AuditFindings project={project.key} id={selected.id} github={audits.data?.github ?? null} />
+      )}
     </section>
   );
 }

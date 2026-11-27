@@ -65,7 +65,7 @@ export interface ServerOptions {
   token: string;
   /** The port the browser uses, for the Host and Origin checks. Once listening, the real one is used. */
   port: number;
-  scheduler?: { status(): SchedulerStatus; forgetConfig?(repoPath: string): void; requestAudit?(repoPath: string, name: string): boolean };
+  scheduler?: { status(): SchedulerStatus; forgetConfig?(repoPath: string): void; requestAudit?(repoPath: string, name: string): string | undefined };
   run?: CommandRunner;
   github?: (project: Project) => GithubPort | undefined;
   /** Creates the New issue screen's issues; without it, `gh` as `factory new` uses. */

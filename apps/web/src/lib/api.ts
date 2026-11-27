@@ -192,10 +192,10 @@ export interface SchedulerStatus {
   pausedUntil?: string;
   limited?: { project: string; started: number; max: number; until?: string }[];
   stopping?: "drain" | "now";
-  audits?: { project: string; path: string; state: "running" | "requested" }[];
+  audits?: { project: string; path: string; state: "running" | "requested" | "failed"; error?: string }[];
 }
 
-export type AuditStatus = "complete" | "failed" | "cancelled" | "skipped";
+export type AuditStatus = "running" | "complete" | "failed" | "cancelled" | "skipped";
 
 export interface AuditFindingView {
   id: string;
@@ -228,6 +228,8 @@ export interface AuditList {
   schedule: "off" | "weekly" | "monthly";
   /** An audit of this project is going on, or asked for and waiting for a slot. */
   state?: "running" | "requested";
+  /** Why the last audit asked for or due could not start; nothing on disk records it. */
+  failed?: string;
   /** The GitHub repository, for issue links. */
   github: string | null;
   audits: AuditSummary[];

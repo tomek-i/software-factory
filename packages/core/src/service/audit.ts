@@ -24,6 +24,9 @@ export interface AuditDeps {
  * default branch, like a run's: the working copy can't change what an audit does.
  */
 export function auditProject(ctx: ServiceContext, deps: AuditDeps = {}): Promise<AuditRecord> {
+  // Hours of usage: never two of the same repository at once, from any process.
+  const running = listAudits(ctx.project, deps.dataDir).find((a) => a.status === "running");
+  if (running) return Promise.reject(new ServiceError(`Audit ${running.id} of this project is still going on (process ${running.pid}).`));
   const config = trustedConfig(ctx.project, ctx.config, deps.run);
   return runAudit({ project: ctx.project, config, scan: deps.scan ?? securityScanPort(config.security.scan_tool), run: deps.run, signal: deps.signal, dataDir: deps.dataDir });
 }

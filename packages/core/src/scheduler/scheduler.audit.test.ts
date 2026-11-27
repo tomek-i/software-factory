@@ -109,14 +109,14 @@ describe("Scheduler: audits", () => {
     expect(t.audits).toEqual([]);
   });
 
-  it("gives the slots to runs first, and counts an audit against both limits", () => {
+  it("gives the slots to runs first, and runs one audit at a time outside the project's run limit", async () => {
     const shop = project("shop", { version: 1, security: { audit_schedule: "weekly" }, concurrency: { max_runs: 1 } });
     shop.queue(7);
     const t = scheduler([shop], { maxRuns: 2 });
     t.s.tick();
-    // The run took the project's only slot.
+    // The run took the project's only run slot; the audit isn't a run on its worktrees.
     expect(t.drives).toEqual([7]);
-    expect(t.audits).toEqual([]);
+    expect(t.audits.map((a) => a.project)).toEqual(["shop"]);
 
     const other = project("other");
     other.queue(8);
@@ -125,20 +125,85 @@ describe("Scheduler: audits", () => {
     u.s.tick();
     expect(u.drives).toEqual([8, 9]);
     expect(u.audits).toEqual([]);
+
+    // Three projects due and three slots: one audit, so queued issues aren't kept waiting hours.
+    const [a, b, c] = [project("a"), project("b"), project("c")];
+    const v = scheduler([a, b, c], { maxRuns: 3 });
+    v.s.tick();
+    expect(v.audits.map((x) => x.project)).toEqual(["a"]);
+    await v.audits[0]!.finish();
+    v.s.tick();
+    expect(v.audits.map((x) => x.project)).toEqual(["a", "b"]);
   });
 
-  it("runs an audit asked for now, whatever the schedule, once", async () => {
+  it("reads an idle project's schedule at most hourly, and not while a recent audit says none is due", () => {
+    const off = project("off", { version: 1 });
+    const recent = project("recent");
+    recent.past.push({ status: "complete", started_at: "2026-11-26T10:00:00Z" });
+    const reads: string[] = [];
+    const t = scheduler([off, recent], {
+      trustedConfig: (ctx) => {
+        const p = [off, recent].find((x) => x.ctx === ctx)!;
+        reads.push(p.name);
+        return p.trusted;
+      },
+    });
+    for (let i = 0; i < 12; i++) {
+      t.s.tick();
+      t.advance(5 * 60_000);
+    }
+    // Each read fetches the default branch: once in the hour for the project never audited.
+    expect(reads).toEqual(["off"]);
+    t.s.tick();
+    expect(reads).toEqual(["off", "off"]);
+    expect(t.audits).toEqual([]);
+  });
+
+  it("leaves a project alone that another process is auditing", () => {
+    const shop = project("shop");
+    shop.past.push({ status: "running", started_at: "2026-11-27T09:00:00Z" });
+    const t = scheduler([shop]);
+    t.s.tick();
+    expect(t.audits).toEqual([]);
+
+    expect(t.s.requestAudit("/repos/shop", "shop")).toBeUndefined();
+    t.s.tick();
+    expect(t.audits).toEqual([]);
+    expect(t.s.status().audits).toEqual([{ project: "shop", path: "/repos/shop", state: "failed", error: "another process is auditing it" }]);
+  });
+
+  it("runs an audit asked for now, whatever the schedule, once, and says why it can't", async () => {
     const off = project("off", { version: 1 });
     const t = scheduler([off]);
-    expect(t.s.requestAudit("/repos/off", "off")).toBe(true);
+    expect(t.s.requestAudit("/repos/off", "off")).toBeUndefined();
     expect(t.s.status().audits).toEqual([{ project: "off", path: "/repos/off", state: "requested" }]);
-    expect(t.s.requestAudit("/repos/off", "off")).toBe(false);
+    expect(t.s.requestAudit("/repos/off", "off")).toBe("An audit of this project is already waiting for a free slot.");
     t.s.tick();
     expect(t.audits).toHaveLength(1);
-    expect(t.s.requestAudit("/repos/off", "off")).toBe(false);
+    expect(t.s.requestAudit("/repos/off", "off")).toBe("An audit of this project is already going on.");
     await t.audits[0]!.finish();
     t.s.tick();
     expect(t.audits).toHaveLength(1);
+  });
+
+  it("drops a request it can't act on rather than showing it as waiting for good", () => {
+    const broken = project("broken");
+    const t = scheduler([broken], {
+      trustedConfig: () => {
+        throw new Error("fatal: couldn't find remote ref main");
+      },
+    });
+    t.s.requestAudit("/repos/broken", "broken");
+    t.s.tick();
+    expect(t.audits).toEqual([]);
+    expect(t.s.status().audits).toEqual([
+      { project: "broken", path: "/repos/broken", state: "failed", error: "could not read its config from the default branch: fatal: couldn't find remote ref main" },
+    ]);
+
+    // A project taken off the list.
+    t.s.requestAudit("/repos/gone", "gone");
+    t.s.tick();
+    expect(t.s.status().audits.map((a) => a.path)).toEqual(["/repos/broken"]);
   });
 
   it("stops the audit on stop --now and on a drain, and waits for it before it resolves", async () => {
@@ -146,10 +211,11 @@ describe("Scheduler: audits", () => {
     const t = scheduler([shop], { tickMs: 1 });
     t.s.tick();
     const done = t.s.run();
-    expect(t.s.stopNow()).toBe(1);
+    // Only runs are counted: they are what can be continued.
+    expect(t.s.stopNow()).toBe(0);
     expect(t.audits[0]!.signal.aborted).toBe(true);
     expect(await done).toBe("interrupted");
-    expect(t.s.requestAudit("/repos/shop", "shop")).toBe(false);
+    expect(t.s.requestAudit("/repos/shop", "shop")).toBe("The worker is stopping, so it starts no audits.");
 
     const again = project("again");
     const u = scheduler([again], { tickMs: 1 });
@@ -159,16 +225,23 @@ describe("Scheduler: audits", () => {
     expect(u.audits[0]!.signal.aborted).toBe(true);
   });
 
-  it("says when an audit couldn't start, and waits before trying again", async () => {
+  it("says when an audit couldn't start, waits before trying again, and lets a request skip the wait", async () => {
     const shop = project("shop");
     const t = scheduler([shop]);
     t.s.tick();
     await t.audits[0]!.fail(new Error("git fetch failed: offline"));
     expect(t.events).toContainEqual({ type: "audit_failed", project: "shop", error: "git fetch failed: offline" });
+    expect(t.s.status().audits).toEqual([{ project: "shop", path: "/repos/shop", state: "failed", error: "git fetch failed: offline" }]);
     t.s.tick();
     expect(t.audits).toHaveLength(1);
     t.advance(31 * 60_000);
     t.s.tick();
     expect(t.audits).toHaveLength(2);
+    expect(t.s.status().audits).toEqual([{ project: "shop", path: "/repos/shop", state: "running" }]);
+
+    await t.audits[1]!.fail(new Error("git fetch failed: offline"));
+    expect(t.s.requestAudit("/repos/shop", "shop")).toBeUndefined();
+    t.s.tick();
+    expect(t.audits).toHaveLength(3);
   });
 });

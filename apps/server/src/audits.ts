@@ -1,6 +1,6 @@
 import {
-  auditById,
   auditHistory,
+  findAudit,
   fileAuditFinding,
   filedIssue,
   PublicRepoError,
@@ -13,15 +13,19 @@ import {
 } from "@factory/core";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { Conflict } from "./errors.js";
-import type { ProjectSet } from "./projects.js";
+import { NotFoundError, type ProjectSet } from "./projects.js";
 import { RateLimiter, type RateLimit } from "./rate-limit.js";
 
-/** Asking for an audit spends a lot of usage, and filing opens issues: a page stuck in a loop must not repeat either. */
-export const AUDIT_RATE_LIMIT: RateLimit = { max: 10, windowMs: 60_000 };
+/**
+ * Asking for an audit spends a lot of usage, and filing opens issues: a page stuck in a loop must not
+ * repeat either. Room for triaging a list of findings by hand, two requests each on a public repo.
+ */
+export const AUDIT_RATE_LIMIT: RateLimit = { max: 30, windowMs: 60_000 };
 
 export interface AuditScheduler {
-  status(): { audits: { path: string; state: "running" | "requested" }[] };
-  requestAudit(repoPath: string, name: string): boolean;
+  status(): { audits: { path: string; state: "running" | "requested" | "failed"; error?: string }[] };
+  /** Why it can't, or undefined once asked. */
+  requestAudit(repoPath: string, name: string): string | undefined;
 }
 
 export interface AuditRouteOptions {
@@ -56,16 +60,18 @@ export function auditRoutes(app: FastifyInstance, options: AuditRouteOptions): v
   const limiter = new RateLimiter(options.limit ?? AUDIT_RATE_LIMIT);
   // A route hook: the server's own Host, token and Origin checks run first, so only the app's page counts.
   const limited = { onRequest: async (req: FastifyRequest) => limiter.take(`${req.method} ${req.routeOptions.url}`) };
-  const stateOf = (ctx: ProjectContext) => options.scheduler?.status().audits.find((a) => a.path === ctx.root)?.state;
+  const auditOf = (ctx: ProjectContext) => options.scheduler?.status().audits.find((a) => a.path === ctx.root);
 
   app.get<{ Params: { key: string } }>("/api/projects/:key/audits", async (req) => {
     const ctx = projects.byKey(req.params.key);
     const redact = options.redact(ctx);
-    const state = stateOf(ctx);
+    const scheduled = auditOf(ctx);
     return {
       // Shown, not acted on: the scheduler reads the schedule from the default branch.
       schedule: ctx.config.security.audit_schedule,
-      ...(state ? { state } : {}),
+      ...(scheduled?.state === "running" || scheduled?.state === "requested" ? { state: scheduled.state } : {}),
+      // Why the last audit asked for or due could not start: nothing else records it.
+      ...(scheduled?.state === "failed" && scheduled.error ? { failed: redact(scheduled.error) } : {}),
       github: ctx.project.github_repo,
       audits: auditHistory(ctx).map((a) => ({ ...summary(a, redact), findings: a.findings.length })),
     };
@@ -74,13 +80,22 @@ export function auditRoutes(app: FastifyInstance, options: AuditRouteOptions): v
   app.get<{ Params: { key: string; id: string } }>("/api/projects/:key/audits/:id", async (req) => {
     const ctx = projects.byKey(req.params.key);
     const redact = options.redact(ctx);
-    const audit = auditById(ctx, req.params.id);
+    const audit = findAudit(ctx.project, req.params.id);
+    if (!audit) throw new NotFoundError("No such audit: it may have been removed.");
     return {
       ...summary(audit, redact),
       findings: audit.findings.map((f) => {
         const issue = filedIssue(ctx.project, f.id);
         // The scan's agents wrote this: the page shows it as text only.
-        return { id: f.id, severity: f.severity, claim: f.claim, evidence: redact(f.evidence), file: f.file, line: f.line, ...(issue === undefined ? {} : { issue }) };
+        return {
+          id: f.id,
+          severity: f.severity,
+          claim: redact(f.claim),
+          evidence: redact(f.evidence),
+          ...(f.file ? { file: redact(f.file) } : {}),
+          line: f.line,
+          ...(issue === undefined ? {} : { issue }),
+        };
       }),
     };
   });
@@ -88,9 +103,10 @@ export function auditRoutes(app: FastifyInstance, options: AuditRouteOptions): v
   app.post<{ Params: { key: string } }>("/api/projects/:key/audits", limited, async (req, reply) => {
     const ctx = projects.byKey(req.params.key);
     if (!options.scheduler) throw new Conflict("Audits run in the scheduler, which isn't running.");
-    if (!options.scheduler.requestAudit(ctx.root, ctx.project.name)) throw new Conflict("An audit of this project is already going on or waiting to start.");
+    const refused = options.scheduler.requestAudit(ctx.root, ctx.project.name);
+    if (refused) throw new Conflict(refused);
     changed(req.params.key);
-    return reply.code(202).send({ state: stateOf(ctx) ?? "requested" });
+    return reply.code(202).send({ state: auditOf(ctx)?.state ?? "requested" });
   });
 
   app.post<{ Params: { key: string; id: string; finding: string }; Body: unknown }>(
@@ -106,7 +122,9 @@ export function auditRoutes(app: FastifyInstance, options: AuditRouteOptions): v
       } catch (err) {
         // The page asks the person, then sends public: true.
         if (err instanceof PublicRepoError) return reply.code(409).send({ error: err.message, code: "public_repo" });
-        if (err instanceof ServiceError) err.message = options.redact(ctx)(err.message);
+        // gh's errors (a GithubError) as much as the service's can name local paths.
+        if (err instanceof Error) err.message = options.redact(ctx)(err.message);
+        if (err instanceof ServiceError && /already filed/.test(err.message)) throw new Conflict(err.message);
         throw err;
       }
     },

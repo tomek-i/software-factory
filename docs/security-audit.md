@@ -21,8 +21,15 @@ factory audit file <finding> --public  # file it even though the repository is p
 - `factory work` and `factory serve` then audit the project when the newest audit is older than a week or a month.
   - A failed or skipped audit counts, so a missing plugin waits for the next interval rather than retrying.
   - A cancelled one doesn't, so an audit cut short by `factory stop` runs again.
-- An audit takes one of the worker's slots (`--max-runs`) and one of the project's (`concurrency.max_runs`), after the runs waiting for one.
+- A worker looks whether an audit is due at most once an hour per project, since reading the schedule fetches the default branch.
+- An audit takes one of the worker's slots (`--max-runs`), after the runs waiting for one.
+  It doesn't count against the project's `concurrency.max_runs`, which limits runs on its worktrees.
+- A worker runs one audit at a time, so audits never hold every slot for hours.
+- An audit going on is recorded as running, so no other worker and no `factory audit` starts a second one of the same repository.
+  One whose process died is read as cancelled.
+- When git can't give an audit a checkout, the worker tries again after 30 minutes.
 - `factory stop` and Ctrl+C stop an audit going on rather than waiting for it; the worker exits once its worktree is removed.
+  The next audit starts from the beginning.
 - The scan doesn't recognise a usage limit, so an audit that hits one is recorded as failed and the worker doesn't pause for it.
 - The [Audits screen](web-mode.md#audits) shows them and can ask for one now.
 

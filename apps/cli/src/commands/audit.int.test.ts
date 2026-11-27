@@ -64,6 +64,20 @@ describe("factory audit", () => {
     expect(result).toEqual({ message: expect.stringContaining("skipped: security.scan_tool is off"), complete: false });
   });
 
+  it("refuses a second audit of the project while one is going on, and lists it as going on", async () => {
+    const a = audited();
+    let release!: () => void;
+    const first = runAuditNow(a.root, {
+      ...a.deps,
+      scan: () => new Promise((resolve) => (release = () => resolve({ findings: [], notes: [] }))),
+    });
+    await expect.poll(() => runAuditList(a.root, a.deps)).toMatch(/going on$/);
+    await expect(runAuditNow(a.root, a.deps)).rejects.toThrow(/^Audit \d{8}-\d{6} of this project is still going on \(process \d+\)\.$/);
+    release();
+    expect((await first).complete).toBe(true);
+    expect(a.requests).toEqual([]);
+  });
+
   it("files a finding as an issue once across audits, with mentions quoted and local paths left out", async () => {
     const a = audited();
     await runAuditNow(a.root, a.deps);

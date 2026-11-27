@@ -1599,4 +1599,40 @@ describe("audits", () => {
     const link = await screen.findByRole("link", { name: /Issue #31/ });
     expect(link.getAttribute("href")).toBe("https://github.com/acme/shop/issues/31");
   });
+
+  it("says when filing anyway failed, and can't be cancelled while it files", async () => {
+    withAudit();
+    server.publicRepo = true;
+    server.failures.set("/file", { status: 502, error: "GitHub: gh issue create failed" });
+    renderAt("/audits");
+
+    await userEvent.click(await screen.findByRole("button", { name: "File issue" }));
+    const warning = await screen.findByRole("alert");
+    await userEvent.click(within(warning).getByRole("button", { name: "File anyway" }));
+    expect(await screen.findByText("GitHub: gh issue create failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "File issue" })).toBeTruthy();
+  });
+
+  it("says why the last audit couldn't start, and shows notes and the whole reason of the one picked", async () => {
+    const problem = `the scan failed: ${"a long reason ".repeat(20)}`.trim();
+    server.audits = {
+      schedule: "weekly",
+      github: "acme/shop",
+      failed: "git fetch failed: offline",
+      audits: [
+        { ...summary, notes: ["the temporary worktree could not be removed"], findings: 0 },
+        { ...summary, id: "20261120-090000", status: "failed", problem, findings: 0 },
+      ],
+    };
+    server.auditDetails[summary.id] = { ...summary, notes: ["the temporary worktree could not be removed"], findings: [] };
+    renderAt("/audits");
+
+    expect(await screen.findByText("The last audit could not start: git fetch failed: offline")).toBeTruthy();
+    expect(await screen.findByText("the temporary worktree could not be removed")).toBeTruthy();
+    expect(screen.getByText("This audit reported no findings.")).toBeTruthy();
+
+    await userEvent.click(screen.getAllByRole("row")[2]!);
+    // The table cell and the full text below it.
+    await waitFor(() => expect(screen.getAllByText(problem)).toHaveLength(2));
+  });
 });

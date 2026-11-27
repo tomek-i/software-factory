@@ -198,8 +198,8 @@ export function describeSchedulerEvent(event: SchedulerEvent, style: Style): str
     case "audit_finished":
       return prefix(event.project)(
         event.status === "complete"
-          ? `Audit finished: ${event.findings} finding${event.findings === 1 ? "" : "s"}. ${style.hint("`factory audit show` lists them.")}`
-          : style.attention(`Audit ${event.status}. ${style.hint("`factory audit show` says why.")}`),
+          ? `Audit finished: ${event.findings} finding${event.findings === 1 ? "" : "s"}. ${style.hint("`factory audit show` in its folder lists them.")}`
+          : style.attention(`Audit ${event.status}. ${style.hint("`factory audit show` in its folder says why.")}`),
       );
     case "audit_failed":
       return prefix(event.project)(style.attention(`Audit could not start: ${event.error}`));

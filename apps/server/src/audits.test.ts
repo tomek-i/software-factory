@@ -61,15 +61,15 @@ function server(ctx: ProjectContext, options: Partial<ServerOptions> = {}) {
 
 function scheduler() {
   const requested: string[] = [];
-  let running = false;
+  let state: { state: "running" | "failed"; error?: string } | undefined;
   return {
     requested,
-    start: () => (running = true),
-    status: () => ({ running: [], limited: [], audits: running ? [{ project: "demo", path: requested[0]!, state: "running" as const }] : [] }),
+    set: (next: typeof state) => (state = next),
+    status: () => ({ running: [], limited: [], audits: state ? [{ project: "demo", path: requested[0]!, ...state }] : [] }),
     requestAudit: (path: string) => {
-      if (requested.includes(path)) return false;
+      if (requested.includes(path)) return "An audit of this project is already waiting for a free slot.";
       requested.push(path);
-      return true;
+      return undefined;
     },
   };
 }
@@ -91,7 +91,16 @@ describe("audit routes", () => {
     expect(detail.findings).toEqual([
       { id: "security-scan-1a2b3c4d", severity: "critical", claim: "Command injection in ping", evidence: expect.stringMatching(/^host goes to execSync in ~[\\/]x\.js$/), file: "server.js", line: 7 },
     ]);
-    expect((await call("GET", "/audits/20200101-000000")).statusCode).toBe(400);
+    expect((await call("GET", "/audits/20200101-000000")).json()).toEqual({ error: "No such audit: it may have been removed." });
+  });
+
+  it("leaves local paths out of the claim and file too", async () => {
+    const ctx = project();
+    audit(ctx, { findings: [{ id: "f1", severity: "major", claim: `writes into ${join(ctx.root, "tmp")}`, evidence: "e", file: join(ctx.root, "server.js") }] });
+    const { call } = server(ctx);
+    const [finding] = (await call("GET", "/audits/20261127-103000")).json().findings;
+    expect(finding.claim).not.toContain(ctx.root);
+    expect(finding.file).not.toContain(ctx.root);
   });
 
   it("asks the scheduler for an audit now, once, and says when it can't", async () => {
@@ -104,9 +113,14 @@ describe("audit routes", () => {
     expect(asked.json()).toEqual({ state: "requested" });
     expect(s.requested).toEqual([ctx.root]);
     expect(published.map((p) => p.event)).toContainEqual({ type: "changed", project: projectKey(ctx.root) });
-    expect((await call("POST", "/audits")).statusCode).toBe(409);
-    s.start();
+    expect((await call("POST", "/audits")).json()).toEqual({ error: "An audit of this project is already waiting for a free slot." });
+    s.set({ state: "running" });
     expect((await call("GET", "/audits")).json()).toMatchObject({ schedule: "off", state: "running" });
+    // An audit that couldn't start leaves nothing on disk: the page hears why from the scheduler.
+    s.set({ state: "failed", error: `git fetch failed in ${ctx.root}` });
+    const listed = (await call("GET", "/audits")).json();
+    expect(listed.state).toBeUndefined();
+    expect(listed.failed).toBe("git fetch failed in .");
 
     const none = server(project()).call;
     expect((await none("POST", "/audits")).json()).toEqual({ error: "Audits run in the scheduler, which isn't running." });
@@ -129,7 +143,9 @@ describe("audit routes", () => {
     expect((await call("POST", file, { public: true })).json()).toEqual({ issue: 31 });
     expect((await call("GET", "/audits/20261127-103000")).json().findings[0].issue).toBe(31);
     visibility = "private";
-    expect((await call("POST", file)).json()).toEqual({ error: "security-scan-1a2b3c4d is already filed as issue #31." });
+    const again = await call("POST", file);
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toEqual({ error: "security-scan-1a2b3c4d is already filed as issue #31." });
     expect(issues).toHaveLength(1);
   });
 
