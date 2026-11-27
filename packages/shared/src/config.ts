@@ -321,3 +321,13 @@ export function resolveModel(
   const all = [...chain(config.models), ...chain(DEFAULT_MODELS)];
   return { model: all.find((s) => s?.model)!.model!, effort: all.find((s) => s?.effort)!.effort! };
 }
+
+/**
+ * The deep security scan's model: only its own entries, then the recommendation. The scan runs its
+ * agents in auto mode, which not every model supports, so a cheaper `default` or `roles.reviewer`
+ * meant for the agent lenses must not reach it.
+ */
+export function securityScanModel(config: Pick<FactoryConfig, "models">, risk?: "LOW" | "MEDIUM" | "HIGH"): string {
+  const { high_risk, reviews } = config.models;
+  return (risk === "HIGH" ? high_risk["security-scan"]?.model : undefined) ?? reviews["security-scan"]?.model ?? DEFAULT_MODELS.reviews["security-scan"].model;
+}

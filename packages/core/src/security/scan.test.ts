@@ -80,11 +80,23 @@ describe("scanFindings", () => {
     expect(findings).toEqual([{ id: "security-scan-F2", severity: "major", claim: "t", evidence: "t" }]);
   });
 
-  it("reports lines it cannot read rather than dropping them", () => {
-    expect(scanFindings(`{not json\n${JSON.stringify({ title: "t", severity: "SEVERE" })}\n\n`).problems).toEqual([
-      "line 1 of the scan's results is not JSON",
-      "line 2 of the scan's results has no known severity or no title",
-    ]);
+  it("reports lines it cannot read, and still keeps the others", () => {
+    expect(scanFindings(`{not json\n${JSON.stringify({ title: "t", severity: "SEVERE" })}\n\n${results}`)).toEqual({
+      findings: [expect.objectContaining({ id: "security-scan-44e2f997", severity: "critical" })],
+      problems: ["line 1 of the scan's results is not JSON", "line 2 of the scan's results has no known severity or no title"],
+    });
+  });
+
+  it("reads a severity with stray spaces, as the plugin does", () => {
+    expect(scanFindings(JSON.stringify({ id: "F1", title: "t", severity: " high " })).findings.map((f) => f.severity)).toEqual(["major"]);
+  });
+
+  // The plugin's id hashes the rule, file and nearby code, so two findings can share it.
+  it("gives findings that share an id distinct ids, which the review format requires", () => {
+    const same = JSON.stringify({ title: "t", severity: "HIGH", claudeSecurityPluginFindingId: `v3:${"a".repeat(64)}` });
+    const { findings } = scanFindings([same, same, same].join("\n"));
+    expect(findings.map((f) => f.id)).toEqual(["security-scan-aaaaaaaa", "security-scan-aaaaaaaa-2", "security-scan-aaaaaaaa-3"]);
+    expect(() => parseVerdict("review", securityScanReviewText({ findings, notes: [] }))).not.toThrow();
   });
 });
 

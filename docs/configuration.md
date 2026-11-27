@@ -135,7 +135,8 @@ See [Pipeline: Deep security scan](pipeline.md#deep-security-scan) for what it d
 | `scan_timeout_min` | 60 | a longer scan is stopped and the review goes on without it |
 
 - The scan runs many agents on your Claude Code login, so it costs several times a review lens.
-- Its model comes from [`models`](#models) like any lens's: `models.reviews.security-scan`, else the reviewer's.
+- Its model is `models.reviews.security-scan` (and `models.high_risk.security-scan`), else Opus.
+  `default` and `roles.reviewer` don't reach it: the scan runs its agents in auto mode, which not every model supports.
 
 ## models
 

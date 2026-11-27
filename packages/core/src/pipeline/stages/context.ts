@@ -201,7 +201,7 @@ export class StageContext {
   }
 
   /** The risk triage gave this run, once triage has run. */
-  private triageRisk(run: Run): "LOW" | "MEDIUM" | "HIGH" | undefined {
+  triageRisk(run: Run): "LOW" | "MEDIUM" | "HIGH" | undefined {
     const path = join(this.runDir(run), "triage.md");
     if (!existsSync(path)) return undefined;
     return parseVerdict("triage", readFileSync(path, "utf8")).header.RISK;

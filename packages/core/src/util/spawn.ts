@@ -10,9 +10,20 @@ import { killTree } from "./process.js";
 export function spawnAndWait(
   cmd: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; log: number; timeoutMs: number; signal?: AbortSignal },
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    log: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+    /**
+     * Off Windows: send the command SIGTERM and wait this long before killing its process group, for
+     * a command that starts children outside its group and stops them itself on SIGTERM.
+     */
+    termGraceMs?: number;
+  },
 ): Promise<{ code: number | null; stdout: string }> {
-  const { cwd, env, log, timeoutMs, signal } = options;
+  const { cwd, env, log, timeoutMs, signal, termGraceMs } = options;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return resolve({ code: null, stdout: "" });
     // Its own process group off Windows, so a kill takes its children (browsers, agents) down with it.
@@ -26,17 +37,28 @@ export function spawnAndWait(
     // Also killed if the factory itself ends mid-run (Ctrl+C, SIGTERM).
     if (child.pid !== undefined) track(child.pid);
     let stopped = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const killGroup = () => {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    };
     const stop = () => {
+      if (stopped) return;
       stopped = true;
       if (child.pid === undefined) return;
+      // taskkill /T follows parent pids, so it also finds children in another group.
       if (process.platform === "win32") killTree(child.pid);
-      else {
+      else if (termGraceMs) {
         try {
-          process.kill(-child.pid, "SIGKILL");
+          process.kill(child.pid, "SIGTERM");
         } catch {
           // Already gone.
         }
-      }
+        killTimer = setTimeout(killGroup, termGraceMs);
+      } else killGroup();
     };
     const timer = setTimeout(stop, timeoutMs);
     signal?.addEventListener("abort", stop);
@@ -58,6 +80,11 @@ export function spawnAndWait(
     });
     child.on("close", (code) => {
       clearTimeout(grace);
+      // It ended within the grace period: what is left of its group goes now.
+      if (killTimer) {
+        clearTimeout(killTimer);
+        killGroup();
+      }
       done();
       resolve({ code: stopped ? null : code, stdout });
     });

@@ -1,11 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { isBlocking, isTrustedIssue, parseCriteria, parseVerdict, type ParsedVerdict, type ReviewLens } from "@factory/shared";
+import { isBlocking, isTrustedIssue, parseCriteria, parseVerdict, securityScanModel, type ParsedVerdict, type ReviewLens } from "@factory/shared";
 import { permissionProfile, renderTask, rolePrompt, writeRoleFiles } from "../../agents/prompts.js";
 import { runTurn, type TurnResult } from "../../agents/turn.js";
 import { gitEvidence, snapshot, type Worktree } from "../../git/worktrees.js";
 import { factoryComment } from "../../github/port.js";
 import { securityScanReviewText } from "../../security/scan.js";
+import { restoreWorktree } from "./capture.js";
 import type { Issue, Run } from "../../store/store.js";
 import { redactPaths } from "../../util/redact.js";
 import { acceptanceCount, acceptanceReviewText, extractCriteria, matchAnswers, readAcceptanceRecord, writeAcceptanceRecord, type Criterion } from "../acceptance.js";
@@ -71,6 +72,11 @@ export async function review(ctx: StageContext, run: Run): Promise<StepResult> {
     ),
     scanning,
   ]);
+  // Cancelled, or this worker lost the run, while the lenses or the scan ran (the scan wrote no review then).
+  if (ctx.signal?.aborted) {
+    if (ctx.load(run.id).state !== run.state) return undefined;
+    return { kind: "stopped", state: run.state, reason: "this worker lost the run during the review" };
+  }
   // A usage limit stops the run where it is; the reviews already written are kept for next time.
   const limited = turns.find((t) => t.turn.status === "failed" && t.turn.agent.outcome.kind === "rate_limited");
   if (limited && limited.turn.status !== "ok") return ctx.agentTrouble(run, `reviewer (${limited.lens})`, limited.turn);
@@ -317,16 +323,27 @@ async function securityScanLens(ctx: StageContext, run: Run, issue: Issue, workt
         worktree: worktree.path,
         base,
         effort: security.scan_effort,
-        model: ctx.agentBase(run, "reviewer", worktree.path, "security-scan").model,
+        model: securityScanModel(ctx.deps.config, ctx.triageRisk(run)),
         outDir: join(roundDir, "security-scan"),
         timeoutMs: security.scan_timeout_min * 60_000,
         signal: ctx.signal,
       }).catch((err: unknown) => ({ problem: `the scan failed: ${redactPaths((err as Error).message, { roots: [ctx.deps.project.repo_path, worktree.path] })}` }));
   // Cancelled or stopped: no review, so the scan runs again when the run goes on.
   if (ctx.signal?.aborted) return;
-  if ("skipped" in result) ctx.info(run, `security scan skipped: ${result.skipped}`);
-  else if ("problem" in result) ctx.info(run, `security scan did not finish: ${result.problem.split("\n")[0]}`);
-  writeFileSync(reviewPath(roundDir, "security-scan"), securityScanReviewText(result));
+  // The scan's Claude Code session works in the worktree in auto mode: anything it left there would
+  // block the push, and the tree was clean at the gated commit.
+  const undone = "skipped" in result ? [] : restoreWorktree(ctx, worktree);
+  const scanned = undone.length && "findings" in result ? { ...result, notes: [...result.notes, `the scan left changes in the worktree, undone: ${undone.slice(0, 5).join(", ")}`] } : result;
+  if ("skipped" in scanned) ctx.info(run, `security scan skipped: ${scanned.skipped}`);
+  else if ("problem" in scanned) ctx.info(run, `security scan did not finish: ${scanned.problem.split("\n")[0]}`);
+  let text = securityScanReviewText(scanned);
+  try {
+    parseVerdict("review", text);
+  } catch (err) {
+    // A record the review format rejects must not leave the lens without a review (and rerun the scan).
+    text = securityScanReviewText({ problem: `its findings could not be recorded: ${(err as Error).message}` });
+  }
+  writeFileSync(reviewPath(roundDir, "security-scan"), text);
 }
 
 /**

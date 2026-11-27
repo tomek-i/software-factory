@@ -40,6 +40,13 @@ if (mode === "partial") {
   report("CLAUDE-SECURITY-20261126-235744", JSON.stringify({ verification: { status: "partial" } }));
 }
 if (mode === "refused") process.exit(2);
+if (mode === "unfinished") { report("CLAUDE-SECURITY-20261126-235744", readFileSync(join(here, "revision.json"))); process.exit(1); }
+if (mode === "term") {
+  // Like the plugin: SIGTERM lets it stop what it started, then it exits.
+  process.on("SIGTERM", () => { writeFileSync(join(here, "term.txt"), "stopped its session"); process.exit(1); });
+  writeFileSync(join(here, "pid.txt"), String(process.pid));
+  setInterval(() => {}, 1000);
+}
 if (mode === "hang") { writeFileSync(join(here, "pid.txt"), String(process.pid)); setInterval(() => {}, 1000); }
 `,
   );
@@ -66,6 +73,10 @@ describe("runSecurityScan", () => {
     // Never the worktree: what the scan leaves behind must not end up in the run's commits.
     expect(seen.cwd.toLowerCase()).toBe(req.outDir.toLowerCase());
     expect(Object.keys(seen.env).some((k) => k.toUpperCase() === "GH_TOKEN")).toBe(false);
+    // gh finds no login: an empty config folder of its own, removed after the scan.
+    const ghConfig = Object.entries(seen.env).find(([k]) => k.toUpperCase() === "GH_CONFIG_DIR")?.[1];
+    expect(ghConfig).toMatch(/factory-gh-/);
+    expect(existsSync(ghConfig!)).toBe(false);
     expect(readFileSync(join(req.outDir, "cli-output.log"), "utf8")).toContain("progress goes to stderr");
   });
 
@@ -77,12 +88,19 @@ describe("runSecurityScan", () => {
     const req = request(fakeCli("ok"));
     await runSecurityScan(req);
     writeFileSync(join(req.cli, "..", "mode.txt"), "none");
-    expect(await runSecurityScan(req)).toEqual({ problem: "the scan wrote no results; see security-scan/cli-output.log" });
+    expect(await runSecurityScan(req)).toEqual({ problem: "the scan wrote no results (exit code 0); see security-scan/cli-output.log" });
+  });
+
+  it("keeps the findings of a scan that ended with an error but wrote its report, with a note", async () => {
+    expect(await runSecurityScan(request(fakeCli("unfinished")))).toEqual({
+      findings: [expect.objectContaining({ severity: "critical" })],
+      notes: ["the scan ended with exit code 1, so it may be incomplete; see security-scan/cli-output.log"],
+    });
+    expect(await runSecurityScan(request(fakeCli("badjson")))).toEqual({ findings: [], notes: ["line 1 of the scan's results is not JSON"] });
   });
 
   it("says why there are no findings", async () => {
-    expect(await runSecurityScan(request(fakeCli("refused")))).toEqual({ problem: "the scan ended with exit code 2; see security-scan/cli-output.log" });
-    expect(await runSecurityScan(request(fakeCli("badjson")))).toEqual({ problem: "the scan's results could not be read: line 1 of the scan's results is not JSON" });
+    expect(await runSecurityScan(request(fakeCli("refused")))).toEqual({ problem: "the scan wrote no results (exit code 2); see security-scan/cli-output.log" });
     expect(await runSecurityScan(request(fakeCli("ok"), { interpreter: [join(tempDir("scan-none-"), "no-python")] }))).toEqual({
       problem: "the scan did not start (ENOENT); is Python on PATH?",
     });
@@ -101,5 +119,13 @@ describe("runSecurityScan", () => {
       for (let i = 0; i < 40 && isAlive(pid); i++) await new Promise((r) => setTimeout(r, 50));
       expect(isAlive(pid)).toBe(false);
     }
+  }, GIT_TEST_TIMEOUT);
+
+  // The plugin starts Claude Code in a session of its own, which a kill of the process group misses.
+  it.skipIf(process.platform === "win32")("sends SIGTERM first, so the plugin can stop its own session", async () => {
+    const cli = fakeCli("term");
+    const pending = runSecurityScan(request(cli, { timeoutMs: 1000 }));
+    expect(await pending).toEqual({ problem: "the scan took too long and was stopped" });
+    expect(readFileSync(join(cli, "..", "term.txt"), "utf8")).toBe("stopped its session");
   }, GIT_TEST_TIMEOUT);
 });

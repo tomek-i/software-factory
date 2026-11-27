@@ -242,13 +242,17 @@ Intake is the step before triage: it fetches the issue and creates the run.
 - The engine runs the plugin's own CLI (`scripts/cli.py --base <where the branch left> --no-sandbox`), never inside a factory agent.
   - The scan's agents use your Claude Code login and your user settings, never the repo's own `.claude/` settings.
   - They get the same environment as the factory's agents: no tokens, `gh` logged out, git's credential helpers off.
-  - Its report lands in `round-N/security-scan/`, outside the worktree.
+  - Its report lands in `round-N/security-scan/`.
+  - The scan's Claude Code session works in the worktree; anything it leaves there is undone afterwards and noted in its review.
+  - A timeout or cancel stops the scan's own session too (SIGTERM first off Windows, so the plugin can stop it).
 - The plugin verifies each finding with its own agents before it reports it.
   The engine writes them to `round-N/review-security-scan.md` like any lens's findings:
   CRITICAL is critical, HIGH and MEDIUM are major, LOW is minor.
 - Blocking findings then go to the verifier like every other lens's, so a confirmed one sends the change back to the builder.
 - It never scans a change built from an untrusted author's issue: the scan runs without a sandbox, as you.
-- A scan that can't run (plugin missing, no Python, a crash, the timeout) passes with the reason in its review.
+- A scan that ends with an error but wrote a report still counts, with a note that it may be incomplete.
+  A record it can't read is noted, and the rest still count.
+- A scan that can't run (plugin missing, no Python, no report, the timeout) passes with the reason in its review.
   The security lens still looks at every change.
 - A cancelled scan leaves no review, so it runs again when the run goes on.
 

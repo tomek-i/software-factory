@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { factoryConfigSchema, parseVerdict, type Finding } from "@factory/shared";
@@ -130,6 +130,32 @@ describe("PipelineDriver", () => {
 
       expect(await driver.drive(run.id)).toEqual({ kind: "finished", state: "cancelled" });
       expect(existsSync(join(runDirOf(root, run.id), "round-1", "review-security-scan.md"))).toBe(false);
+    });
+
+    it("gives the scan its own model, never a cheaper one set for the agent lenses", async () => {
+      const scan = fakeScan({ findings: [], notes: [] });
+      const { driver } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: REVIEW_PASS }], {
+        config: `${config("always")}models:\n  default: haiku\n  roles:\n    reviewer: haiku\n`,
+        securityScan: scan.port,
+      });
+      await driver.drive(driver.startRun(12).id);
+      expect(scan.requests[0]!.model).toBe("opus");
+    });
+
+    it("undoes what the scan left in the worktree and notes it, so the run can still be pushed", async () => {
+      const port: SecurityScanPort = (request) => {
+        writeFileSync(join(request.worktree, "scan-notes.txt"), "left behind\n");
+        writeFileSync(join(request.worktree, "feature.txt"), "changed by the scan\n");
+        return Promise.resolve({ findings: [], notes: [] });
+      };
+      const { driver, store, root } = setup([{ output: TRIAGE() }, buildStep("fixed"), { role: "reviewer-code", output: REVIEW_PASS }], { config: config("always"), securityScan: port });
+      const run = driver.startRun(12);
+
+      expect(await driver.drive(run.id)).toMatchObject({ reason: "waiting at review gate: reviews: code PASS, security-scan PASS; gate is set to human" });
+      const worktree = store.getRun(run.id)!.worktree_path!;
+      expect(existsSync(join(worktree, "scan-notes.txt"))).toBe(false);
+      expect(readFileSync(join(worktree, "feature.txt"), "utf8")).toBe("fixed\n");
+      expect(reviewOf(root, run.id, 1).summary).toEqual(["Deep scan (claude-security): no verified findings", "Note: the scan left changes in the worktree, undone: feature.txt, scan-notes.txt"]);
     });
 
     it("goes on without the scan when it fails, with the reason in its review", async () => {

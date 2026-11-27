@@ -1,5 +1,5 @@
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { isBlocking, type Finding, type Severity } from "@factory/shared";
 import { agentEnv } from "../agents/runner.js";
@@ -42,8 +42,8 @@ interface ScanRecord {
 }
 
 /**
- * The findings of `CLAUDE-SECURITY-RESULTS.jsonl` as review findings. The plugin's own id stays the
- * same from scan to scan, so the finding keeps its id from one review round to the next.
+ * The findings of `CLAUDE-SECURITY-RESULTS.jsonl` as review findings. A line that can't be read is
+ * reported and the rest still count: one bad record must not hide a verified critical one.
  */
 export function scanFindings(jsonl: string): { findings: Finding[]; problems: string[] } {
   const findings: Finding[] = [];
@@ -57,7 +57,7 @@ export function scanFindings(jsonl: string): { findings: Finding[]; problems: st
       problems.push(`line ${i + 1} of the scan's results is not JSON`);
       continue;
     }
-    const severity = typeof record.severity === "string" ? SEVERITY[record.severity.toUpperCase()] : undefined;
+    const severity = SEVERITY[text(record.severity).toUpperCase()];
     const title = text(record.title);
     if (!severity || !title) {
       problems.push(`line ${i + 1} of the scan's results has no known severity or no title`);
@@ -67,7 +67,7 @@ export function scanFindings(jsonl: string): { findings: Finding[]; problems: st
       .filter(Boolean)
       .join("\n\n");
     findings.push({
-      id: findingId(record, findings.length + 1),
+      id: uniqueId(findingId(record, findings.length + 1), findings),
       severity,
       ...(text(record.file) ? { file: text(record.file) } : {}),
       ...(Number.isInteger(record.line) && (record.line as number) > 0 ? { line: record.line as number } : {}),
@@ -82,7 +82,19 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-/** `security-scan-<8 hex>` from the plugin's stable id (`v3:<sha256>`), else the scan's own `F1`. */
+/**
+ * The plugin's id hashes the rule, the file and the code around it, so two findings can share one:
+ * a review must not, as its parser rejects duplicate ids.
+ */
+function uniqueId(id: string, taken: Finding[]): string {
+  const ids = new Set(taken.map((f) => f.id));
+  if (!ids.has(id)) return id;
+  let n = 2;
+  while (ids.has(`${id}-${n}`)) n++;
+  return `${id}-${n}`;
+}
+
+/** `security-scan-<8 hex>` from the plugin's id (`v3:<sha256>`), else the scan's own `F1`. */
 function findingId(record: ScanRecord, n: number): string {
   const stable = /([0-9a-f]{8})[0-9a-f]*$/i.exec(text(record.claudeSecurityPluginFindingId))?.[1];
   if (stable) return `security-scan-${stable.toLowerCase()}`;
@@ -115,6 +127,8 @@ export async function runSecurityScan(request: ScanRequest): Promise<ScanResult>
   rmSync(request.outDir, { recursive: true, force: true });
   mkdirSync(request.outDir, { recursive: true });
   const log = openSync(join(request.outDir, "cli-output.log"), "w");
+  // An empty gh config folder: gh finds no login there, as for the agents (see agentEnv).
+  const ghConfigDir = mkdtempSync(join(tmpdir(), "factory-gh-"));
   let exit: { code: number | null; stdout: string };
   try {
     const [cmd, ...pre] = request.interpreter ?? [process.platform === "win32" ? "python" : "python3", "-IS"];
@@ -138,23 +152,29 @@ export async function runSecurityScan(request: ScanRequest): Promise<ScanResult>
         // the scan runs as the user, like the factory's agents; untrusted runs never get here.
         "--no-sandbox",
       ],
-      // Not the worktree: nothing the scan leaves behind may end up in the run's commits.
       // agentEnv: no tokens, gh logged out and git's credential helpers off, as for the agents.
-      { cwd: request.outDir, env: agentEnv(process.env), log, timeoutMs: request.timeoutMs, signal: request.signal },
+      // The plugin starts Claude Code in a session of its own, which a kill of this process group
+      // misses: SIGTERM first lets the plugin stop its session itself.
+      { cwd: request.outDir, env: agentEnv(process.env, { ghConfigDir }), log, timeoutMs: request.timeoutMs, signal: request.signal, termGraceMs: 10_000 },
     );
   } catch (err) {
     // The code only: the message names local paths, and this reaches the PR.
     return { problem: `the scan did not start (${(err as NodeJS.ErrnoException).code ?? "spawn failed"}); is Python on PATH?` };
   } finally {
     closeSync(log);
+    rmSync(ghConfigDir, { recursive: true, force: true });
   }
   if (exit.code === null) return { problem: request.signal?.aborted ? "the scan was cancelled" : "the scan took too long and was stopped" };
-  if (exit.code !== 0) return { problem: `the scan ended with exit code ${exit.code}; see security-scan/cli-output.log` };
+  // The plugin also ends with 1 after an unfinished scan that still wrote a report: its findings count.
   const report = latestReport(request.outDir);
-  if (!report) return { problem: "the scan wrote no results; see security-scan/cli-output.log" };
+  if (!report) return { problem: `the scan wrote no results (exit code ${exit.code}); see security-scan/cli-output.log` };
   const { findings, problems } = scanFindings(readFileSync(report.results, "utf8"));
-  if (problems.length) return { problem: `the scan's results could not be read: ${problems.slice(0, 3).join("; ")}` };
-  return { findings, notes: report.verification && report.verification !== "verified" ? [`the scan's verification is ${report.verification}`] : [] };
+  const notes = [
+    ...(exit.code !== 0 ? [`the scan ended with exit code ${exit.code}, so it may be incomplete; see security-scan/cli-output.log`] : []),
+    ...(report.verification && report.verification !== "verified" ? [`the scan's verification is ${report.verification}`] : []),
+    ...problems.slice(0, 3),
+  ];
+  return { findings, notes };
 }
 
 /** How the review stage runs the scan; tests put a fake in its place. */
