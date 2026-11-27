@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/tomek-i/software-factory/compare/v0.8.0...v0.9.0) (2026-11-27)
+
+
+### Features
+
+* add factory audit, a claude-security scan of the default branch ([#292](https://github.com/tomek-i/software-factory/issues/292)) ([4e81845](https://github.com/tomek-i/software-factory/commit/4e818450c444310534057bbc61a7f89d022c4485))
+* **core:** add the security-scan review lens ([#291](https://github.com/tomek-i/software-factory/issues/291)) ([76288c0](https://github.com/tomek-i/software-factory/commit/76288c00b057124f2b686d9b14fa5e75e66d5307))
+* run security audits on a schedule, with an Audits screen ([#294](https://github.com/tomek-i/software-factory/issues/294)) ([e683d82](https://github.com/tomek-i/software-factory/commit/e683d8238cff62c3d4e9d851ffd31b6c68b8dbc6))
+
 ## [0.8.0](https://github.com/tomek-i/software-factory/compare/v0.7.0...v0.8.0) (2026-11-23)
 
 
