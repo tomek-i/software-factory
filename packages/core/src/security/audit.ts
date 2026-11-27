@@ -198,3 +198,19 @@ function readAuditFile(dir: string): AuditRecord | undefined {
     return undefined;
   }
 }
+
+const SCHEDULE_MS = { weekly: 7 * 24 * 60 * 60_000, monthly: 30 * 24 * 60 * 60_000 } as const;
+
+/**
+ * Whether a scheduled audit is due: none yet, or the newest that wasn't cancelled started longer ago
+ * than the schedule's interval. A failed or skipped audit counts, so a missing plugin waits for the
+ * next interval rather than retrying every tick; a cancelled one (cut short by `factory stop`) doesn't.
+ */
+export function auditDue(audits: Pick<AuditRecord, "status" | "started_at">[], schedule: FactoryConfig["security"]["audit_schedule"], now: number): boolean {
+  if (schedule === "off") return false;
+  const last = audits.filter((a) => a.status !== "cancelled").reduce<number | undefined>((newest, a) => {
+    const at = Date.parse(a.started_at);
+    return Number.isNaN(at) ? newest : Math.max(newest ?? at, at);
+  }, undefined);
+  return last === undefined || now - last >= SCHEDULE_MS[schedule];
+}

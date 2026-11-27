@@ -192,6 +192,45 @@ export interface SchedulerStatus {
   pausedUntil?: string;
   limited?: { project: string; started: number; max: number; until?: string }[];
   stopping?: "drain" | "now";
+  audits?: { project: string; path: string; state: "running" | "requested" }[];
+}
+
+export type AuditStatus = "complete" | "failed" | "cancelled" | "skipped";
+
+export interface AuditFindingView {
+  id: string;
+  severity: "critical" | "major" | "minor";
+  claim: string;
+  evidence: string;
+  file?: string;
+  line?: number;
+  /** The issue it was filed as, by this audit or a later one. */
+  issue?: number;
+}
+
+export interface AuditSummary {
+  id: string;
+  startedAt: string;
+  finishedAt: string;
+  commit: string;
+  effort: string;
+  status: AuditStatus;
+  problem?: string;
+  notes: string[];
+  findings: number;
+}
+
+export interface AuditDetail extends Omit<AuditSummary, "findings"> {
+  findings: AuditFindingView[];
+}
+
+export interface AuditList {
+  schedule: "off" | "weekly" | "monthly";
+  /** An audit of this project is going on, or asked for and waiting for a slot. */
+  state?: "running" | "requested";
+  /** The GitHub repository, for issue links. */
+  github: string | null;
+  audits: AuditSummary[];
 }
 
 export type RunView = "active" | "waiting" | "all";
@@ -283,7 +322,10 @@ export type ServerEvent =
   | { type: "resumed" }
   | { type: "limited"; project: string; started: number; max: number; until?: string }
   | { type: "unlimited"; project: string }
-  | { type: "stopping"; now: boolean; interrupted: number };
+  | { type: "stopping"; now: boolean; interrupted: number }
+  | { type: "audit_started"; project: string }
+  | { type: "audit_finished"; project: string; status: AuditStatus; findings: number }
+  | { type: "audit_failed"; project: string; error: string };
 
 /** An error the server explained, or no session. */
 export type SettingKind =

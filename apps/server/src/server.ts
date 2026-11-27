@@ -36,6 +36,7 @@ import {
   type CodeScanningAlert,
   type CommandRunner,
   type GithubPort,
+  type AuditPort,
   type IssueWriterPort,
   type OverviewSection,
   type Project,
@@ -47,6 +48,7 @@ import {
 } from "@factory/core";
 import { isTerminal, isTrustedIssue } from "@factory/shared";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import { auditRoutes } from "./audits.js";
 import { DraftJobs, draftRoutes } from "./drafts.js";
 import { settingsRoutes } from "./settings.js";
 import { BadRequest, Conflict } from "./errors.js";
@@ -63,7 +65,7 @@ export interface ServerOptions {
   token: string;
   /** The port the browser uses, for the Host and Origin checks. Once listening, the real one is used. */
   port: number;
-  scheduler?: { status(): SchedulerStatus; forgetConfig?(repoPath: string): void };
+  scheduler?: { status(): SchedulerStatus; forgetConfig?(repoPath: string): void; requestAudit?(repoPath: string, name: string): boolean };
   run?: CommandRunner;
   github?: (project: Project) => GithubPort | undefined;
   /** Creates the New issue screen's issues; without it, `gh` as `factory new` uses. */
@@ -79,6 +81,10 @@ export interface ServerOptions {
   draftLimit?: RateLimit;
   /** For tests: the settings save route's rate limit. */
   settingsLimit?: RateLimit;
+  /** For tests: the audit routes' rate limit. */
+  auditLimit?: RateLimit;
+  /** Files audit findings as issues; `gh` by default. */
+  auditPort?: (project: Project) => AuditPort | undefined;
   /** Milliseconds now, for the GitHub caches; tests move it on. */
   clock?: () => number;
 }
@@ -534,6 +540,16 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   draftRoutes(app, { projects, jobs: drafts, run: options.run, changed, limit: options.draftLimit });
   settingsRoutes(app, { projects, run: options.run, changed, redact: projectRedactor, forgetConfig: (path) => options.scheduler?.forgetConfig?.(path), limit: options.settingsLimit });
+  const { scheduler } = options;
+  auditRoutes(app, {
+    projects,
+    run: options.run,
+    scheduler: scheduler?.requestAudit ? { status: () => ({ audits: scheduler.status().audits ?? [] }), requestAudit: (path, name) => scheduler.requestAudit!(path, name) } : undefined,
+    github: options.auditPort,
+    changed,
+    redact: projectRedactor,
+    limit: options.auditLimit,
+  });
 
   app.get("/api/scheduler", async () => options.scheduler?.status() ?? null);
 

@@ -39,6 +39,9 @@ export function auditById(ctx: ServiceContext, id: string | undefined, deps: Pic
   return audit;
 }
 
+/** Filing was refused because the repository is public; the caller may ask and try again with `allowPublic`. */
+export class PublicRepoError extends ServiceError {}
+
 export interface FiledFinding {
   audit: AuditRecord;
   finding: Finding;
@@ -58,7 +61,7 @@ export function fileAuditFinding(ctx: ServiceContext, ref: { audit?: string; fin
   if (filed !== undefined) throw new ServiceError(`${finding.id} is already filed as issue #${filed}.`);
   const github = deps.github ?? ghPort(ctx.project, deps.run);
   if (!ref.allowPublic && github.repoVisibility() === "public") {
-    throw new ServiceError(
+    throw new PublicRepoError(
       `${ctx.project.github_repo ?? ctx.project.name} is public: an issue would disclose this vulnerability to everyone. Report it privately with a security advisory instead, or pass --public if it is safe to share.`,
     );
   }

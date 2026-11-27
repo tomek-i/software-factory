@@ -49,6 +49,7 @@ export const REVIEWER_LENSES = ["code", "security", "docs", "ux", "ui", "accepta
 export const REVIEW_LENSES = [...REVIEWER_LENSES, "security-scan"] as const;
 export type ReviewLens = (typeof REVIEW_LENSES)[number];
 export const SECURITY_SCAN_WHEN = ["off", "high_risk", "always"] as const;
+export const AUDIT_SCHEDULES = ["off", "weekly", "monthly"] as const;
 export const SECURITY_SCAN_EFFORTS = ["low", "medium", "high"] as const;
 
 export const AGENT_ROLES = [
@@ -218,6 +219,8 @@ export const factoryConfigSchema = z.object({
       // `factory audit`: a scan of the whole default branch, minutes to hours on a big repository.
       audit_effort: z.enum(SECURITY_SCAN_EFFORTS).default("medium"),
       audit_timeout_min: z.number().positive().default(240),
+      // `factory work` and `factory serve` run an audit when the last one is older than this.
+      audit_schedule: z.enum(AUDIT_SCHEDULES).default("off"),
     })
     .prefault({}),
   models: z

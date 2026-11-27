@@ -101,6 +101,7 @@ security:
   scan_when: off
   scan_effort: low      # low | medium | high
   audit_effort: medium
+  audit_schedule: off    # off | weekly | monthly, run by factory work and factory serve
 
 # Model and effort per agent. Left out, every agent uses the recommended model below, and a better
 # recommendation reaches this project with the next factory update. To change one, uncomment
