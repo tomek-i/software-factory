@@ -53,6 +53,7 @@ export function commitToRemote(options: CommitToRemoteOptions): string {
     } catch (err) {
       throw new Error(
         `a commit hook or commit signing in this repository refused ${options.what} (they are never skipped), so nothing was pushed: ${(err as Error).message}`,
+        { cause: err },
       );
     }
     const commit = git(["rev-parse", "HEAD"], worktree).trim();
