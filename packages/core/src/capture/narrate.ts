@@ -1,11 +1,11 @@
-import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import type { WalkthroughStep } from "@factory/shared";
 import { runCommand, type CommandRunner } from "../util/exec.js";
-import { killTree } from "../util/process.js";
-import { APP_ENV_ALLOWLIST, track, untrack } from "./server.js";
+import { newestPluginFile } from "../util/plugins.js";
+import { spawnAndWait } from "../util/spawn.js";
+import { APP_ENV_ALLOWLIST } from "./server.js";
 
 /**
  * Narrated walkthroughs with the narrate Claude Code plugin's own CLI (`bin/narrate.mjs render`),
@@ -25,31 +25,7 @@ export function findNarrate(setting: string, home = homedir()): string | undefin
   if (setting === "off") return undefined;
   // Absolute, as narrate runs from its own folder, not the one the config was read in.
   if (setting !== "auto") return existsSync(setting) ? resolve(setting) : undefined;
-  const cache = join(home, ".claude", "plugins", "cache");
-  const found: { version: number[]; path: string }[] = [];
-  for (const marketplace of list(cache)) {
-    const plugin = join(cache, marketplace, "narrate");
-    for (const version of list(plugin)) {
-      const path = join(plugin, version, "bin", "narrate.mjs");
-      const parsed = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
-      if (parsed && existsSync(path)) found.push({ version: parsed.slice(1).map(Number), path });
-    }
-  }
-  found.sort((a, b) => compare(b.version, a.version));
-  return found[0]?.path;
-}
-
-function list(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-function compare(a: number[], b: number[]): number {
-  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! - b[i]!;
-  return 0;
+  return newestPluginFile(home, "narrate", ["bin", "narrate.mjs"]);
 }
 
 interface SceneStep {
@@ -157,10 +133,7 @@ export async function renderNarrated(request: NarrateRequest): Promise<{ video: 
         "--log",
         join(dir, "narrate.log"),
       ],
-      dir,
-      log,
-      request.timeoutMs ?? RENDER_TIMEOUT_MS,
-      request.signal,
+      { cwd: dir, env: narrateEnv(process.env), log, timeoutMs: request.timeoutMs ?? RENDER_TIMEOUT_MS, signal: request.signal },
     );
   } catch (err) {
     // The code only: the message names local paths, and this reaches the PR.
@@ -220,60 +193,4 @@ export const NARRATE_ENV = ["PLAYWRIGHT_BROWSERS_PATH", "NARRATE_HOME", "NARRATE
 export function narrateEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const wanted = new Set([...APP_ENV_ALLOWLIST, ...NARRATE_ENV].map((n) => n.toUpperCase()));
   return Object.fromEntries(Object.entries(env).filter(([key]) => wanted.has(key.toUpperCase())));
-}
-
-/**
- * Exit code and stdout; the code is null when it was stopped for the timeout or the signal. Its
- * whole tree is killed then. stderr goes to `log`.
- */
-function spawnAndWait(cmd: string, args: string[], cwd: string, log: number, timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return resolve({ code: null, stdout: "" });
-    // Its own process group off Windows, so a kill takes Chromium and ffmpeg down with it.
-    const child = spawn(cmd, args, { cwd, env: narrateEnv(process.env), stdio: ["ignore", "pipe", log], windowsHide: true, detached: process.platform !== "win32" });
-    let stdout = "";
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      // The result is one line; a runaway output must not grow without end.
-      stdout = (stdout + chunk).slice(-100_000);
-    });
-    // Also killed if the factory itself ends mid-render (Ctrl+C, SIGTERM).
-    if (child.pid !== undefined) track(child.pid);
-    let stopped = false;
-    const stop = () => {
-      stopped = true;
-      if (child.pid === undefined) return;
-      if (process.platform === "win32") killTree(child.pid);
-      else {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          // Already gone.
-        }
-      }
-    };
-    const timer = setTimeout(stop, timeoutMs);
-    signal?.addEventListener("abort", stop);
-    const done = () => {
-      if (child.pid !== undefined) untrack(child.pid);
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", stop);
-    };
-    child.on("error", (err) => {
-      done();
-      reject(err);
-    });
-    // "close", not "exit": stdout may still hold the result line when the process exits. A leftover
-    // process holding the pipe (which a kill on Windows cannot find once narrate is gone) must not
-    // keep "close" from ever coming, so the pipe is dropped shortly after the exit.
-    let grace: NodeJS.Timeout | undefined;
-    child.on("exit", () => {
-      grace = setTimeout(() => child.stdout?.destroy(), 2000);
-    });
-    child.on("close", (code) => {
-      clearTimeout(grace);
-      done();
-      resolve({ code: stopped ? null : code, stdout });
-    });
-  });
 }
